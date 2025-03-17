@@ -1,0 +1,11 @@
+{
+  "name": "ai-stocktrader",
+  "version": "1.0.0",
+  "scripts": {
+    "install-all": "npm install --prefix client && npm install --prefix server",
+    "start": "concurrently \"npm start --prefix client\" \"npm start --prefix server\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

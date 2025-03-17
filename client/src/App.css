@@ -1,0 +1,331 @@
+.App {
+  text-align: center;
+}
+
+.App-logo {
+  height: 40vmin;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .App-logo {
+    animation: App-logo-spin infinite 20s linear;
+  }
+}
+
+.App-header {
+  background-color: #282c34;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(10px + 2vmin);
+  color: white;
+}
+
+.App-link {
+  color: #61dafb;
+}
+
+@keyframes App-logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.quantity-container {
+  display: flex;
+  align-items: center;
+}
+
+.quantity-input {
+  width: 50px;
+  text-align: center;
+  font-size: 16px;
+}
+
+.buy-btn,
+.sell-btn {
+    padding: 10px 20px;
+    font-size: 16px;
+    font-weight: bold;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.buy-btn {
+    background-color: green;
+    color: white;
+}
+
+.buy-btn:hover {
+    background-color: darkgreen;
+}
+
+.sell-btn {
+    background-color: red;
+    color: white;
+}
+
+.sell-btn:hover {
+    background-color: darkred;
+}
+
+.table-container {
+  max-width: 900px;
+  margin: 0 auto;
+  border-top: 2px solid aqua;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.table-container table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table-container th, .table-container td {
+  white-space: nowrap;
+}
+
+.search-bar-container {
+  display: flex;
+  margin: 0 auto;
+  justify-content: center;
+  margin-bottom: 20px;
+  max-width: 300px;
+  height: 50px;
+}
+
+.search-bar-container input {
+  height: 50px;
+  font-size: 18px;
+  padding: 5px 10px;
+}
+
+.search-bar-container .btn-success {
+  background-color: #00ced1;
+  border-color: #00ced1;
+  color: white;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.search-bar-container .btn-success:hover {
+  background-color: aqua;
+  border-color: aqua;
+  color: white;
+}
+
+.rankings-container {
+  display: flex;
+  justify-content: space-between;
+  margin: 20px auto;
+  max-width: 1200px;
+  margin-top: 70px;
+}
+
+.rankings-container > div {
+  flex: 1;
+}
+
+.ranking-container {
+  margin: 0 auto;
+  max-width: 400px;
+  padding: 20px;
+}
+
+.ranking-container table.table-dark tbody tr {
+  height: 60px;
+  font-size: 18px;
+  font-weight: bold;
+  vertical-align: middle;
+  border-bottom: 2px solid aqua;
+  border-top: 2px solid aqua;
+}
+
+.ranking-container table.table-dark tbody tr td a {
+  color: white;
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+.ranking-container table.table-dark tbody tr td a:hover {
+  color: aqua;
+  text-decoration: none;
+}
+
+.ranking-container h1 {
+  text-align: center;
+  font-weight: bold;
+  text-decoration: underline;
+  margin-bottom: 20px;
+  color: #343a40;
+}
+
+header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: #343a40;
+  color: white;
+  padding: 10px 20px;
+  border-bottom: 2px solid aqua;
+  position: relative;
+}
+
+header a {
+  color: white;
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+header a:hover {
+  color: aqua;
+  text-decoration: none;
+}
+
+header .text-lg {
+  font-size: 18px;
+}
+
+header .text-2xl {
+  font-size: 24px;
+  font-weight: bold;
+}
+
+header .logo {
+  height: 40px;
+  width: auto;
+  vertical-align: middle;
+}
+
+.header-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 10px 20px;
+  background-color: #343a40;
+  color: white;
+  position: relative;
+}
+
+.left-container {
+  position: absolute;
+  left: 20px;
+}
+
+.center-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.logo {
+  height: 40px;
+  width: auto;
+  margin-right: 10px;
+}
+
+.ticker-header {
+  text-align: center;
+  color: #343a40;
+  font-weight: bold;
+  font-size: 50px;
+  text-decoration: underline;
+}
+
+.trading-interface-container {
+  display: flex;
+  align-items: flex-start;
+  padding: 20px;
+  margin: 0 auto;
+  max-width: 1200px;
+  width: 100%;
+}
+
+.left-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.right-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 10px;
+}
+
+.price-container {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.current-price {
+  font-size: 36px;
+  font-weight: bold;
+  color: #343a40;
+  position: relative;
+}
+
+.currency {
+  font-size: 16px;
+  color: gray;
+  vertical-align: baseline;
+  margin-left: 5px;
+}
+
+.price-change {
+  font-size: 16px;
+  font-weight: bold;
+  vertical-align: super;
+  margin-left: 5px;
+}
+
+.price-change.positive {
+  color: green;
+}
+
+.price-change.negative {
+  color: red;
+}
+
+.candlestick-chart-container {
+  flex-grow: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.analysis-box {
+  background-color: aqua;
+  border: 2px solid #343a40;
+  border-radius: 8px;
+  padding: 20px;
+  margin: 20px 0;
+  color: #343a40;
+  font-size: 16px;
+  font-weight: bold;
+  text-align: center;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
