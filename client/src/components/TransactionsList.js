@@ -1,15 +1,18 @@
 import React, { Fragment, useEffect, useState } from "react";
+import axios from "axios";
+import { formatShares } from "../utils/orders";
 
 const TransactionsList = () => {
     const [transactions, setTransactions] = useState([]);
+    const [error, setError] = useState(null);
 
     const getTransactions = async () => {
         try {
-            const response = await fetch("http://localhost:5001/transactions");
-            const jsonData = await response.json();
-            setTransactions(jsonData);
+            const response = await axios.get("/transactions");
+            setTransactions(response.data);
         } catch (error) {
             console.error(error.message);
+            setError(error.response?.data?.error ?? error.message);
         }
     };
 
@@ -22,7 +25,11 @@ const TransactionsList = () => {
             style: "currency",
             currency: "USD",
         }).format(amount);
-    };    
+    };
+
+    if (error) {
+        return <p className="text-danger mt-5">Couldn't load transactions: {error}</p>;
+    }
 
     return (
         <Fragment>
@@ -39,16 +46,13 @@ const TransactionsList = () => {
                         </tr>
                     </thead>
                     <tbody>
-                        {transactions
-                            .slice()
-                            .sort((a, b) => new Date(b.date) - new Date(a.date))
-                            .map(transaction => (
+                        {transactions.map(transaction => (
                             <tr key={transaction.id}>
-                                <td>{new Date(transaction.date).toLocaleDateString("en-US")}</td>
+                                <td>{new Date(transaction.date).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" })}</td>
                                 <td>{transaction.ticker}</td>
                                 <td style={{ color: transaction.type === "BUY" ? "green" : "red", fontWeight: "bold" }}>{transaction.type}</td>
                                 <td>{formatCurrency(transaction.price)}</td>
-                                <td>{transaction.quantity}</td>
+                                <td>{formatShares(transaction.quantity)}</td>
                                 <td>{formatCurrency(transaction.total)}</td>
                             </tr>
                         ))}

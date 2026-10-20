@@ -1,15 +1,13 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import logo from "../AIStockTraderLogo.png";
+import TickerSearchBar from "./TickerSearchBar";
 
 const Header = () => {
     return (
         <header className="py-4 shadow-lg header-container">
-            <div className="left-container">
-                <Link to="/transactions" className="text-lg font-semibold">Transactions</Link>
-            </div>
-            <div className="center-container">
-                <Link to="/" className="text-2xl font-extrabold text-blue-500 flex items-center justify-center">
+            <div className="header-left">
+                <Link to="/" className="text-2xl font-extrabold flex items-center">
                     <img 
                         src={logo} 
                         alt="AI StockTrader Logo" 
@@ -17,7 +15,12 @@ const Header = () => {
                     />
                     AI StockTrader
                 </Link>
+                <TickerSearchBar className="header-search" />
             </div>
+            <nav className="header-nav">
+                <Link to="/portfolio" className="text-lg font-semibold mr-4">Portfolio</Link>
+                <Link to="/transactions" className="text-lg font-semibold">Transactions</Link>
+            </nav>
         </header>
     );
 };

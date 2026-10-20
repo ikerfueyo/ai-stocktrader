@@ -1,17 +1,16 @@
 import React, { Fragment } from "react";
-import PropTypes from "prop-types";
 import Plot from "react-plotly.js";
 
-const CandlestickChart = (props) => {
-    if (!props.data || Object.keys(props.data).length === 0) {
+const CandlestickChart = ({ data = null }) => {
+    if (!data || Object.keys(data).length === 0) {
         return <p>Loading chart data...</p>;
     }
 
-    const dates = Object.keys(props.data).sort((a, b) => b.localeCompare(a));
-    const openPrices = dates.map(date => parseFloat(props.data[date]["1. open"]));
-    const highPrices = dates.map(date => parseFloat(props.data[date]["2. high"]));
-    const lowPrices = dates.map(date => parseFloat(props.data[date]["3. low"]));
-    const closePrices = dates.map(date => parseFloat(props.data[date]["4. close"]));
+    const dates = Object.keys(data).sort((a, b) => b.localeCompare(a));
+    const openPrices = dates.map(date => parseFloat(data[date]["1. open"]));
+    const highPrices = dates.map(date => parseFloat(data[date]["2. high"]));
+    const lowPrices = dates.map(date => parseFloat(data[date]["3. low"]));
+    const closePrices = dates.map(date => parseFloat(data[date]["4. close"]));
 
     return (
         <Fragment>
@@ -39,22 +38,6 @@ const CandlestickChart = (props) => {
             </div>
         </Fragment>
     )
-};
-
-CandlestickChart.propTypes = {
-    data: PropTypes.objectOf(
-        PropTypes.shape({
-            "1. open": PropTypes.string,
-            "2. high": PropTypes.string,
-            "3. low": PropTypes.string,
-            "4. close": PropTypes.string,
-            "5. volume": PropTypes.string
-        })
-    )
-};
-
-CandlestickChart.defaultProps = {
-    data: null
 };
 
 export default CandlestickChart;

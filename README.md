@@ -1,12 +1,13 @@
 # AI StockTrader
 
-AI StockTrader is a full-stack web application that allows users to mock-trade over **200,000+ stocks** with **AI-driven insights**. The platform provides real-time stock prices, sentiment analysis on financial news, and an intuitive trading interface.
+AI StockTrader is a full-stack web application that allows users to mock-trade over **200,000+ stocks** with **AI-driven insights**. The platform provides 15-minute delayed stock prices (with an Alpha Vantage premium plan), sentiment analysis on financial news, and an intuitive trading interface.
 
 ## Features
 
 - **Stock Symbol Search**: Lookup any stock and access its real-time price, historical data, and AI-driven sentiment analysis.
 - **AI-Powered Buy/Sell Recommendations**: Sentiment analysis on **250 latest stock news articles** using OpenAI API to rank the top 5 **buy** and **sell** stocks.
 - **Real-Time Trading Interface**: View stock price, candlestick chart, and mock trade (buy/sell) functionality.
+- **Portfolio**: View open long and short positions with average cost, current price, and unrealized profit/loss. Sell (or cover) right from each row, and click the AI button for an on-demand hold-or-sell sentiment analysis.
 - **Transaction History**: Users can view their past mock transactions, including stock symbol, date, price, quantity, and total.
 
 ## Tech Stack
@@ -49,6 +50,8 @@ Make sure you have the following installed:
    DB_NAME=ai_stocktrader
    ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key
    OPENAI_API_KEY=your_openai_api_key
+   # Optional: "delayed" (default, 15-minute delayed), "realtime", or empty for end-of-day prices on a free key
+   ALPHA_VANTAGE_ENTITLEMENT=delayed
    ```
 
 ### Database Setup
@@ -61,7 +64,7 @@ Then, create the `transactions` table:
 psql -U postgres -d ai_stocktrader -c "
 CREATE TABLE transactions (
     id SERIAL PRIMARY KEY,
-    date DATE,
+    date TIMESTAMPTZ,
     type VARCHAR(255),
     ticker VARCHAR(255),
     price DECIMAL(10, 2),

@@ -1,52 +1,42 @@
 import React, { Fragment, useEffect, useState } from "react";
 import axios from "axios";
-import BuyRanking from "../components/BuyRanking";
-import SellRanking from "../components/SellRanking";
+import StockRanking from "../components/StockRanking";
 
 const Rankings = () => {
-    const [news, setNews] = useState([]);
+    const [rankings, setRankings] = useState(null);
+    const [error, setError] = useState(null);
 
-    const getNews = async () => {
-        const cachedNews = localStorage.getItem("newsData");
-        /*
-        if (cachedNews.length > 0) {
-            console.log("Using cached news data");
-            setNews(JSON.parse(cachedNews));
-            return;
-        }
-        */
+    const getRankings = async () => {
         try {
-            const response = await axios.get("http://localhost:5001/");
-            const filteredData = response.data.feed.map(item => ({
-                title: item.title,
-                summary: item.summary
-            }));
-            
-            const limitedData = filteredData.slice(0, 250);
-            localStorage.setItem("newsData", JSON.stringify(limitedData));
-            setNews(limitedData);
+            const response = await axios.get("/rankings");
+            setRankings(response.data);
         } catch (error) {
             console.error(error.message);
+            setError(error.response?.data?.error ?? error.message);
         }
     };
 
     useEffect(() => {
-        getNews();
+        getRankings();
     }, []);
+
+    if (error) {
+        return <p className="text-danger">Couldn't load rankings: {error}</p>;
+    }
 
     return (
         <Fragment>
             <div className="rankings-container">
                 <div>
-                    {news.length > 0 ? <BuyRanking news={news}/> : <p>Loading...</p>}
+                    {rankings ? <StockRanking title="Buy Top 5 by AI" stocks={rankings.buy} /> : <p>Loading...</p>}
                 </div>
                 <div>
-                    {news.length > 0 ? <SellRanking news={news}/> : <p>Loading...</p>}
+                    {rankings ? <StockRanking title="Sell Top 5 by AI" stocks={rankings.sell} /> : <p>Loading...</p>}
                 </div>
             </div>
         </Fragment>
     );
-    
+
 };
 
 export default Rankings;

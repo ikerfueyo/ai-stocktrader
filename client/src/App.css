@@ -52,10 +52,71 @@
   align-items: center;
 }
 
+.quantity-field {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
 .quantity-input {
-  width: 50px;
+  width: 90px;
   text-align: center;
   font-size: 16px;
+}
+
+.quantity-input.has-prefix {
+  padding-left: 14px;
+}
+
+.quantity-prefix {
+  position: absolute;
+  left: 6px;
+  color: #343a40;
+  font-weight: bold;
+  pointer-events: none;
+}
+
+.trade-mode-toggle {
+  display: inline-flex;
+  border: 2px solid #343a40;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.trade-mode-toggle button {
+  padding: 6px 12px;
+  border: none;
+  background-color: white;
+  color: #343a40;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.trade-mode-toggle button + button {
+  border-left: 2px solid #343a40;
+}
+
+.trade-mode-toggle button:hover:not(:disabled) {
+  background-color: #00ced1;
+  color: white;
+}
+
+.trade-mode-toggle button.active,
+.trade-mode-toggle button.active:hover:not(:disabled) {
+  background-color: #343a40;
+  color: aqua;
+}
+
+.trade-mode-toggle button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.order-preview {
+  color: gray;
+  font-size: 14px;
 }
 
 .buy-btn,
@@ -73,7 +134,7 @@
     color: white;
 }
 
-.buy-btn:hover {
+.buy-btn:hover:not(:disabled) {
     background-color: darkgreen;
 }
 
@@ -82,8 +143,14 @@
     color: white;
 }
 
-.sell-btn:hover {
+.sell-btn:hover:not(:disabled) {
     background-color: darkred;
+}
+
+.buy-btn:disabled,
+.sell-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .table-container {
@@ -214,25 +281,48 @@ header .logo {
   vertical-align: middle;
 }
 
+/* Logo and search on the left, page links on the right */
 .header-container {
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 20px;
   padding: 10px 20px;
   background-color: #343a40;
   color: white;
   position: relative;
 }
 
-.left-container {
-  position: absolute;
-  left: 20px;
+.header-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 30px;
 }
 
-.center-container {
+.header-nav {
   display: flex;
-  justify-content: center;
   align-items: center;
+}
+
+.search-bar-container.header-search {
+  margin: 0;
+  width: 280px;
+  height: 38px;
+}
+
+.search-bar-container.header-search input {
+  height: 38px;
+  font-size: 16px;
+}
+
+/* Once the header wraps onto several rows, center each row instead of leaving them ragged on the left */
+@media (max-width: 800px) {
+  .header-container,
+  .header-left {
+    justify-content: center;
+  }
 }
 
 .logo {
@@ -328,4 +418,109 @@ header .logo {
   font-weight: bold;
   text-align: center;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.portfolio-container {
+  max-width: 1200px;
+}
+
+.portfolio-container td {
+  vertical-align: middle;
+}
+
+.portfolio-ticker {
+  color: #343a40;
+  font-weight: bold;
+  transition: color 0.3s ease;
+}
+
+.portfolio-ticker:hover {
+  color: #00ced1;
+  text-decoration: none;
+}
+
+.position-side {
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: bold;
+  color: white;
+}
+
+.position-side.long {
+  background-color: green;
+}
+
+.position-side.short {
+  background-color: red;
+}
+
+.portfolio-trade {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+}
+
+.portfolio-trade .buy-btn,
+.portfolio-trade .sell-btn {
+  padding: 6px 12px;
+  font-size: 14px;
+}
+
+.portfolio-trade .trade-mode-toggle button {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.portfolio-trade .order-size {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.portfolio-trade .order-preview {
+  font-size: 12px;
+}
+
+.ai-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid #343a40;
+  background-color: aqua;
+  color: #343a40;
+  font-size: 13px;
+  font-weight: bold;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.ai-btn:hover {
+  background-color: #00ced1;
+  color: white;
+}
+
+.ai-btn.open {
+  background-color: #343a40;
+  color: aqua;
+}
+
+.portfolio-analysis-row td {
+  white-space: normal;
+  border-top: none;
+}
+
+.portfolio-analysis-row .analysis-box {
+  margin: 0;
+  text-align: left;
+}
+
+.portfolio-analysis-row .analysis-box p {
+  margin-bottom: 0;
 }

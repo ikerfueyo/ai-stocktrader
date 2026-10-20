@@ -1,54 +1,56 @@
 import React, { Fragment, useState } from "react";
-import PropTypes from "prop-types";
+import axios from "axios";
+import QuantityStepper from "./QuantityStepper";
+import TradeModeToggle from "./TradeModeToggle";
+import { convertValue, formatShares, toOrder } from "../utils/orders";
 
-const BuySellFunctionality = (props) => {
-    const [quantity, setQuantity] = useState(1);
-    const total = (quantity * props.price).toFixed(2);
+const BuySellFunctionality = ({ ticker = "", price = 0 }) => {
+    // value is a number of shares, or a dollar amount in "dollars" mode
+    const [mode, setMode] = useState("shares");
+    const [value, setValue] = useState(1);
+    const [submitting, setSubmitting] = useState(false);
+    const [status, setStatus] = useState(null);
+    const { quantity, total } = toOrder({ mode, value, price });
+    const formattedTotal = total.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const onModeChange = (nextMode) => {
+        if (nextMode === mode) return;
+        setValue(convertValue(nextMode, value, price));
+        setMode(nextMode);
+    };
 
     const onSubmitForm = async e => {
         e.preventDefault();
+        const type = e.currentTarget.id === "buyButton" ? "BUY" : "SELL";
+        setSubmitting(true);
+        setStatus(null);
         try {
             const date = new Date().toISOString();
-            const type = e.currentTarget.id === "buyButton" ? "BUY" : "SELL";
-            const transaction = { date, type, ticker: props.ticker, price: props.price, quantity, total };
-            const response = await fetch(`http://localhost:5001/trading/${props.ticker}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ transaction })
-            });
-            console.log(response);
-            // window.location = "/";
+            const transaction = { date, type, ticker, price, quantity, total };
+            await axios.post(`/trading/${ticker}`, { transaction });
+            setStatus({ ok: true, message: `${type} ${formatShares(quantity)} ${ticker} for $${formattedTotal}` });
         } catch (error) {
             console.error(error.message);
+            setStatus({ ok: false, message: `Couldn't ${type.toLowerCase()} ${ticker}: ${error.response?.data?.error ?? error.message}` });
+        } finally {
+            setSubmitting(false);
         }
     };
 
     return (
         <Fragment>
             <div className="container">
-                <div className="quantity-container">
-                    <button onClick={() => setQuantity((prev) => Math.max(1, prev - 1))}>-</button>
-                    <input type="number" id="quantity" className="quantity-input" min="1" readOnly
-                        value={quantity}
-                        onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                    />
-                    <button onClick={() => setQuantity((prev) => prev + 1)}>+</button>
-                </div>
-                <button className="buy-btn" id="buyButton" onClick={onSubmitForm}>Buy ${total}</button>
-                <button className="sell-btn" id="sellButton" onClick={onSubmitForm}>Sell ${total}</button>
+                <TradeModeToggle mode={mode} setMode={onModeChange} />
+                <QuantityStepper value={value} setValue={setValue} decimals={mode === "dollars" ? 2 : 6} prefix={mode === "dollars" ? "$" : ""} />
+                <button className="buy-btn" id="buyButton" onClick={onSubmitForm} disabled={submitting || quantity <= 0}>Buy ${formattedTotal}</button>
+                <button className="sell-btn" id="sellButton" onClick={onSubmitForm} disabled={submitting || quantity <= 0}>Sell ${formattedTotal}</button>
             </div>
+            {mode === "dollars" && (
+                <p className="order-preview">≈ {formatShares(quantity)} shares at ${price}</p>
+            )}
+            {status && <p className={status.ok ? "text-success" : "text-danger"}>{status.message}</p>}
         </Fragment>
     )
-};
-
-BuySellFunctionality.propTypes = {
-    ticker: PropTypes.string,
-    price: PropTypes.number
-};
-
-BuySellFunctionality.defaultProps = {
-    ticker: "",
-    price: 0
 };
 
 export default BuySellFunctionality;
