@@ -12,13 +12,11 @@ AI StockTrader is a full-stack web application that allows users to mock-trade o
 
 ## Tech Stack
 
-### Frontend:
-- **React.js** – UI/UX framework
+- **Next.js** (App Router) and **React** – pages and API route handlers in one app
+- **TypeScript** – the whole codebase
+- **Clerk** – sign-in, one account per user
+- **PostgreSQL** – database for transactions and transfers
 - **Axios** – API requests
-
-### Backend:
-- **Node.js & Express.js** – Server-side logic
-- **PostgreSQL** – Database for transactions
 
 ### APIs Used:
 - **Alpha Vantage API** – Stock price data and news articles
@@ -37,11 +35,11 @@ Make sure you have the following installed:
    git clone https://github.com/yourusername/ai-stocktrader.git
    cd ai-stocktrader
    ```
-2. Install dependencies for both frontend and backend:
+2. Install dependencies:
    ```sh
-   npm run install-all
+   npm install
    ```
-3. Create a `.env` file inside the `server/` directory and configure your environment variables:
+3. Create a `.env.local` file in the project root and configure your environment variables:
    ```sh
    DB_USER=postgres
    DB_PASSWORD=yourpassword
@@ -50,6 +48,8 @@ Make sure you have the following installed:
    DB_NAME=ai_stocktrader
    ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key
    OPENAI_API_KEY=your_openai_api_key
+   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
+   CLERK_SECRET_KEY=your_clerk_secret_key
    # Optional: "delayed" (default, 15-minute delayed), "realtime", or empty for end-of-day prices on a free key
    ALPHA_VANTAGE_ENTITLEMENT=delayed
    ```
@@ -59,33 +59,30 @@ Ensure PostgreSQL is running, then initialize the database:
 ```sh
 psql -U postgres -c "CREATE DATABASE ai_stocktrader;"
 ```
-Then, create the `transactions` table:
+Then create the tables:
 ```sh
-psql -U postgres -d ai_stocktrader -c "
-CREATE TABLE transactions (
-    id SERIAL PRIMARY KEY,
-    date TIMESTAMPTZ,
-    type VARCHAR(255),
-    ticker VARCHAR(255),
-    price DECIMAL(10, 2),
-    quantity INT,
-    total DECIMAL(10, 2)
-);"
+psql -U postgres -d ai_stocktrader -f db/schema.sql
 ```
+(Skip the `CREATE DATABASE` line at the top of the file if you already ran the command above.) Existing databases are upgraded with the numbered files in `db/migrations/`.
 
 ### Running the Application
-Start both frontend and backend simultaneously:
+Start the development server:
 ```sh
-npm start
+npm run dev
 ```
-The frontend will run at `http://localhost:3000` and the backend at `http://localhost:5001`.
+The app and its API (under `/api`) run at `http://localhost:3000`. For production, run `npm run build` and then `npm start`.
 
 ## Project Structure
 ```
 ai-stocktrader/
-│── client/            # React frontend
-│── server/            # Node.js backend
-│   ├── .env           # Environment variables
+│── app/               # Pages (App Router) and API route handlers (app/api)
+│── components/        # React components
+│── context/           # Account context shared by the pages
+│── lib/               # Shared types and client helpers
+│   ├── server/        # Server-only code: database, Alpha Vantage, OpenAI, account math
+│── db/                # Database schema and migrations
+│── public/            # Static files
+│── .env.local         # Environment variables (not committed)
 │── package.json       # Project dependencies
 │── README.md          # Documentation
 ```

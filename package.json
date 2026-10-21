@@ -1,11 +1,40 @@
 {
   "name": "ai-stocktrader",
   "version": "1.0.0",
+  "private": true,
   "scripts": {
-    "install-all": "npm install --prefix client && npm install --prefix server",
-    "start": "concurrently \"npm start --prefix client\" \"npm start --prefix server\""
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test lib/server/account.test.ts"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^7.9.19",
+    "axios": "^1.20.0",
+    "bootstrap": "4.6.2",
+    "next": "16.4.2",
+    "openai": "^7.41.0",
+    "pg": "^8.23.1",
+    "plotly.js": "^3.0.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-plotly.js": "^2.6.0",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "@types/node": "^22",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/react-plotly.js": "^2.6.4",
+    "autoprefixer": "^10.6.1",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.2",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
   }
 }
