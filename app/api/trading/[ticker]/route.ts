@@ -39,7 +39,7 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
         throw new HttpError(`The market is closed. Market orders can be placed when it opens, ${formatEastern(market.nextOpen, { withDay: true })}.`, 400);
     }
     const inserted = await withAccountLock(userId, async db => {
-        const { transactions, netTransfers, positions } = await getAccount(userId, db);
+        const { transactions, splits, netTransfers, positions } = await getAccount(userId, db);
         const quote = await fetchQuote(ticker);
         const { price, fillPolicy } = fillPrice(type, quote);
         const held = positions.find(position => position.ticker === ticker)?.quantity ?? 0;
@@ -64,9 +64,9 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
         }
         if (!reduces) {
             // Collateral depends on the shorts' current prices, except the traded ticker's, which uses the fill price
-            const { positions: after } = computePositions([...transactions, trade]);
+            const { positions: after } = computePositions([...transactions, trade], splits);
             const { prices, staleTickers } = await fetchPrices(shortTickers(after).filter(symbol => symbol !== ticker), label);
-            const assessment = assessTrade({ transactions, netTransfers, prices, staleTickers, trade });
+            const assessment = assessTrade({ transactions, splits, netTransfers, prices, staleTickers, trade });
             if (!assessment.allowed) {
                 throw new HttpError(assessment.message, assessment.status);
             }

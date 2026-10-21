@@ -904,3 +904,25 @@ header a.header-pill.withdraw:hover {
   font-size: 13px;
   margin-bottom: 0;
 }
+
+.history-tabs {
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.history-tabs .nav-link {
+  color: #343a40;
+  font-weight: bold;
+}
+
+.history-tabs .nav-link.active {
+  color: #00a5a8;
+}
+
+.fill-detail {
+  display: block;
+  color: gray;
+  font-size: 12px;
+  font-weight: normal;
+}

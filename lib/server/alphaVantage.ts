@@ -2,7 +2,7 @@ import "server-only";
 import axios from "axios";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
-import { roundPrice } from "./account";
+import { roundPrice, type Dividend, type Split } from "./account";
 import { easternParts, easternTime, parseEasternTimestamp, sessionOn } from "../marketHours";
 import type { DailySeries, Quote, QuoteDelay } from "../types";
 
@@ -26,8 +26,10 @@ const waitForAlphaVantageSlot = () => {
 // "message", so the reply must not be used.
 export class NotEntitledError extends UpstreamError {}
 
-// Alpha Vantage answers rate limits and bad symbols with a 200 and a "Note"/"Information"/"Error Message" body
-const fetchAlphaVantage = async <T>(params: Record<string, string | number>, expectedKey: string): Promise<T> => {
+// Alpha Vantage answers rate limits and bad symbols with a 200 and a "Note"/"Information"/"Error Message" body. Its burst limit can
+// trip even with the spacing above during a long run of calls (such as syncing a portfolio's corporate actions), so a "Burst
+// pattern detected" reply is retried after a pause, up to twice.
+const fetchAlphaVantage = async <T>(params: Record<string, string | number>, expectedKey: string, attempt = 0): Promise<T> => {
     await waitForAlphaVantageSlot();
     const response = await axios.get(ALPHA_VANTAGE_URL, {
         params: { ...params, apikey: ALPHA_VANTAGE_API_KEY },
@@ -42,6 +44,10 @@ const fetchAlphaVantage = async <T>(params: Record<string, string | number>, exp
         // Alpha Vantage replies {} both for unknown symbols (when an entitlement is sent) and during its own price-data outages
         if (typeof data === "object" && data !== null && Object.keys(data).length === 0) {
             throw new UpstreamError(`Alpha Vantage returned no data for ${params.symbol ?? params.tickers}. The ticker may not exist, or Alpha Vantage may be having problems; try again shortly.`);
+        }
+        if (attempt < 2 && typeof data?.Information === "string" && /burst pattern/i.test(data.Information)) {
+            await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)));
+            return fetchAlphaVantage<T>(params, expectedKey, attempt + 1);
         }
         throw new UpstreamError(data?.["Error Message"] || data?.Note || data?.Information || `Unexpected response from Alpha Vantage: ${JSON.stringify(data).slice(0, 200)}`);
     }
@@ -255,4 +261,28 @@ export const fetchUsMarketOpen = async (): Promise<boolean> => {
     const us = markets.find(({ market_type, region }) => market_type === "Equity" && region === "United States");
     if (!us) throw new UpstreamError("Alpha Vantage's market status has no U.S. equity market");
     return us.current_status.toLowerCase() === "open";
+};
+
+interface SplitsReply {
+    data: { effective_date: string; split_factor: string }[];
+}
+interface DividendsReply {
+    data: { ex_dividend_date: string; payment_date: string; amount: string }[];
+}
+const isDate = (value: string | undefined): value is string => /^\d{4}-\d{2}-\d{2}$/.test(value ?? "");
+
+// A ticker's split and dividend history (Alpha Vantage SPLITS and DIVIDENDS; an unknown ticker has none)
+export const fetchCorporateActions = async (ticker: string): Promise<{ splits: Split[]; dividends: Dividend[] }> => {
+    const [splits, dividends] = await Promise.all([
+        fetchAlphaVantage<SplitsReply>({ function: "SPLITS", symbol: ticker }, "data"),
+        fetchAlphaVantage<DividendsReply>({ function: "DIVIDENDS", symbol: ticker }, "data")
+    ]);
+    return {
+        splits: splits.data
+            .filter(row => isDate(row.effective_date) && parseFloat(row.split_factor) > 0)
+            .map(row => ({ ticker, exDate: row.effective_date, factor: parseFloat(row.split_factor) })),
+        dividends: dividends.data
+            .filter(row => isDate(row.ex_dividend_date) && parseFloat(row.amount) > 0)
+            .map(row => ({ ticker, exDate: row.ex_dividend_date, paymentDate: isDate(row.payment_date) ? row.payment_date : null, amount: parseFloat(row.amount) }))
+    };
 };

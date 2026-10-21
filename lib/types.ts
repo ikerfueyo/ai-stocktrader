@@ -42,14 +42,19 @@ export interface Quote {
     delay: QuoteDelay;
 }
 
-// A cash_transfers row as the API returns it
-export interface TransferRow {
+export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT";
+
+// A cash_activity row as the API returns it: a deposit or withdrawal (method is the payment method's label), or a dividend received
+// on a long or paid on a short (method describes it; ticker and reference, the ex-dividend date, identify it)
+export interface CashActivityRow {
     id: number;
     user_id: string;
     date: string;
-    type: TransferType;
+    type: CashActivityType;
     method: string;
     amount: string;
+    ticker: string | null;
+    reference: string | null;
 }
 
 // An open position: quantity is signed (negative for a short), avgCost is the average cost per share

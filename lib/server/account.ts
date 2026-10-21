@@ -1,15 +1,44 @@
 // Account math: positions and cash from the trade history, the account's value at current prices, short collateral,
 // and which trades and withdrawals are allowed. Kept apart from the route handlers and lib/server/portfolio.ts (which connect
 // to Postgres) so it can be unit tested.
+import { easternParts } from "../marketHours";
 import type { AccountValuation, FillPolicy, MarginStatus, Position, Quote, TradeType } from "../types";
 
-// A trade as it's replayed: a transactions row (pg returns DECIMAL/NUMERIC columns as strings) or a new trade (numbers)
+// A trade as it's replayed: a transactions row (pg returns DECIMAL/NUMERIC columns as strings) or a new trade (numbers).
+// A trade without a date is a new one, happening now.
 export interface Trade {
     ticker: string;
     type: TradeType | string;
     price: string | number;
     quantity: string | number;
     total: string | number;
+    date?: string | Date;
+}
+
+// A stock split: from exDate ("YYYY-MM-DD", Eastern), each share becomes factor shares (below 1 for a reverse split)
+export interface Split {
+    ticker: string;
+    exDate: string;
+    factor: number;
+}
+
+// A cash dividend per share, owed to whoever holds the stock at the open on exDate (longs receive it, shorts pay it), paid on
+// paymentDate (exDate when Alpha Vantage doesn't give one)
+export interface Dividend {
+    ticker: string;
+    exDate: string;
+    paymentDate: string | null;
+    amount: number;
+}
+
+// A dividend to post to the cash ledger: received on a long (DIVIDEND_IN) or charged to a short (DIVIDEND_OUT)
+export interface DividendPosting {
+    type: "DIVIDEND_IN" | "DIVIDEND_OUT";
+    ticker: string;
+    exDate: string;
+    shares: number;
+    perShare: number;
+    total: number;
 }
 
 // A trade planned by planBuyIn, at the current ask (covers) or bid (sales)
@@ -62,14 +91,35 @@ export const fillPrice = (type: TradeType, quote: Pick<Quote, "price" | "bid" | 
 
 export const formatCurrency = (amount: number): string => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
 
+const tradeDay = (date: string | Date): string => easternParts(new Date(date)).dateKey;
+
 // Net transactions (oldest first) into one position per ticker, using average cost, and total their cash flow.
 // quantity is signed: sells past zero open a short (negative quantity).
 // cash is a plain ledger: every sell credits its total (including a short sale's proceeds) and every buy debits it
-// (including a cover). Add net deposits to get the account's total cash.
-export const computePositions = (transactions: Trade[]): { positions: Position[]; cash: number } => {
+// (including a cover). Add net cash activity (deposits, withdrawals, dividends) to get the account's total cash.
+// Splits are applied in date order, before the first trade on or after their date: a position's shares are multiplied by the
+// factor and its average cost divided by it, so its cost basis, value and cash don't change.
+// With before ("YYYY-MM-DD"), only trades dated before that day count, with the splits up to and including it: the position
+// held at that day's open (positionsAt). Otherwise every trade counts, with the splits up to asOf's date.
+export const computePositions = (transactions: Trade[], splits: Split[] = [], { asOf = new Date(), before }: { asOf?: Date; before?: string } = {}): { positions: Position[]; cash: number } => {
     const positions = new Map<string, Position>();
     let cash = 0;
-    for (const { ticker, type, price, quantity: storedQuantity, total } of transactions) {
+    const today = tradeDay(asOf);
+    const pending = splits.filter(({ exDate }) => exDate <= (before ?? today)).sort((a, b) => a.exDate.localeCompare(b.exDate));
+    let nextSplit = 0;
+    const applySplitsThrough = (day: string) => {
+        for (; nextSplit < pending.length && pending[nextSplit].exDate <= day; nextSplit++) {
+            const { ticker, factor } = pending[nextSplit];
+            const position = positions.get(ticker.toUpperCase());
+            if (!position || position.quantity === 0 || !(factor > 0)) continue;
+            position.quantity = roundShares(position.quantity * factor);
+            position.avgCost = position.avgCost / factor;
+        }
+    };
+    for (const { ticker, type, price, quantity: storedQuantity, total, date } of transactions) {
+        const day = date ? tradeDay(date) : today;
+        if (before !== undefined && day >= before) continue;
+        applySplitsThrough(day);
         const symbol = ticker.toUpperCase();
         const position = positions.get(symbol) ?? { ticker: symbol, quantity: 0, avgCost: 0 };
         const tradePrice = parseFloat(String(price));
@@ -92,7 +142,35 @@ export const computePositions = (transactions: Trade[]): { positions: Position[]
         }
         positions.set(symbol, position);
     }
+    applySplitsThrough(before ?? today);
     return { positions: [...positions.values()].filter(position => position.quantity !== 0), cash };
+};
+
+// The positions held at the open of a day ("YYYY-MM-DD"): trades before it, splits through it
+export const positionsAt = (transactions: Trade[], splits: Split[], day: string): Position[] => computePositions(transactions, splits, { before: day }).positions;
+
+// The dividends to post: each one whose payment date has come (by asOf), on a ticker held long or short at its ex-date's open,
+// that isn't already posted (posted holds "TICKER|exDate" keys). Shares are split-adjusted to the ex-date.
+export const planDividends = ({ transactions, splits, dividends, posted, asOf = new Date() }: {
+    transactions: Trade[];
+    splits: Split[];
+    dividends: Dividend[];
+    posted: Set<string>;
+    asOf?: Date;
+}): DividendPosting[] => {
+    const today = tradeDay(asOf);
+    const postings: DividendPosting[] = [];
+    for (const { ticker, exDate, paymentDate, amount } of dividends) {
+        const symbol = ticker.toUpperCase();
+        if ((paymentDate ?? exDate) > today || posted.has(`${symbol}|${exDate}`) || !(amount > 0)) continue;
+        const trades = transactions.filter(trade => trade.ticker.toUpperCase() === symbol);
+        const held = positionsAt(trades, splits, exDate).find(position => position.ticker === symbol)?.quantity ?? 0;
+        if (held === 0) continue;
+        const total = roundCents(Math.abs(held) * amount);
+        if (total <= 0) continue;
+        postings.push({ type: held > 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT", ticker: symbol, exDate, shares: Math.abs(held), perShare: amount, total });
+    }
+    return postings;
 };
 
 // Unrounded totals behind valueAccount. A position missing from prices is valued at its average cost.
@@ -168,19 +246,20 @@ const unpricedResult = (tickers: string[]): Assessment =>
 // Anything that opens or adds to a position (including the new side of a flip) must leave no collateral shortfall, judged by
 // replaying the history with the trade added, with the traded ticker at the trade price and the others at current prices.
 // So a buy needs its cost in available cash, and a new short needs 50% of its value (its proceeds cover the other 100%).
-export const assessTrade = ({ transactions, netTransfers = 0, prices, staleTickers = [], trade }: {
+export const assessTrade = ({ transactions, splits = [], netTransfers = 0, prices, staleTickers = [], trade }: {
     transactions: Trade[];
+    splits?: Split[];
     netTransfers?: number;
     prices: Prices;
     staleTickers?: string[];
     trade: Trade;
 }): Assessment => {
     const symbol = trade.ticker.toUpperCase();
-    const before = computePositions(transactions);
+    const before = computePositions(transactions, splits);
     if (reducesPosition({ positions: before.positions, trade })) {
         return { allowed: true };
     }
-    const after = computePositions([...transactions, trade]);
+    const after = computePositions([...transactions, trade], splits);
     const tradePrices = { ...prices, [symbol]: parseFloat(String(trade.price)) };
     const stale = staleTickers.filter(ticker => ticker !== symbol);
     const unpriced = unpricedShorts(after.positions, tradePrices, stale);

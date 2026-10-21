@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { roundCents, computePositions, valueAccount, assessTrade, assessWithdrawal, planBuyIn, fillPrice, type PlannedTrade, type Prices, type Trade } from "./account";
+import { roundCents, computePositions, valueAccount, assessTrade, assessWithdrawal, planBuyIn, fillPrice, planDividends, positionsAt, type PlannedTrade, type Prices, type Trade } from "./account";
 
 // A trade as pg returns it: NUMERIC and DECIMAL columns come back as strings, and total is rounded to cents
 const trade = (type: "BUY" | "SELL", ticker: string, price: number, quantity: number): Trade => ({
@@ -584,5 +584,95 @@ describe("Market orders fill at the ask (buys) and the bid (sells)", () => {
         assert.equal(trades[0].fillPolicy, "ASK");
         const after = account([...shorted, ...trades.map(asStored)], { BBB: 120 }, 500);
         assert.equal(after.marginStatus, "ok");
+    });
+});
+
+// A trade on a given day, at 11:00 Eastern
+const on = (day: string, stored: Trade): Trade => ({ ...stored, date: `${day}T15:00:00Z` });
+
+describe("Splits", () => {
+    const split = { ticker: "NVDA", exDate: "2024-06-10", factor: 10 };
+    const asOf = new Date("2024-07-01T15:00:00Z");
+
+    test("a split multiplies shares and divides the average cost, so cost basis and cash don't change", () => {
+        const { positions, cash } = computePositions([on("2024-05-01", buy("NVDA", 900, 10))], [split], { asOf });
+        assert.equal(positions[0].quantity, 100);
+        assertCents(positions[0].avgCost, 90);
+        assertCents(cash, -9000);
+    });
+
+    test("a sale after the split is of post-split shares, and doesn't flip to a short", () => {
+        const trades = [on("2024-05-01", buy("NVDA", 900, 10)), on("2024-06-11", sell("NVDA", 120, 100))];
+        assert.deepEqual(computePositions(trades, [split], { asOf }).positions, []);
+    });
+
+    test("trades on or after the split date are already in post-split shares", () => {
+        const { positions } = computePositions([on("2024-06-10", buy("NVDA", 120, 5))], [split], { asOf });
+        assert.equal(positions[0].quantity, 5);
+    });
+
+    test("a split doesn't apply before its date, or to positions closed before it", () => {
+        assert.equal(computePositions([on("2024-05-01", buy("NVDA", 900, 10))], [split], { asOf: new Date("2024-06-07T15:00:00Z") }).positions[0].quantity, 10);
+        const closed = [on("2024-05-01", buy("NVDA", 900, 10)), on("2024-05-02", sell("NVDA", 910, 10)), on("2024-06-12", buy("NVDA", 120, 3))];
+        assert.equal(computePositions(closed, [split], { asOf }).positions[0].quantity, 3);
+    });
+
+    test("a short is split too, and a reverse split works the same way", () => {
+        const shorted = computePositions([on("2024-05-01", sell("NVDA", 900, 10))], [split], { asOf }).positions[0];
+        assert.equal(shorted.quantity, -100);
+        assertCents(shorted.avgCost, 90);
+        const reverse = computePositions([on("2024-05-01", buy("XYZ", 2, 1000))], [{ ticker: "XYZ", exDate: "2024-06-03", factor: 0.1 }], { asOf }).positions[0];
+        assert.equal(reverse.quantity, 100);
+        assertCents(reverse.avgCost, 20);
+    });
+
+    test("a split never changes equity at split-adjusted prices", () => {
+        const trades = [on("2024-05-01", buy("NVDA", 900, 10)), on("2024-05-01", sell("AMD", 150, 20))];
+        const before = computePositions(trades, [], { asOf });
+        const after = computePositions(trades, [split], { asOf });
+        const equityBefore = valueAccount({ positions: before.positions, totalCash: roundCents(before.cash + 20000), prices: { NVDA: 1200, AMD: 160 } }).equity;
+        const equityAfter = valueAccount({ positions: after.positions, totalCash: roundCents(after.cash + 20000), prices: { NVDA: 120, AMD: 160 } }).equity;
+        assert.equal(equityAfter, equityBefore);
+    });
+
+    test("a new (undated) trade after a split is in post-split shares", () => {
+        const result = assessTrade({ transactions: [on("2024-05-01", buy("NVDA", 900, 10))], splits: [split], netTransfers: 9000, prices: {}, trade: { type: "SELL", ticker: "NVDA", price: 120, quantity: 100, total: 12000 } });
+        assert.equal(result.allowed, true);
+    });
+});
+
+describe("Dividends", () => {
+    const dividend = { ticker: "AAPL", exDate: "2026-08-10", paymentDate: "2026-08-13", amount: 0.27 };
+    const asOf = new Date("2026-08-20T15:00:00Z");
+    const plan = (trades: Trade[], options: { posted?: string[]; asOf?: Date } = {}) =>
+        planDividends({ transactions: trades, splits: [], dividends: [dividend], posted: new Set(options.posted ?? []), asOf: options.asOf ?? asOf });
+
+    test("a long held at the ex-date's open receives it", () => {
+        assert.deepEqual(plan([on("2026-08-07", buy("AAPL", 230, 10))]), [{ type: "DIVIDEND_IN", ticker: "AAPL", exDate: "2026-08-10", shares: 10, perShare: 0.27, total: 2.7 }]);
+    });
+
+    test("a short pays it", () => {
+        const [posting] = plan([on("2026-08-07", sell("AAPL", 230, 10))]);
+        assert.equal(posting.type, "DIVIDEND_OUT");
+        assert.equal(posting.total, 2.7);
+    });
+
+    test("buying on the ex-date, or selling before it, gets nothing", () => {
+        assert.deepEqual(plan([on("2026-08-10", buy("AAPL", 230, 10))]), []);
+        assert.deepEqual(plan([on("2026-08-03", buy("AAPL", 230, 10)), on("2026-08-07", sell("AAPL", 231, 10))]), []);
+    });
+
+    test("selling on the ex-date still gets it", () => {
+        assert.equal(plan([on("2026-08-03", buy("AAPL", 230, 10)), on("2026-08-10", sell("AAPL", 229, 10))]).length, 1);
+    });
+
+    test("isn't posted before its payment date, or twice", () => {
+        assert.deepEqual(plan([on("2026-08-07", buy("AAPL", 230, 10))], { asOf: new Date("2026-08-12T15:00:00Z") }), []);
+        assert.deepEqual(plan([on("2026-08-07", buy("AAPL", 230, 10))], { posted: ["AAPL|2026-08-10"] }), []);
+    });
+
+    test("positionsAt uses split-adjusted shares", () => {
+        const positions = positionsAt([on("2024-05-01", buy("NVDA", 900, 10))], [{ ticker: "NVDA", exDate: "2024-06-10", factor: 10 }], "2024-06-11");
+        assert.equal(positions[0].quantity, 100);
     });
 });

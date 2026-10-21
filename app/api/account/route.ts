@@ -3,13 +3,14 @@ import pool from "@/lib/server/db";
 import { withUser } from "@/lib/server/errors";
 import { fetchPrices } from "@/lib/server/alphaVantage";
 import { valueAccount } from "@/lib/server/account";
-import { enforceCollateral, getAccount, withAccountLock } from "@/lib/server/portfolio";
+import { getAccount, updateAccount, withAccountLock } from "@/lib/server/portfolio";
 import type { Account, TransactionRow } from "@/lib/types";
 
 // Get total, available and restricted cash, collateral status, equity and unrealized P&L, plus the past week's buy-in trades
-// (Alpha Vantage API, one call per position, shared with /api/portfolio by the price cache). Runs the collateral buy-in check first.
+// (Alpha Vantage API, one call per position, shared with /api/portfolio by the price cache). Posts paid dividends and runs the
+// collateral buy-in check first.
 export const GET = withUser(async (request, context, userId) => {
-    await withAccountLock(userId, db => enforceCollateral(userId, "GET /api/account", db));
+    await withAccountLock(userId, db => updateAccount(userId, "GET /api/account", db));
     const { positions, totalCash } = await getAccount(userId);
     const { prices, staleTickers } = await fetchPrices(positions.map(({ ticker }) => ticker), "GET /api/account");
     const { rows: liquidations } = await pool.query<TransactionRow>(

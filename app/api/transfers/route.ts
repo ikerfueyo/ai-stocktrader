@@ -3,8 +3,8 @@ import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { fetchPrices } from "@/lib/server/alphaVantage";
 import { assessWithdrawal, roundCents } from "@/lib/server/account";
-import { getAccount, shortTickers, withAccountLock, type Db } from "@/lib/server/portfolio";
-import type { TransferRequest, TransferRow } from "@/lib/types";
+import { CASH_ACTIVITY_COLUMNS, getAccount, shortTickers, withAccountLock, type Db } from "@/lib/server/portfolio";
+import type { CashActivityRow, TransferRequest } from "@/lib/types";
 
 // Create a mock deposit or withdrawal. method is a display label only, such as "Visa •••• 4242".
 export const POST = withUser(async (request, context, userId) => {
@@ -17,12 +17,12 @@ export const POST = withUser(async (request, context, userId) => {
         throw new HttpError("A payment method is required", 400);
     }
     const amount = roundCents(Number(requestedAmount));
-    // The upper limit is what amount's DECIMAL(10, 2) column holds
+    // The upper limit is what amount held as DECIMAL(10, 2); the column is DECIMAL(14, 2) now, so it's a sanity limit
     if (!(amount > 0 && amount <= 99999999.99)) {
         throw new HttpError("Amount must be between $0.01 and $99,999,999.99", 400);
     }
-    const insert = (db: Db = pool) => db.query<TransferRow>(
-        'INSERT INTO cash_transfers (user_id, "type", method, amount) VALUES($1, $2, $3, $4) RETURNING *',
+    const insert = (db: Db = pool) => db.query<CashActivityRow>(
+        `INSERT INTO cash_activity (user_id, "type", method, amount) VALUES($1, $2, $3, $4) RETURNING ${CASH_ACTIVITY_COLUMNS}`,
         [userId, type, method.trim().slice(0, 255), amount]
     );
     // A deposit is always allowed and needs no lock: it can only add cash, such as to meet a margin call before the next buy-in check
@@ -42,8 +42,8 @@ export const POST = withUser(async (request, context, userId) => {
     return NextResponse.json(newTransfer.rows[0]);
 });
 
-// Get all of the user's deposits and withdrawals
+// Get all of the user's cash activity, newest first: deposits, withdrawals and dividends
 export const GET = withUser(async (request, context, userId) => {
-    const allTransfers = await pool.query<TransferRow>('SELECT * FROM cash_transfers WHERE user_id = $1 ORDER BY "date" DESC, id DESC', [userId]);
+    const allTransfers = await pool.query<CashActivityRow>(`SELECT ${CASH_ACTIVITY_COLUMNS} FROM cash_activity WHERE user_id = $1 ORDER BY "date" DESC, id DESC`, [userId]);
     return NextResponse.json(allTransfers.rows);
 });
