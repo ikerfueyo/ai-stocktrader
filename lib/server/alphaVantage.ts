@@ -99,6 +99,14 @@ export const fetchTickerNews = async (ticker: string): Promise<NewsItem[]> => {
     return news;
 };
 
+// Daily closes by date for the performance history, cached for 12 hours per ticker and size (compact is about the last 100 sessions)
+const closesCache = singleton("dailyClosesCache", () => new Map<string, CacheEntry<Record<string, number>>>());
+export const fetchDailyCloses = (ticker: string, outputsize: "compact" | "full") =>
+    cachePromise(closesCache, `${ticker}|${outputsize}`, 12 * 3600000, async () => {
+        const series = (await fetchDailySeries(ticker, outputsize))["Time Series (Daily)"];
+        return Object.fromEntries(Object.entries(series).map(([date, bar]) => [date, parseFloat(bar["4. close"])]));
+    });
+
 export const fetchDailySeries = (ticker: string, outputsize: "compact" | "full") => fetchAlphaVantage<DailySeries>({ function: "TIME_SERIES_DAILY", symbol: ticker, outputsize, ...(ALPHA_VANTAGE_ENTITLEMENT && { entitlement: ALPHA_VANTAGE_ENTITLEMENT }) }, "Time Series (Daily)");
 
 // Quotes are cached for 60s, so the header's /api/account, the Portfolio page's /api/portfolio and a trade share one Alpha Vantage

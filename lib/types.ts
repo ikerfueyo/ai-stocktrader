@@ -92,9 +92,10 @@ export interface Position {
     avgCost: number;
 }
 
-// GET /api/portfolio: a position with its current price and bid/ask, or null and the reason it couldn't be fetched
+// GET /api/portfolio: a position with its current price, the previous close and bid/ask, or null and the reason it couldn't be fetched
 export interface PortfolioPosition extends Position {
     price: number | null;
+    previousClose: number | null;
     bid: number | null;
     ask: number | null;
     error: string | null;
@@ -121,6 +122,9 @@ export interface AccountValuation {
 
 // GET /api/account
 export interface Account extends AccountValuation {
+    // Gains and losses booked on closed shares (average cost), and dividends received less dividends paid on shorts
+    realizedPnl: number;
+    netDividends: number;
     positions: { ticker: string; quantity: number }[];
     // The past week's automatic buy-in trades
     liquidations: TransactionRow[];
@@ -128,6 +132,25 @@ export interface Account extends AccountValuation {
 
 export type TickerVerdict = "BUY" | "HOLD" | "SELL";
 export type PositionVerdict = "HOLD" | "SELL" | "COVER";
+
+// GET /api/transactions: a trade with the P&L it realized (null if it only opened or added to a position)
+export interface TradeHistoryRow extends TransactionRow {
+    realized_pnl: number | null;
+}
+
+export type HistoryRange = "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
+
+// GET /api/portfolio/history: daily equity, net deposits, the time-weighted return and SPY's price return over the range (both from
+// its first day, as fractions), and the range's totals. missing lists tickers whose closes couldn't be fetched (valued at cost).
+export interface PortfolioHistory {
+    range: HistoryRange;
+    // twr is null on days that started with zero or negative equity, when the day's return isn't defined
+    points: { date: string; equity: number; netDeposits: number; twr: number | null; benchmark: number | null }[];
+    twr: number | null;
+    benchmarkReturn: number | null;
+    benchmark: string;
+    missing: string[];
+}
 
 // GET /api/analysis/[ticker]
 export interface TickerAnalysis {

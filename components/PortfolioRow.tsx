@@ -30,7 +30,7 @@ interface PortfolioRowProps {
 }
 
 const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueued = () => {} }: PortfolioRowProps) => {
-    const { ticker, quantity, avgCost, price, bid, ask, error } = position;
+    const { ticker, quantity, avgCost, price, previousClose, bid, ask, error } = position;
     const isLong = quantity > 0;
     const shares = Math.abs(quantity);
 
@@ -53,6 +53,8 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
     const { quantity: closeQuantity, total } = toOrder({ mode, value: stepperValue, price: tradePrice, maxShares: shares });
     // quantity is signed, so a short gains when the price falls
     const gain = hasPrice ? (price - avgCost) * quantity : null;
+    const dayChange = hasPrice && previousClose !== null ? (price - previousClose) * quantity : null;
+    const dayPercent = hasPrice && previousClose ? ((price - previousClose) / previousClose) * 100 * Math.sign(quantity) : null;
     const gainPercent = gain !== null ? (gain / (shares * avgCost)) * 100 : null;
 
     const onModeChange = (nextMode: TradeMode) => {
@@ -125,6 +127,9 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
                 <td>{formatCurrency(avgCost)}</td>
                 <td title={error ?? undefined}>{hasPrice ? formatCurrency(price) : "—"}</td>
                 <td>{hasPrice ? formatCurrency(shares * price) : "—"}</td>
+                <td className={`price-change ${(dayChange ?? 0) >= 0 ? "positive" : "negative"}`}>
+                    {dayChange !== null && dayPercent !== null ? `${formatSigned(dayChange)} (${dayPercent >= 0 ? "+" : ""}${dayPercent.toFixed(2)}%)` : "—"}
+                </td>
                 <td className={`price-change ${(gain ?? 0) >= 0 ? "positive" : "negative"}`}>
                     {gain !== null && gainPercent !== null ? `${formatSigned(gain)} (${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(2)}%)` : "—"}
                 </td>
@@ -151,7 +156,7 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
             </tr>
             {showAnalysis && (
                 <tr className="portfolio-analysis-row">
-                    <td colSpan={8}>
+                    <td colSpan={9}>
                         <div className="analysis-box">
                             {analysisError ? <p className="text-danger">Couldn&apos;t load AI analysis: {analysisError}</p>
                                 : analysis ? (

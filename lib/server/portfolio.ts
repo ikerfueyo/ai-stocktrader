@@ -30,20 +30,26 @@ export const getPositions = async (userId: string, ticker?: string, db: Db = poo
     return (await replay(rows)).positions;
 };
 
-// A user's trade history, the traded tickers' splits and dividends, open positions (split-adjusted) and total cash (the trades'
-// cash ledger plus net cash activity: deposits and dividends received, less withdrawals and dividends paid on shorts). A client runs
+// A user's trade history, the traded tickers' splits and dividends, open positions (split-adjusted), total cash (the trades'
+// cash ledger plus net cash activity: deposits and dividends received, less withdrawals and dividends paid on shorts), realized P&L
+// (in total and per transaction, by index) and net dividends. A client runs
 // its queries one at a time, so they're only parallel on the pool.
 export const getAccount = async (userId: string, db: Db = pool) => {
-    const [{ rows: transactions }, { rows: [{ net }] }] = await Promise.all([
+    const [{ rows: transactions }, { rows: [{ net, dividends: netDividends }] }] = await Promise.all([
         db.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 ORDER BY "date", id', [userId]),
-        db.query<{ net: string }>(
-            `SELECT COALESCE(SUM(CASE WHEN "type" IN ('DEPOSIT', 'DIVIDEND_IN') THEN amount ELSE -amount END), 0) AS net FROM cash_activity WHERE user_id = $1`,
+        db.query<{ net: string; dividends: string }>(
+            `SELECT COALESCE(SUM(CASE WHEN "type" IN ('DEPOSIT', 'DIVIDEND_IN') THEN amount ELSE -amount END), 0) AS net,
+                    COALESCE(SUM(CASE "type" WHEN 'DIVIDEND_IN' THEN amount WHEN 'DIVIDEND_OUT' THEN -amount ELSE 0 END), 0) AS dividends
+             FROM cash_activity WHERE user_id = $1`,
             [userId]
         )
     ]);
     const netTransfers = parseFloat(net);
-    const { positions, cash, splits, dividends } = await replay(transactions);
-    return { transactions, splits, dividends, netTransfers, positions, totalCash: roundCents(cash + netTransfers) };
+    const { positions, cash, splits, dividends, realizedPnl, realized } = await replay(transactions);
+    return {
+        transactions, splits, dividends, netTransfers, positions, totalCash: roundCents(cash + netTransfers),
+        realizedPnl, realized, netDividends: parseFloat(netDividends)
+    };
 };
 
 // Runs fn in a database transaction on db, which must be a client (such as withAccountLock's)

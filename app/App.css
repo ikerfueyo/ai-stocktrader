@@ -961,3 +961,45 @@ header a.header-pill.withdraw:hover {
   color: #343a40;
   margin-bottom: 6px;
 }
+
+.performance {
+  max-width: 900px;
+  margin: 30px auto 0;
+}
+
+.performance-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.performance-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.performance .account-label {
+  color: gray;
+}
+
+.performance .account-value {
+  color: #343a40;
+}
+
+.portfolio-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 6px;
+  font-size: 14px;
+  color: gray;
+}
+
+.portfolio-stats strong {
+  color: #343a40;
+}
