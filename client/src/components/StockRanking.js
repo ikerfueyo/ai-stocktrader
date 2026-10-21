@@ -1,7 +1,7 @@
 import React, { Fragment } from "react";
 import { Link } from "react-router-dom";
 
-const StockRanking = ({ title = "", stocks = [] }) => {
+const StockRanking = ({ title = "", stocks = [], emptyText = "" }) => {
     return (
         <Fragment>
             <div className="ranking-container">
@@ -18,6 +18,7 @@ const StockRanking = ({ title = "", stocks = [] }) => {
                             ))}
                     </tbody>
                 </table>
+                {stocks.length === 0 && <p className="ranking-empty">{emptyText}</p>}
             </div>
         </Fragment>
     )

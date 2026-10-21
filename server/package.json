@@ -3,13 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test",
     "start": "node --watch index.js"
   },
   "author": "ikerfueyo",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@clerk/express": "^2.1.76",
     "axios": "^1.8.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

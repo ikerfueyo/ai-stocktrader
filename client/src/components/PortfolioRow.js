@@ -3,10 +3,8 @@ import { Link } from "react-router-dom";
 import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
 import TradeModeToggle from "./TradeModeToggle";
-import { convertValue, formatShares, roundCents, toOrder } from "../utils/orders";
-
-const formatCurrency = (amount) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
-const formatSigned = (amount) => `${amount >= 0 ? "+" : "-"}${formatCurrency(Math.abs(amount))}`;
+import { useAccount } from "../context/AccountContext";
+import { convertValue, formatCurrency, formatShares, formatSigned, roundCents, toOrder } from "../utils/orders";
 
 const PortfolioRow = ({ position, onTrade, setStatus }) => {
     const { ticker, quantity, avgCost, price, error } = position;
@@ -21,6 +19,7 @@ const PortfolioRow = ({ position, onTrade, setStatus }) => {
     const [analysis, setAnalysis] = useState(null);
     const [analysisError, setAnalysisError] = useState(null);
     const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+    const { refreshAccount } = useAccount();
 
     const hasPrice = price !== null;
     const tradePrice = hasPrice ? roundCents(price) : null;
@@ -49,11 +48,13 @@ const PortfolioRow = ({ position, onTrade, setStatus }) => {
         try {
             const date = new Date().toISOString();
             const transaction = { date, type, ticker, price: tradePrice, quantity: closeQuantity, total };
-            await axios.post(`/trading/${ticker}`, { transaction });
+            // close: the server refuses (rather than flipping the position) if a buy-in has shrunk it since this page loaded
+            await axios.post(`/trading/${ticker}`, { transaction, close: true });
             setStatus({ ok: true, message: `${type} ${formatShares(closeQuantity)} ${ticker} for ${formatCurrency(total)}` });
             setMode("shares");
             setTradeValue(1);
             onTrade(ticker, isLong ? -closeQuantity : closeQuantity);
+            refreshAccount();
         } catch (error) {
             console.error(error.message);
             setStatus({ ok: false, message: `Couldn't ${action} ${ticker}: ${error.response?.data?.error ?? error.message}` });

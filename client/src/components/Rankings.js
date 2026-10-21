@@ -28,10 +28,10 @@ const Rankings = () => {
         <Fragment>
             <div className="rankings-container">
                 <div>
-                    {rankings ? <StockRanking title="Buy Top 5 by AI" stocks={rankings.buy} /> : <p>Loading...</p>}
+                    {rankings ? <StockRanking title="Buy Top 5 by AI" stocks={rankings.buy} emptyText="No stocks have a buy verdict right now." /> : <p>Loading...</p>}
                 </div>
                 <div>
-                    {rankings ? <StockRanking title="Sell Top 5 by AI" stocks={rankings.sell} /> : <p>Loading...</p>}
+                    {rankings ? <StockRanking title="Sell Top 5 by AI" stocks={rankings.sell} emptyText="No stocks have a sell verdict right now." /> : <p>Loading...</p>}
                 </div>
             </div>
         </Fragment>

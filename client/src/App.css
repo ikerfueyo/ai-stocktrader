@@ -236,6 +236,11 @@
   text-decoration: none;
 }
 
+.ranking-empty {
+  text-align: center;
+  color: #6c757d;
+}
+
 .ranking-container h1 {
   text-align: center;
   font-weight: bold;
@@ -281,7 +286,7 @@ header .logo {
   vertical-align: middle;
 }
 
-/* Logo and search on the left, page links on the right */
+/* Logo and search on the left, account figures in the center, page links on the right */
 .header-container {
   display: flex;
   justify-content: space-between;
@@ -304,6 +309,103 @@ header .logo {
 .header-nav {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  row-gap: 8px;
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.account-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+}
+
+.account-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #adb5bd;
+}
+
+.account-value {
+  font-size: 18px;
+  font-weight: bold;
+  color: white;
+  white-space: nowrap;
+}
+
+/* The header is dark, so P&L uses lighter shades of the usual green and red */
+.account-value.price-change {
+  vertical-align: baseline;
+  margin-left: 0;
+}
+
+.account-value.price-change.positive {
+  color: #4cd964;
+}
+
+.account-value.price-change.negative {
+  color: #ff6b6b;
+}
+
+.account-partial {
+  margin-left: 2px;
+  color: #adb5bd;
+  cursor: help;
+}
+
+.account-error {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+header a.header-pill {
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: bold;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+header a.header-pill.deposit {
+  background-color: aqua;
+  color: #343a40;
+}
+
+header a.header-pill.deposit:hover {
+  background-color: #00ced1;
+  color: white;
+}
+
+header a.header-pill.withdraw {
+  border: 2px solid aqua;
+  padding: 2px 12px;
+  color: aqua;
+}
+
+header a.header-pill.withdraw:hover {
+  background-color: aqua;
+  color: #343a40;
+}
+
+/* Without room for all three regions on one row, the account figures get a row of their own under the others */
+@media (max-width: 1350px) {
+  .header-center {
+    order: 1;
+    flex-basis: 100%;
+    justify-content: center;
+  }
 }
 
 .search-bar-container.header-search {
@@ -318,7 +420,7 @@ header .logo {
 }
 
 /* Once the header wraps onto several rows, center each row instead of leaving them ragged on the left */
-@media (max-width: 800px) {
+@media (max-width: 1080px) {
   .header-container,
   .header-left {
     justify-content: center;
@@ -418,6 +520,11 @@ header .logo {
   font-weight: bold;
   text-align: center;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.analysis-verdict {
+  font-size: 20px;
+  text-transform: uppercase;
 }
 
 .portfolio-container {
@@ -523,4 +630,249 @@ header .logo {
 
 .portfolio-analysis-row .analysis-box p {
   margin-bottom: 0;
+}
+
+.transfer-container {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 0 16px 40px;
+  color: #343a40;
+}
+
+.transfer-title {
+  text-align: center;
+  font-weight: bold;
+  font-size: 36px;
+}
+
+.transfer-available {
+  text-align: center;
+  font-size: 18px;
+}
+
+.method-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.method-tile {
+  padding: 10px 14px;
+  border: 2px solid #343a40;
+  border-radius: 8px;
+  background-color: white;
+  color: #343a40;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.method-tile:hover {
+  background-color: #00ced1;
+  color: white;
+}
+
+.method-tile.active,
+.method-tile.active:hover {
+  background-color: #343a40;
+  color: aqua;
+}
+
+.transfer-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.transfer-row {
+  display: flex;
+  gap: 12px;
+}
+
+.transfer-row > .transfer-field {
+  flex: 1;
+}
+
+.transfer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.transfer-field-label {
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.card-brand {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: #343a40;
+  color: aqua;
+  font-size: 11px;
+}
+
+.transfer-wallet-note {
+  text-align: center;
+  color: gray;
+}
+
+.transfer-amount {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.transfer-amount .quantity-input {
+  width: 140px;
+}
+
+.amount-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.amount-chip {
+  padding: 4px 12px;
+  border: 2px solid #343a40;
+  border-radius: 999px;
+  background-color: white;
+  color: #343a40;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.amount-chip:hover:not(:disabled) {
+  background-color: #00ced1;
+  border-color: #00ced1;
+  color: white;
+}
+
+.amount-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.transfer-submit,
+.wallet-btn {
+  display: block;
+  width: 100%;
+}
+
+/* Black wallet buttons, like the real Apple Pay and Google Pay ones */
+.wallet-btn {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  background-color: black;
+  color: white;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.wallet-btn:hover:not(:disabled) {
+  background-color: #222;
+}
+
+.wallet-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mock-note {
+  margin-top: 20px;
+  text-align: center;
+  color: gray;
+  font-size: 13px;
+}
+
+/* Short collateral held back from Available, under its value in the header */
+.account-restricted {
+  font-size: 11px;
+  color: #adb5bd;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.transfer-restricted {
+  color: gray;
+  font-size: 15px;
+}
+
+/* Margin call and buy-in notices, full width under the header */
+.margin-banner {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 15px;
+  text-align: center;
+}
+
+.margin-banner.danger {
+  background-color: #f8d7da;
+  color: #721c24;
+  border-bottom: 2px solid #dc3545;
+}
+
+.margin-banner.warning {
+  background-color: #fff3cd;
+  color: #856404;
+  border-bottom: 2px solid #ffc107;
+}
+
+.margin-banner a {
+  color: inherit;
+  font-weight: bold;
+  text-decoration: underline;
+}
+
+.margin-banner-dismiss {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.liquidation-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: #ffc107;
+  color: #343a40;
+  font-size: 11px;
+}
+
+/* Shown on every route while signed out */
+.sign-in-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 24px 16px;
+  background-color: #343a40;
+}
+
+.sign-in-brand {
+  display: flex;
+  align-items: center;
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: white;
 }

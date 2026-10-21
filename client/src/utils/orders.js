@@ -29,3 +29,6 @@ export const convertValue = (toMode, value, price) => {
     if (!(tradePrice > 0)) return value;
     return toMode === "dollars" ? roundCents(value * tradePrice) : roundShares(value / tradePrice);
 };
+
+export const formatCurrency = (amount) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+export const formatSigned = (amount) => `${amount >= 0 ? "+" : "-"}${formatCurrency(Math.abs(amount))}`;

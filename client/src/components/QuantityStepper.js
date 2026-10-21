@@ -29,7 +29,7 @@ const QuantityStepper = ({ value, setValue, max = Infinity, decimals = 6, prefix
 
     return (
         <div className="quantity-container">
-            <button onClick={() => step(-1)} disabled={value <= 1}>-</button>
+            <button type="button" onClick={() => step(-1)} disabled={value <= 1}>-</button>
             <span className="quantity-field">
                 {prefix && <span className="quantity-prefix">{prefix}</span>}
                 <input type="text" inputMode="decimal" className={`quantity-input ${prefix ? "has-prefix" : ""}`}
@@ -38,7 +38,7 @@ const QuantityStepper = ({ value, setValue, max = Infinity, decimals = 6, prefix
                     onBlur={() => setDraft(null)}
                 />
             </span>
-            <button onClick={() => step(1)} disabled={value >= max}>+</button>
+            <button type="button" onClick={() => step(1)} disabled={value >= max}>+</button>
         </div>
     );
 };
