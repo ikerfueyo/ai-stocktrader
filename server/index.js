@@ -181,7 +181,8 @@ const toTickers = (list, limit) => (Array.isArray(list) ? list : [])
     .slice(0, limit);
 
 // A ticker's buy/hold/sell verdict and analysis, shared by the Trading page and the rankings (which only list tickers whose verdict
-// agrees with their side), so the two can't contradict each other. Cached so both see the same answer; the rankings extend it.
+// agrees with their side) and the Portfolio page (whose position verdict is derived from it), so they can't contradict each other.
+// Cached, with the news it was based on, so all of them see the same answer; the rankings extend it.
 const ANALYSIS_CACHE_MS = 30 * 60 * 1000;
 const VERDICTS = ["BUY", "HOLD", "SELL"];
 const analysisCache = new Map();
@@ -193,8 +194,36 @@ const analyzeTicker = (ticker) => cachePromise(analysisCache, ticker, ANALYSIS_C
     if (!VERDICTS.includes(verdict) || typeof analysis !== "string" || !analysis.trim()) {
         throw new UpstreamError("AI returned an incomplete analysis");
     }
-    return { verdict, analysis: analysis.trim() };
+    return { verdict, analysis: analysis.trim(), news };
 });
+
+// What a ticker's verdict means for an open position: a long is sold on SELL and held otherwise (there's no buying more from the
+// Portfolio page), and a short is covered on BUY and kept open otherwise
+const POSITION_VERDICTS = {
+    long: { BUY: "HOLD", HOLD: "HOLD", SELL: "SELL" },
+    short: { BUY: "COVER", HOLD: "HOLD", SELL: "HOLD" }
+};
+const positionAnalysisCache = new Map();
+
+// The Portfolio page's hold/sell (or hold/cover) verdict, taken from analyzeTicker, and a paragraph written for the position that
+// explains it. Cached by verdict too, so a refreshed ticker analysis with a new verdict gets a new paragraph.
+const analyzePosition = async (ticker, side) => {
+    const { verdict: tickerVerdict, news } = await analyzeTicker(ticker);
+    const verdict = POSITION_VERDICTS[side][tickerVerdict];
+    return cachePromise(positionAnalysisCache, `${ticker}:${side}:${verdict}`, ANALYSIS_CACHE_MS, async () => {
+        const position = side === "long" ? `The user owns shares of ${ticker}.` : `The user has a short position in ${ticker}.`;
+        const action = {
+            long: { HOLD: "hold their shares", SELL: "sell their shares" },
+            short: { HOLD: "keep their short position open", COVER: "cover their short position (buy the shares back)" }
+        }[side][verdict];
+        const prompt = `${position} Based on the news below, the recommendation is that the user should ${action}. Write a brief one-paragraph analysis explaining why, which must agree with that recommendation.`;
+        const analysis = await analyzeNews(news, prompt, { temperature: 0 });
+        if (!analysis) {
+            throw new UpstreamError("AI returned an empty analysis");
+        }
+        return { verdict, analysis };
+    });
+};
 
 // Rankings: the market news is grouped by the stocks it's about, the most bullish and most bearish stocks (by Alpha Vantage's
 // sentiment) go to the model, which shortlists up to RANKING_CANDIDATES per side, and each candidate is kept only if its own
@@ -427,7 +456,8 @@ app.get("/rankings", async(req, res) => {
 // Get the buy/hold/sell verdict and analysis of a stock from its news sentiment (Alpha Vantage + OpenAI APIs)
 app.get("/analysis/:ticker", async(req, res) => {
     try {
-        res.json(await analyzeTicker(req.params.ticker.toUpperCase()));
+        const { verdict, analysis } = await analyzeTicker(req.params.ticker.toUpperCase());
+        res.json({ verdict, analysis });
     } catch (error) {
         sendError(res, error);
     }
@@ -583,7 +613,8 @@ app.get("/transfers", async(req, res) => {
     }
 });
 
-// Get hold/sell (or hold/cover for shorts) analysis of an open position from its news sentiment (Alpha Vantage + OpenAI APIs)
+// Get the hold/sell (or hold/cover for shorts) verdict and analysis of an open position, derived from the ticker's own analysis
+// (Alpha Vantage + OpenAI APIs)
 app.get("/portfolio/:ticker/analysis", async(req, res) => {
     try {
         const ticker = req.params.ticker.toUpperCase();
@@ -591,12 +622,7 @@ app.get("/portfolio/:ticker/analysis", async(req, res) => {
         if (!position) {
             throw new UpstreamError(`No open position in ${ticker}`, 404);
         }
-        const news = await fetchTickerNews(ticker);
-        const prompt = position.quantity > 0
-            ? `The user owns shares of ${ticker}. Based on the news below, write a brief one-paragraph analysis on whether the user should hold or sell their shares of ${ticker}.`
-            : `The user has a short position in ${ticker}. Based on the news below, write a brief one-paragraph analysis on whether the user should keep their short position in ${ticker} open or cover it (buy it back).`;
-        const analysis = await analyzeNews(news, prompt);
-        res.json({ analysis });
+        res.json(await analyzePosition(ticker, position.quantity > 0 ? "long" : "short"));
     } catch (error) {
         sendError(res, error);
     }

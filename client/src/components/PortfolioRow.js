@@ -6,6 +6,8 @@ import TradeModeToggle from "./TradeModeToggle";
 import { useAccount } from "../context/AccountContext";
 import { convertValue, formatCurrency, formatShares, formatSigned, roundCents, toOrder } from "../utils/orders";
 
+const VERDICT_LABELS = { HOLD: "Hold", SELL: "Sell", COVER: "Cover" };
+
 const PortfolioRow = ({ position, onTrade, setStatus }) => {
     const { ticker, quantity, avgCost, price, error } = position;
     const isLong = quantity > 0;
@@ -72,7 +74,7 @@ const PortfolioRow = ({ position, onTrade, setStatus }) => {
         setAnalysisError(null);
         try {
             const response = await axios.get(`/portfolio/${ticker}/analysis`);
-            setAnalysis(response.data.analysis);
+            setAnalysis(response.data);
         } catch (error) {
             console.error(error.message);
             setAnalysisError(error.response?.data?.error ?? error.message);
@@ -120,7 +122,12 @@ const PortfolioRow = ({ position, onTrade, setStatus }) => {
                     <td colSpan={8}>
                         <div className="analysis-box">
                             {analysisError ? <p className="text-danger">Couldn't load AI analysis: {analysisError}</p>
-                                : analysis ? <p>{analysis}</p> : <p>Loading...</p>}
+                                : analysis ? (
+                                    <Fragment>
+                                        <p className="analysis-verdict">AI verdict: {VERDICT_LABELS[analysis.verdict]}</p>
+                                        <p>{analysis.analysis}</p>
+                                    </Fragment>
+                                ) : <p>Loading...</p>}
                         </div>
                     </td>
                 </tr>
