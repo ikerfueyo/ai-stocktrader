@@ -1,7 +1,7 @@
 // Account math: positions and cash from the trade history, the account's value at current prices, short collateral,
 // and which trades and withdrawals are allowed. Kept apart from the route handlers and lib/server/portfolio.ts (which connect
 // to Postgres) so it can be unit tested.
-import type { AccountValuation, MarginStatus, Position, TradeType } from "../types";
+import type { AccountValuation, FillPolicy, MarginStatus, Position, Quote, TradeType } from "../types";
 
 // A trade as it's replayed: a transactions row (pg returns DECIMAL/NUMERIC columns as strings) or a new trade (numbers)
 export interface Trade {
@@ -12,13 +12,14 @@ export interface Trade {
     total: string | number;
 }
 
-// A trade planned by planBuyIn, at a current price rounded to the cent
+// A trade planned by planBuyIn, at the current ask (covers) or bid (sales)
 export interface PlannedTrade {
     type: TradeType;
     ticker: string;
     price: number;
     quantity: number;
     total: number;
+    fillPolicy: FillPolicy;
 }
 
 // Current prices by ticker. A ticker can be missing when its price couldn't be fetched and there's no last known price.
@@ -47,6 +48,17 @@ export const roundShares = (shares: number): number => Math.round(shares * 1e6) 
 // Round up to 6 decimals, ignoring float noise such as 2.0000000000000004
 const ceilShares = (shares: number): number => Math.ceil(shares * 1e6 - 1e-6) / 1e6;
 export const roundCents = (amount: number): number => Math.round(amount * 100) / 100;
+// Prices are stored to 6 decimals; fills are kept to 4, as Alpha Vantage quotes them
+export const roundPrice = (price: number): number => Math.round(price * 1e4) / 1e4;
+
+// The price a market order fills at: buys at the ask and sells at the bid (quoted or simulated), or the last price when the quote
+// has no bid/ask
+export const fillPrice = (type: TradeType, quote: Pick<Quote, "price" | "bid" | "ask" | "spread">): { price: number; fillPolicy: FillPolicy } => {
+    const side = type === "BUY" ? quote.ask : quote.bid;
+    if (side === null || quote.spread === "none") return { price: roundPrice(quote.price), fillPolicy: "LAST" };
+    const simulated = quote.spread === "simulated";
+    return { price: roundPrice(side), fillPolicy: type === "BUY" ? (simulated ? "SIM_ASK" : "ASK") : (simulated ? "SIM_BID" : "BID") };
+};
 
 export const formatCurrency = (amount: number): string => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
 
@@ -211,20 +223,22 @@ export const assessWithdrawal = ({ positions, totalCash, prices, staleTickers = 
 // The automatic buy-in for an account whose total cash is below 130% of its short liability. Returns { trades, remainingDeficit }.
 // Covers the same fraction of every short, just enough to restore 150% (covering $V costs $V but releases $1.5V of requirement,
 // so it takes $2 of covers per $1 of shortfall). If even covering every short leaves negative cash, longs are sold pro rata
-// to clear it; whatever is still negative is remainingDeficit. Trades are at current prices rounded to the cent, with
-// shares rounded up. Nothing is planned while a short has no current price.
-export const planBuyIn = ({ positions, totalCash, prices, staleTickers = [] }: AccountState): { trades: PlannedTrade[]; remainingDeficit: number } => {
+// to clear it; whatever is still negative is remainingDeficit. Covers fill at the ask and sales at the bid when quotes has the
+// ticker (fillPrice), otherwise at the current price, with shares rounded up. Collateral is still measured at current prices.
+// Nothing is planned while a short has no current price.
+export const planBuyIn = ({ positions, totalCash, prices, staleTickers = [], quotes = {} }: AccountState & { quotes?: Record<string, Pick<Quote, "price" | "bid" | "ask" | "spread">> }): { trades: PlannedTrade[]; remainingDeficit: number } => {
     const none = { trades: [], remainingDeficit: 0 };
     const shorts = positions.filter(({ quantity }) => quantity < 0);
     if (shorts.length === 0 || unpricedShorts(positions, prices, staleTickers).length > 0) return none;
     const { shortLiability, shortfall } = measure({ positions, totalCash, prices });
     if (totalCash >= BUY_IN_RATE * shortLiability) return none;
 
+    const fillAt = (type: TradeType, ticker: string) => quotes[ticker] ? fillPrice(type, quotes[ticker]) : { price: roundPrice(prices[ticker]), fillPolicy: "LAST" as const };
     const tradeAt = (type: TradeType, ticker: string, shares: number): PlannedTrade => {
-        const price = roundCents(prices[ticker]);
-        return { type, ticker, price, quantity: shares, total: roundCents(shares * price) };
+        const { price, fillPolicy } = fillAt(type, ticker);
+        return { type, ticker, price, quantity: shares, total: roundCents(shares * price), fillPolicy };
     };
-    // Rounding prices and totals to the cent can leave the first estimate a little short, so retry with the remaining gap
+    // Rounding totals to the cent and paying the ask can leave the first estimate a little short, so retry with the remaining gap
     let coverValue = 2 * shortfall + 0.02;
     let covers: PlannedTrade[] = [];
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -246,7 +260,7 @@ export const planBuyIn = ({ positions, totalCash, prices, staleTickers = [] }: A
     let sales: PlannedTrade[] = [];
     if (coveredAll && cash < 0) {
         const longs = positions.filter(({ ticker, quantity }) => quantity > 0 && !staleTickers.includes(ticker) && prices[ticker] !== undefined);
-        const longValue = longs.reduce((sum, { ticker, quantity }) => sum + quantity * roundCents(prices[ticker]), 0);
+        const longValue = longs.reduce((sum, { ticker, quantity }) => sum + quantity * fillAt("SELL", ticker).price, 0);
         if (longValue > 0) {
             const fraction = Math.min(1, (-cash + 0.01) / longValue);
             sales = longs.map(({ ticker, quantity }) => tradeAt("SELL", ticker, Math.min(quantity, ceilShares(fraction * quantity))))

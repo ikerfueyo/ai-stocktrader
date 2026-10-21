@@ -4,13 +4,16 @@ import { Fragment, useEffect, useState } from "react";
 import axios from "axios";
 import PortfolioRow, { type Status } from "./PortfolioRow";
 import { apiErrorMessage, logError } from "@/lib/apiError";
+import MarketStatusBadge from "./MarketStatusBadge";
 import { formatCurrency, roundShares } from "@/lib/orders";
+import type { MarketStatus } from "@/lib/marketHours";
 import type { PortfolioPosition } from "@/lib/types";
 
 const PortfolioList = () => {
     const [positions, setPositions] = useState<PortfolioPosition[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [status, setStatus] = useState<Status | null>(null);
+    const [market, setMarket] = useState<MarketStatus | null>(null);
 
     useEffect(() => {
         const getPortfolio = async () => {
@@ -23,6 +26,8 @@ const PortfolioList = () => {
             }
         };
         getPortfolio();
+        // Only used to disable the trade buttons while the market is closed; the server checks too
+        axios.get<MarketStatus>("/api/market").then(response => setMarket(response.data), logError);
     }, []);
 
     // Update the row in place rather than refetching, which would cost one Alpha Vantage call per position
@@ -59,6 +64,7 @@ const PortfolioList = () => {
                     </span>
                 </span>
             </div>
+            <MarketStatusBadge status={market} />
             {priced.length < positions.length && (
                 <p className="text-muted">Positions without a current price aren&apos;t included in the total.</p>
             )}
@@ -79,7 +85,7 @@ const PortfolioList = () => {
                     </thead>
                     <tbody>
                         {positions.map(position => (
-                            <PortfolioRow key={position.ticker} position={position} onTrade={onTrade} setStatus={setStatus} />
+                            <PortfolioRow key={position.ticker} position={position} onTrade={onTrade} setStatus={setStatus} marketOpen={market?.open ?? true} />
                         ))}
                     </tbody>
                 </table>

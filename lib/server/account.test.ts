@@ -1,11 +1,11 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { roundCents, computePositions, valueAccount, assessTrade, assessWithdrawal, planBuyIn, type PlannedTrade, type Prices, type Trade } from "./account";
+import { roundCents, computePositions, valueAccount, assessTrade, assessWithdrawal, planBuyIn, fillPrice, type PlannedTrade, type Prices, type Trade } from "./account";
 
 // A trade as pg returns it: NUMERIC and DECIMAL columns come back as strings, and total is rounded to cents
 const trade = (type: "BUY" | "SELL", ticker: string, price: number, quantity: number): Trade => ({
     ticker, type,
-    price: price.toFixed(2),
+    price: price.toFixed(6),
     quantity: quantity.toFixed(6),
     total: roundCents(price * quantity).toFixed(2)
 });
@@ -363,7 +363,7 @@ const buyIn = (trades: Trade[], deposits: number, prices: Prices, staleTickers: 
     return planBuyIn({ positions, totalCash: roundCents(cash + deposits), prices, staleTickers });
 };
 const asStored = ({ type, ticker, price, quantity, total }: PlannedTrade): Trade =>
-    ({ type, ticker, price: price.toFixed(2), quantity: quantity.toFixed(6), total: total.toFixed(2) });
+    ({ type, ticker, price: price.toFixed(6), quantity: quantity.toFixed(6), total: total.toFixed(2) });
 
 describe("Automatic buy-in below 130%", () => {
     test("nothing happens at 130% or above, even in a margin call", () => {
@@ -554,5 +554,35 @@ describe("Randomized trading (600 steps over 3 tickers, with the server's rules 
         assertCents(closed.equity, open.equity, "", 0.01 + 0.005 * closing.length);
         assert.equal(closed.availableCash, Math.max(0, closed.totalCash));
         assert.equal(closed.restrictedCash, 0);
+    });
+});
+
+describe("Market orders fill at the ask (buys) and the bid (sells)", () => {
+    const quoted = { price: 100, bid: 99.98, ask: 100.02, spread: "quoted" as const };
+
+    test("quoted, simulated and missing bid/ask", () => {
+        assert.deepEqual(fillPrice("BUY", quoted), { price: 100.02, fillPolicy: "ASK" });
+        assert.deepEqual(fillPrice("SELL", quoted), { price: 99.98, fillPolicy: "BID" });
+        assert.deepEqual(fillPrice("BUY", { ...quoted, spread: "simulated" }), { price: 100.02, fillPolicy: "SIM_ASK" });
+        assert.deepEqual(fillPrice("SELL", { price: 100, bid: null, ask: null, spread: "none" }), { price: 100, fillPolicy: "LAST" });
+    });
+
+    test("a round trip at the bid and ask costs the spread, which comes out of equity", () => {
+        const { price: buyPrice } = fillPrice("BUY", quoted);
+        const { price: sellPrice } = fillPrice("SELL", quoted);
+        const closed = account([buy("AAA", buyPrice, 10), sell("AAA", sellPrice, 10)], { AAA: 100 }, 5000);
+        assertCents(closed.equity, 5000 - 10 * (buyPrice - sellPrice));
+    });
+
+    test("a buy-in covers at the ask and still restores 150%", () => {
+        // Total cash $1,500 against a $1,200 short (ratio 1.25)
+        const shorted = [sell("BBB", 100, 10)];
+        const { positions, cash } = computePositions(shorted);
+        const quotes = { BBB: { price: 120, bid: 119.9, ask: 120.1, spread: "quoted" as const } };
+        const { trades } = planBuyIn({ positions, totalCash: roundCents(cash + 500), prices: { BBB: 120 }, quotes });
+        assert.equal(trades[0].price, 120.1);
+        assert.equal(trades[0].fillPolicy, "ASK");
+        const after = account([...shorted, ...trades.map(asStored)], { BBB: 120 }, 500);
+        assert.equal(after.marginStatus, "ok");
     });
 });

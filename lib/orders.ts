@@ -39,3 +39,6 @@ export const convertValue = (toMode: TradeMode, value: number, price: number | s
 
 export const formatCurrency = (amount: number | string): string => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(amount));
 export const formatSigned = (amount: number): string => `${amount >= 0 ? "+" : "-"}${formatCurrency(Math.abs(amount))}`;
+// A per-share price, to 2 decimals or up to 4 when it has them (fills at a simulated or sub-cent bid/ask)
+export const formatPrice = (price: number | string): string =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(price));

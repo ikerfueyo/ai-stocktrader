@@ -16,6 +16,30 @@ export interface TransactionRow {
     total: string;
     // NULL for the user's own trades, 'LIQUIDATION' for automatic collateral buy-ins
     reason: "LIQUIDATION" | null;
+    // The time of the quote the trade filled against, and which side of it (NULL for trades from before fills were server-set)
+    quote_time: string | null;
+    fill_policy: FillPolicy | null;
+}
+
+// Which price a trade filled at: the quoted ask (buys) or bid (sells), a simulated spread around the last price when there's no
+// bid/ask data, or the last price itself
+export type FillPolicy = "ASK" | "BID" | "SIM_ASK" | "SIM_BID" | "LAST";
+
+// How current a quote is: realtime, 15-minute delayed, or the last session's close
+export type QuoteDelay = "realtime" | "delayed" | "end-of-day";
+
+// A ticker's latest quote (GET /api/quote/[ticker]). bid and ask are quoted by Alpha Vantage, simulated around the last price
+// (spread "simulated"), or null (spread "none").
+export interface Quote {
+    ticker: string;
+    price: number;
+    previousClose: number | null;
+    bid: number | null;
+    ask: number | null;
+    spread: "quoted" | "simulated" | "none";
+    // ISO timestamp of the price
+    quoteTime: string;
+    delay: QuoteDelay;
 }
 
 // A cash_transfers row as the API returns it
@@ -35,9 +59,11 @@ export interface Position {
     avgCost: number;
 }
 
-// GET /api/portfolio: a position with its current price, or null and the reason it couldn't be fetched
+// GET /api/portfolio: a position with its current price and bid/ask, or null and the reason it couldn't be fetched
 export interface PortfolioPosition extends Position {
     price: number | null;
+    bid: number | null;
+    ask: number | null;
     error: string | null;
 }
 
@@ -101,15 +127,13 @@ export interface DailySeries {
     "Time Series (Daily)": Record<string, DailyBar>;
 }
 
-// POST /api/trading/[ticker]
+// POST /api/trading/[ticker]: a market order for a number of shares or a dollar amount (one of the two). The server sets the
+// fill price (the ask for buys, the bid for sells), the total and the time.
 export interface TradeRequest {
-    transaction: {
-        date: string;
+    order: {
         type: TradeType;
-        ticker: string;
-        price: number | string;
-        quantity: number;
-        total: number;
+        quantity?: number;
+        amount?: number;
     };
     // From the Portfolio page: refuse (409) rather than flip a position that's smaller than the trade
     close?: boolean;

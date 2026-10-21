@@ -9,6 +9,8 @@ const pool = singleton("pool", () => new Pool({
     host: process.env.DB_HOST,
     port: process.env.DB_PORT ? Number(process.env.DB_PORT) : undefined,
     database: process.env.DB_NAME,
+    // Each request holding an account lock (withAccountLock) keeps a connection for its duration, Alpha Vantage calls included
+    max: 20,
     connectionTimeoutMillis: 5000
 }));
 

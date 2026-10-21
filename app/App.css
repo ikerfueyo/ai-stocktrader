@@ -876,3 +876,31 @@ header a.header-pill.withdraw:hover {
   font-weight: 800;
   color: white;
 }
+
+.market-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: gray;
+  font-size: 14px;
+  margin-bottom: 0;
+}
+
+.market-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #dc3545;
+}
+
+.market-status.open .market-status-dot {
+  background-color: #28a745;
+}
+
+.quote-details {
+  text-align: center;
+  color: gray;
+  font-size: 13px;
+  margin-bottom: 0;
+}

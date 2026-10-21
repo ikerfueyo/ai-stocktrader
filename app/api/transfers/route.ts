@@ -3,7 +3,7 @@ import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { fetchPrices } from "@/lib/server/alphaVantage";
 import { assessWithdrawal, roundCents } from "@/lib/server/account";
-import { getAccount, shortTickers, withAccountLock } from "@/lib/server/portfolio";
+import { getAccount, shortTickers, withAccountLock, type Db } from "@/lib/server/portfolio";
 import type { TransferRequest, TransferRow } from "@/lib/types";
 
 // Create a mock deposit or withdrawal. method is a display label only, such as "Visa •••• 4242".
@@ -21,7 +21,7 @@ export const POST = withUser(async (request, context, userId) => {
     if (!(amount > 0 && amount <= 99999999.99)) {
         throw new HttpError("Amount must be between $0.01 and $99,999,999.99", 400);
     }
-    const insert = () => pool.query<TransferRow>(
+    const insert = (db: Db = pool) => db.query<TransferRow>(
         'INSERT INTO cash_transfers (user_id, "type", method, amount) VALUES($1, $2, $3, $4) RETURNING *',
         [userId, type, method.trim().slice(0, 255), amount]
     );
@@ -30,14 +30,14 @@ export const POST = withUser(async (request, context, userId) => {
         return NextResponse.json((await insert()).rows[0]);
     }
     // A withdrawal only comes from available cash, never from short collateral
-    const newTransfer = await withAccountLock(userId, async () => {
-        const { positions, totalCash } = await getAccount(userId);
+    const newTransfer = await withAccountLock(userId, async db => {
+        const { positions, totalCash } = await getAccount(userId, db);
         const { prices, staleTickers } = await fetchPrices(shortTickers(positions), "POST /api/transfers");
         const assessment = assessWithdrawal({ positions, totalCash, prices, staleTickers, amount });
         if (!assessment.allowed) {
             throw new HttpError(assessment.message, assessment.status);
         }
-        return insert();
+        return insert(db);
     });
     return NextResponse.json(newTransfer.rows[0]);
 });

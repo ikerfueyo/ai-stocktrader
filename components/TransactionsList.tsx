@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useState } from "react";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
-import { formatCurrency, formatShares } from "@/lib/orders";
+import { formatCurrency, formatPrice, formatShares } from "@/lib/orders";
 import type { TransactionRow, TransferRow } from "@/lib/types";
 
 // A trade or a deposit/withdrawal, as one row of the table
@@ -61,7 +61,7 @@ const TransactionsList = () => {
                                         </span>
                                     )}
                                 </td>
-                                <td>{transaction.isTransfer ? "—" : formatCurrency(transaction.price)}</td>
+                                <td>{transaction.isTransfer ? "—" : formatPrice(transaction.price)}</td>
                                 <td>{transaction.isTransfer ? "—" : formatShares(transaction.quantity)}</td>
                                 <td>{formatCurrency(transaction.isTransfer ? transaction.amount : transaction.total)}</td>
                             </tr>

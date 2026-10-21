@@ -7,8 +7,8 @@ import QuantityStepper from "./QuantityStepper";
 import TradeModeToggle from "./TradeModeToggle";
 import { useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
-import { convertValue, formatCurrency, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
-import type { PortfolioPosition, PositionAnalysis, PositionVerdict, TradeRequest } from "@/lib/types";
+import { convertValue, formatCurrency, formatPrice, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
+import type { PortfolioPosition, PositionAnalysis, PositionVerdict, TradeRequest, TransactionRow } from "@/lib/types";
 
 const VERDICT_LABELS: Record<PositionVerdict, string> = { HOLD: "Hold", SELL: "Sell", COVER: "Cover" };
 
@@ -23,10 +23,12 @@ interface PortfolioRowProps {
     // delta is the signed change in shares (negative for a sale)
     onTrade: (ticker: string, delta: number) => void;
     setStatus: (status: Status | null) => void;
+    // False while the market is closed, when orders can't be placed
+    marketOpen?: boolean;
 }
 
-const PortfolioRow = ({ position, onTrade, setStatus }: PortfolioRowProps) => {
-    const { ticker, quantity, avgCost, price, error } = position;
+const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true }: PortfolioRowProps) => {
+    const { ticker, quantity, avgCost, price, bid, ask, error } = position;
     const isLong = quantity > 0;
     const shares = Math.abs(quantity);
 
@@ -41,7 +43,8 @@ const PortfolioRow = ({ position, onTrade, setStatus }: PortfolioRowProps) => {
     const { refreshAccount } = useAccount();
 
     const hasPrice = price !== null;
-    const tradePrice = hasPrice ? roundCents(price) : null;
+    // Longs close with a sell at the bid, shorts with a buy (cover) at the ask; the server sets the actual fill
+    const tradePrice = hasPrice ? (isLong ? bid : ask) ?? price : null;
     const maxValue = mode === "dollars" ? roundCents(shares * (tradePrice ?? 0)) : shares;
     // A partial sell can leave the stepper above what's left of the position
     const stepperValue = Math.min(tradeValue, maxValue);
@@ -65,14 +68,17 @@ const PortfolioRow = ({ position, onTrade, setStatus }: PortfolioRowProps) => {
         setSubmitting(true);
         setStatus(null);
         try {
-            const date = new Date().toISOString();
-            const transaction: TradeRequest["transaction"] = { date, type, ticker, price: tradePrice!, quantity: closeQuantity, total };
+            // A dollar amount that covers the whole position closes it exactly on the server, at whatever the fill price is
+            const order: TradeRequest["order"] = mode === "dollars" && stepperValue < maxValue
+                ? { type, amount: stepperValue }
+                : { type, quantity: closeQuantity };
             // close: the server refuses (rather than flipping the position) if a buy-in has shrunk it since this page loaded
-            await axios.post(`/api/trading/${ticker}`, { transaction, close: true } satisfies TradeRequest);
-            setStatus({ ok: true, message: `${type} ${formatShares(closeQuantity)} ${ticker} for ${formatCurrency(total)}` });
+            const { data: fill } = await axios.post<TransactionRow>(`/api/trading/${ticker}`, { order, close: true } satisfies TradeRequest);
+            const filled = parseFloat(fill.quantity);
+            setStatus({ ok: true, message: `${isLong ? "Sold" : "Covered"} ${formatShares(filled)} ${ticker} at ${formatPrice(fill.price)} (${formatCurrency(fill.total)})` });
             setMode("shares");
             setTradeValue(1);
-            onTrade(ticker, isLong ? -closeQuantity : closeQuantity);
+            onTrade(ticker, isLong ? -filled : filled);
             refreshAccount();
         } catch (error) {
             logError(error);
@@ -122,7 +128,8 @@ const PortfolioRow = ({ position, onTrade, setStatus }: PortfolioRowProps) => {
                                 decimals={mode === "dollars" ? 2 : 6} prefix={mode === "dollars" ? "$" : ""} />
                             {mode === "dollars" && <span className="order-preview">≈ {formatShares(closeQuantity)} shares</span>}
                         </div>
-                        <button className={isLong ? "sell-btn" : "buy-btn"} onClick={onClosePosition} disabled={submitting || !hasPrice || closeQuantity <= 0}>
+                        <button className={isLong ? "sell-btn" : "buy-btn"} onClick={onClosePosition} disabled={submitting || !hasPrice || !marketOpen || closeQuantity <= 0}
+                            title={marketOpen ? undefined : "The market is closed"}>
                             {isLong ? "Sell" : "Cover"} {hasPrice ? formatCurrency(total) : ""}
                         </button>
                     </div>

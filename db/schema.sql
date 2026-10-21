@@ -7,11 +7,14 @@ CREATE TABLE transactions (
     "date" TIMESTAMPTZ,
     "type" VARCHAR(255),
     ticker VARCHAR(255),
-    price DECIMAL(10, 2),
+    price NUMERIC(18, 6),
     quantity NUMERIC(18, 6),
-    total DECIMAL(10, 2),
+    total DECIMAL(14, 2),
     -- NULL for the user's own trades, 'LIQUIDATION' for automatic collateral buy-ins
-    reason VARCHAR(255)
+    reason VARCHAR(255),
+    -- The quote the trade filled against, and which side: ASK/BID (quoted), SIM_ASK/SIM_BID (simulated spread) or LAST
+    quote_time TIMESTAMPTZ,
+    fill_policy VARCHAR(16) CHECK (fill_policy IN ('ASK', 'BID', 'SIM_ASK', 'SIM_BID', 'LAST'))
 );
 
 CREATE TABLE cash_transfers (
