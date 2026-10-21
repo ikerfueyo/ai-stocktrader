@@ -4,6 +4,7 @@ import { HttpError, withUser } from "@/lib/server/errors";
 import { fetchPrices } from "@/lib/server/alphaVantage";
 import { assessWithdrawal, roundCents } from "@/lib/server/account";
 import { CASH_ACTIVITY_COLUMNS, getAccount, shortTickers, withAccountLock, type Db } from "@/lib/server/portfolio";
+import { getOpenOrders, reservedCashFor } from "@/lib/server/orders";
 import type { CashActivityRow, TransferRequest } from "@/lib/types";
 
 // Create a mock deposit or withdrawal. method is a display label only, such as "Visa •••• 4242".
@@ -29,11 +30,12 @@ export const POST = withUser(async (request, context, userId) => {
     if (type === "DEPOSIT") {
         return NextResponse.json((await insert()).rows[0]);
     }
-    // A withdrawal only comes from available cash, never from short collateral
+    // A withdrawal only comes from available cash, never from short collateral or cash reserved for open orders
     const newTransfer = await withAccountLock(userId, async db => {
         const { positions, totalCash } = await getAccount(userId, db);
         const { prices, staleTickers } = await fetchPrices(shortTickers(positions), "POST /api/transfers");
-        const assessment = assessWithdrawal({ positions, totalCash, prices, staleTickers, amount });
+        const reservedCash = await reservedCashFor(await getOpenOrders(userId, db), positions, "POST /api/transfers");
+        const assessment = assessWithdrawal({ positions, totalCash, prices, staleTickers, amount, reservedCash });
         if (!assessment.allowed) {
             throw new HttpError(assessment.message, assessment.status);
         }

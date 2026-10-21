@@ -7,6 +7,7 @@ import BuySellFunctionality from "./BuySellFunctionality";
 import CandlestickChart from "./CandlestickChart";
 import AIAnalysis from "./AIAnalysis";
 import MarketStatusBadge from "./MarketStatusBadge";
+import OpenOrders from "./OpenOrders";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { MarketStatus } from "@/lib/marketHours";
 import type { DailyBar, DailySeries, Quote } from "@/lib/types";
@@ -21,7 +22,7 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
     const [quoteError, setQuoteError] = useState<string | null>(null);
     const [market, setMarket] = useState<MarketStatus | null>(null);
     const [error, setError] = useState<string | null>(null);
-    // Bumped after a trade to reload the quote and market status
+    // Bumped after an order to reload the quote, the market status and the open orders
     const [quoteVersion, setQuoteVersion] = useState(0);
 
     useEffect(() => {
@@ -85,6 +86,7 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
                             ) : quoteError ? (
                                 <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
                             ) : null}
+                            <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
                             <div className="candlestick-chart-container">
                                 <CandlestickChart data={data} />
                             </div>

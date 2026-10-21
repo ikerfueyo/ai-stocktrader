@@ -19,6 +19,34 @@ export interface TransactionRow {
     // The time of the quote the trade filled against, and which side of it (NULL for trades from before fills were server-set)
     quote_time: string | null;
     fill_policy: FillPolicy | null;
+    // The order this trade filled (limit, stop and queued orders), or NULL for an immediate market order or a buy-in
+    order_id: number | null;
+}
+
+export type OrderType = "MARKET" | "LIMIT" | "STOP" | "STOP_LIMIT";
+export type TimeInForce = "DAY" | "GTC";
+export type OrderStatus = "OPEN" | "FILLED" | "CANCELLED" | "EXPIRED" | "REJECTED";
+
+// An orders row as the API returns it (NUMERIC columns as strings). quantity is null for a dollar-amount market order (amount).
+export interface OrderRow {
+    id: number;
+    user_id: string;
+    created_at: string;
+    updated_at: string;
+    ticker: string;
+    side: TradeType;
+    order_type: OrderType;
+    quantity: string | null;
+    amount: string | null;
+    limit_price: string | null;
+    stop_price: string | null;
+    time_in_force: TimeInForce;
+    expires_at: string | null;
+    status: OrderStatus;
+    triggered_at: string | null;
+    status_reason: string | null;
+    // The fill, for a FILLED order
+    transaction_id?: number | null;
 }
 
 // Which price a trade filled at: the quoted ask (buys) or bid (sells), a simulated spread around the last price when there's no
@@ -77,6 +105,8 @@ export type MarginStatus = "ok" | "margin_call" | "buy_in";
 // The account's value at current prices (valueAccount in lib/server/account.ts)
 export interface AccountValuation {
     totalCash: number;
+    // Held back from available cash for open orders that would open or add to a position
+    reservedCash: number;
     equity: number;
     unrealizedPnl: number;
     shortLiability: number;
@@ -133,7 +163,8 @@ export interface DailySeries {
 }
 
 // POST /api/trading/[ticker]: a market order for a number of shares or a dollar amount (one of the two). The server sets the
-// fill price (the ask for buys, the bid for sells), the total and the time.
+// fill price (the ask for buys, the bid for sells), the total and the time. While the market is closed it's queued as an order
+// for the open instead (TradeResponse).
 export interface TradeRequest {
     order: {
         type: TradeType;
@@ -142,6 +173,22 @@ export interface TradeRequest {
     };
     // From the Portfolio page: refuse (409) rather than flip a position that's smaller than the trade
     close?: boolean;
+}
+
+// POST /api/trading/[ticker]: the fill, or the queued order while the market is closed
+export type TradeResponse = { fill: TransactionRow; order?: undefined } | { order: OrderRow; fill?: undefined };
+
+// POST /api/orders: a limit, stop or stop-limit order for a number of shares
+export interface OrderRequest {
+    order: {
+        ticker: string;
+        side: TradeType;
+        orderType: Exclude<OrderType, "MARKET">;
+        quantity: number;
+        limitPrice?: number;
+        stopPrice?: number;
+        timeInForce: TimeInForce;
+    };
 }
 
 // POST /api/transfers

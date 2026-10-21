@@ -5,6 +5,7 @@ import axios from "axios";
 import PortfolioRow, { type Status } from "./PortfolioRow";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import MarketStatusBadge from "./MarketStatusBadge";
+import OpenOrders from "./OpenOrders";
 import { formatCurrency, roundShares } from "@/lib/orders";
 import type { MarketStatus } from "@/lib/marketHours";
 import type { PortfolioPosition } from "@/lib/types";
@@ -14,6 +15,8 @@ const PortfolioList = () => {
     const [error, setError] = useState<string | null>(null);
     const [status, setStatus] = useState<Status | null>(null);
     const [market, setMarket] = useState<MarketStatus | null>(null);
+    // Bumped when a closing order is queued, to reload the open orders
+    const [ordersVersion, setOrdersVersion] = useState(0);
 
     useEffect(() => {
         const getPortfolio = async () => {
@@ -26,7 +29,7 @@ const PortfolioList = () => {
             }
         };
         getPortfolio();
-        // Only used to disable the trade buttons while the market is closed; the server checks too
+        // Only used to label the trade buttons while the market is closed (orders are queued); the server decides
         axios.get<MarketStatus>("/api/market").then(response => setMarket(response.data), logError);
     }, []);
 
@@ -44,7 +47,12 @@ const PortfolioList = () => {
         return <p className="mt-5">Loading...</p>;
     }
     if (positions.length === 0) {
-        return <p className="mt-5">No open positions.</p>;
+        return (
+            <Fragment>
+                <p className="mt-5">No open positions.</p>
+                <OpenOrders refreshKey={ordersVersion} />
+            </Fragment>
+        );
     }
 
     const priced = positions.filter((position): position is PortfolioPosition & { price: number } => position.price !== null);
@@ -85,11 +93,12 @@ const PortfolioList = () => {
                     </thead>
                     <tbody>
                         {positions.map(position => (
-                            <PortfolioRow key={position.ticker} position={position} onTrade={onTrade} setStatus={setStatus} marketOpen={market?.open ?? true} />
+                            <PortfolioRow key={position.ticker} position={position} onTrade={onTrade} setStatus={setStatus} marketOpen={market?.open ?? true} onQueued={() => setOrdersVersion(v => v + 1)} />
                         ))}
                     </tbody>
                 </table>
             </div>
+            <OpenOrders refreshKey={ordersVersion} />
         </Fragment>
     );
 };

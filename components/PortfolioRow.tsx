@@ -8,7 +8,7 @@ import TradeModeToggle from "./TradeModeToggle";
 import { useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { convertValue, formatCurrency, formatPrice, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
-import type { PortfolioPosition, PositionAnalysis, PositionVerdict, TradeRequest, TransactionRow } from "@/lib/types";
+import type { PortfolioPosition, PositionAnalysis, PositionVerdict, TradeRequest, TradeResponse } from "@/lib/types";
 
 const VERDICT_LABELS: Record<PositionVerdict, string> = { HOLD: "Hold", SELL: "Sell", COVER: "Cover" };
 
@@ -23,11 +23,13 @@ interface PortfolioRowProps {
     // delta is the signed change in shares (negative for a sale)
     onTrade: (ticker: string, delta: number) => void;
     setStatus: (status: Status | null) => void;
-    // False while the market is closed, when orders can't be placed
+    // False while the market is closed, when closing orders are queued for the open
     marketOpen?: boolean;
+    // Called when a closing order is queued, to show it in the open orders
+    onQueued?: () => void;
 }
 
-const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true }: PortfolioRowProps) => {
+const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueued = () => {} }: PortfolioRowProps) => {
     const { ticker, quantity, avgCost, price, bid, ask, error } = position;
     const isLong = quantity > 0;
     const shares = Math.abs(quantity);
@@ -73,12 +75,18 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true }: Portf
                 ? { type, amount: stepperValue }
                 : { type, quantity: closeQuantity };
             // close: the server refuses (rather than flipping the position) if a buy-in has shrunk it since this page loaded
-            const { data: fill } = await axios.post<TransactionRow>(`/api/trading/${ticker}`, { order, close: true } satisfies TradeRequest);
-            const filled = parseFloat(fill.quantity);
-            setStatus({ ok: true, message: `${isLong ? "Sold" : "Covered"} ${formatShares(filled)} ${ticker} at ${formatPrice(fill.price)} (${formatCurrency(fill.total)})` });
+            const { data } = await axios.post<TradeResponse>(`/api/trading/${ticker}`, { order, close: true } satisfies TradeRequest);
             setMode("shares");
             setTradeValue(1);
-            onTrade(ticker, isLong ? -filled : filled);
+            if (data.order) {
+                const size = data.order.quantity !== null ? `${formatShares(data.order.quantity)} ${ticker}` : `${formatCurrency(data.order.amount!)} of ${ticker}`;
+                setStatus({ ok: true, message: `The market is closed: ${action === "sell" ? "selling" : "covering"} ${size} is queued as a market order for the open.` });
+                onQueued();
+            } else {
+                const filled = parseFloat(data.fill.quantity);
+                setStatus({ ok: true, message: `${isLong ? "Sold" : "Covered"} ${formatShares(filled)} ${ticker} at ${formatPrice(data.fill.price)} (${formatCurrency(data.fill.total)})` });
+                onTrade(ticker, isLong ? -filled : filled);
+            }
             refreshAccount();
         } catch (error) {
             logError(error);
@@ -128,9 +136,9 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true }: Portf
                                 decimals={mode === "dollars" ? 2 : 6} prefix={mode === "dollars" ? "$" : ""} />
                             {mode === "dollars" && <span className="order-preview">≈ {formatShares(closeQuantity)} shares</span>}
                         </div>
-                        <button className={isLong ? "sell-btn" : "buy-btn"} onClick={onClosePosition} disabled={submitting || !hasPrice || !marketOpen || closeQuantity <= 0}
-                            title={marketOpen ? undefined : "The market is closed"}>
-                            {isLong ? "Sell" : "Cover"} {hasPrice ? formatCurrency(total) : ""}
+                        <button className={isLong ? "sell-btn" : "buy-btn"} onClick={onClosePosition} disabled={submitting || !hasPrice || closeQuantity <= 0}
+                            title={marketOpen ? undefined : "The market is closed: the order is queued for the open"}>
+                            {marketOpen ? "" : "Queue "}{isLong ? (marketOpen ? "Sell" : "sell") : (marketOpen ? "Cover" : "cover")} {hasPrice ? formatCurrency(total) : ""}
                         </button>
                     </div>
                 </td>

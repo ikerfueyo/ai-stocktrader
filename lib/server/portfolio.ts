@@ -93,15 +93,15 @@ export const withAccountLock = <T>(userId: string, fn: (db: PoolClient) => Promi
     return run;
 };
 
-// Inserts an executed trade, stamped now
+// Inserts an executed trade, stamped now. orderId links the fill of a stored order (limit, stop or queued).
 export const insertTrade = async (db: Db, userId: string, trade: {
     type: TradeType; ticker: string; price: number; quantity: number; total: number;
-    fillPolicy: FillPolicy; quoteTime: string | null; reason?: "LIQUIDATION";
+    fillPolicy: FillPolicy; quoteTime: string | null; reason?: "LIQUIDATION"; orderId?: number;
 }): Promise<TransactionRow> => {
     const { rows } = await db.query<TransactionRow>(
-        `INSERT INTO transactions (user_id, "date", "type", ticker, price, quantity, total, reason, quote_time, fill_policy)
-         VALUES($1, now(), $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-        [userId, trade.type, trade.ticker, trade.price, trade.quantity, trade.total, trade.reason ?? null, trade.quoteTime, trade.fillPolicy]
+        `INSERT INTO transactions (user_id, "date", "type", ticker, price, quantity, total, reason, quote_time, fill_policy, order_id)
+         VALUES($1, now(), $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [userId, trade.type, trade.ticker, trade.price, trade.quantity, trade.total, trade.reason ?? null, trade.quoteTime, trade.fillPolicy, trade.orderId ?? null]
     );
     return rows[0];
 };
@@ -135,13 +135,6 @@ export const postDividends = async (userId: string, label: string, db: PoolClien
         console.log(`${label}: posted ${inserted.length} dividend${inserted.length === 1 ? "" : "s"} for ${userId}: ${inserted.map(({ type, ticker, amount }) => `${type} ${ticker} ${amount}`).join(", ")}`);
     }
     return inserted;
-};
-
-// The account upkeep that runs before showing an account: post paid dividends, then run the buy-in check. Call it inside
-// withAccountLock with its client.
-export const updateAccount = async (userId: string, label: string, db: PoolClient) => {
-    await postDividends(userId, label, db).catch(error => console.error(`${label}: dividends: ${error.message}`));
-    return enforceCollateral(userId, label, db);
 };
 
 export const shortTickers = (positions: Position[]) => positions.filter(({ quantity }) => quantity < 0).map(({ ticker }) => ticker);
