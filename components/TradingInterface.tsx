@@ -8,6 +8,8 @@ import CandlestickChart from "./CandlestickChart";
 import AIAnalysis from "./AIAnalysis";
 import MarketStatusBadge from "./MarketStatusBadge";
 import OpenOrders from "./OpenOrders";
+import QuoteDetails from "./QuoteDetails";
+import WatchlistStar from "./WatchlistStar";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { MarketStatus } from "@/lib/marketHours";
 import type { DailyBar, DailySeries, Quote } from "@/lib/types";
@@ -70,7 +72,10 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
 
     return (
         <Fragment>
-            <h1 className="ticker-header">{ticker}</h1>
+            <div className="ticker-title">
+                <h1 className="ticker-header">{ticker}</h1>
+                <WatchlistStar ticker={ticker.toUpperCase()} />
+            </div>
             <MarketStatusBadge status={market} />
             <div className="trading-interface-container">
                 <div className="left-column">
@@ -87,9 +92,8 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
                                 <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
                             ) : null}
                             <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
-                            <div className="candlestick-chart-container">
-                                <CandlestickChart data={data} />
-                            </div>
+                            <QuoteDetails ticker={ticker.toUpperCase()} data={data} />
+                            <CandlestickChart ticker={ticker.toUpperCase()} data={data} />
                         </Fragment>
                     )}
                 </div>

@@ -5,6 +5,7 @@ import Link from "next/link";
 import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
 import TradeModeToggle from "./TradeModeToggle";
+import AnalysisDetailsView from "./AnalysisDetailsView";
 import { useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { convertValue, formatCurrency, formatPrice, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
@@ -159,12 +160,8 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
                     <td colSpan={9}>
                         <div className="analysis-box">
                             {analysisError ? <p className="text-danger">Couldn&apos;t load AI analysis: {analysisError}</p>
-                                : analysis ? (
-                                    <Fragment>
-                                        <p className="analysis-verdict">AI verdict: {VERDICT_LABELS[analysis.verdict]}</p>
-                                        <p>{analysis.analysis}</p>
-                                    </Fragment>
-                                ) : <p>Loading...</p>}
+                                : analysis ? <AnalysisDetailsView verdictLabel={VERDICT_LABELS[analysis.verdict]} thesis={analysis.analysis} details={analysis} />
+                                : <p>Loading...</p>}
                         </div>
                     </td>
                 </tr>

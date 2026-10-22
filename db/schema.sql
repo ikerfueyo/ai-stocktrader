@@ -82,3 +82,11 @@ CREATE INDEX transactions_user_date_idx ON transactions (user_id, "date", id);
 CREATE INDEX cash_activity_user_date_idx ON cash_activity (user_id, "date", id);
 -- A dividend is posted at most once per position
 CREATE UNIQUE INDEX cash_activity_dividend_idx ON cash_activity (user_id, ticker, reference) WHERE "type" IN ('DIVIDEND_IN', 'DIVIDEND_OUT');
+
+-- Tickers a user watches without owning them
+CREATE TABLE watchlist (
+    user_id VARCHAR(255) NOT NULL,
+    ticker VARCHAR(255) NOT NULL,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, ticker)
+);
