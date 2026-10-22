@@ -1,21 +1,25 @@
 import { NextResponse } from "next/server";
 import { withUser } from "@/lib/server/errors";
-import { fetchLatestPrice } from "@/lib/server/alphaVantage";
-import { enforceCollateral, getPositions, withAccountLock } from "@/lib/server/portfolio";
+import { fetchQuotes } from "@/lib/server/alphaVantage";
+import { getPositions, withAccountLock } from "@/lib/server/portfolio";
+import { updateAccount } from "@/lib/server/upkeep";
 import type { PortfolioPosition } from "@/lib/types";
 
-// Get open positions with current prices (Alpha Vantage API, one call per position). Runs the collateral buy-in check first.
+// Get open (split-adjusted) positions with current prices (Alpha Vantage API, fetched together, shared with /api/account by the quote
+// cache). Runs the
+// paid dividends and the collateral buy-in check first.
 export const GET = withUser(async (request, context, userId) => {
-    await withAccountLock(userId, () => enforceCollateral(userId, "GET /api/portfolio"));
+    await withAccountLock(userId, db => updateAccount(userId, "GET /api/portfolio", db));
     const positions = (await getPositions(userId)).sort((a, b) => a.ticker.localeCompare(b.ticker));
     // One ticker's price failing (rate limit, outage) shouldn't hide the rest of the portfolio
-    const prices = await Promise.allSettled(positions.map(position => fetchLatestPrice(position.ticker)));
+    const quotes = await Promise.allSettled(fetchQuotes(positions.map(({ ticker }) => ticker)));
     return NextResponse.json<PortfolioPosition[]>(positions.map((position, index) => {
-        const result = prices[index];
+        const result = quotes[index];
         if (result.status === "fulfilled") {
-            return { ...position, price: result.value, error: null };
+            const { price, previousClose, bid, ask } = result.value;
+            return { ...position, price, previousClose, bid, ask, error: null };
         }
         console.error(`GET /api/portfolio: ${position.ticker}: ${result.reason.message}`);
-        return { ...position, price: null, error: result.reason.message };
+        return { ...position, price: null, previousClose: null, bid: null, ask: null, error: result.reason.message };
     }));
 });

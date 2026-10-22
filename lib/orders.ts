@@ -39,3 +39,20 @@ export const convertValue = (toMode: TradeMode, value: number, price: number | s
 
 export const formatCurrency = (amount: number | string): string => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(amount));
 export const formatSigned = (amount: number): string => `${amount >= 0 ? "+" : "-"}${formatCurrency(Math.abs(amount))}`;
+// A per-share price, to 2 decimals or up to 4 when it has them (fills at a simulated or sub-cent bid/ask)
+export const formatPrice = (price: number | string): string =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(price));
+
+const ORDER_TYPE_LABELS = { MARKET: "Market", LIMIT: "Limit", STOP: "Stop", STOP_LIMIT: "Stop limit" } as const;
+
+// An order's type and prices, such as "Limit $180.00" or "Stop $95.00, limit $94.00"
+export const describeOrderType = ({ order_type, limit_price, stop_price }: { order_type: keyof typeof ORDER_TYPE_LABELS; limit_price: string | number | null; stop_price: string | number | null }): string => {
+    if (order_type === "STOP_LIMIT") return `Stop ${formatPrice(stop_price!)}, limit ${formatPrice(limit_price!)}`;
+    if (order_type === "STOP") return `Stop ${formatPrice(stop_price!)}`;
+    if (order_type === "LIMIT") return `Limit ${formatPrice(limit_price!)}`;
+    return ORDER_TYPE_LABELS[order_type];
+};
+
+// An order's size: shares, or a dollar amount for a dollar-amount market order
+export const describeOrderSize = ({ quantity, amount }: { quantity: string | number | null; amount: string | number | null }): string =>
+    quantity !== null ? `${formatShares(quantity)} ${Number(quantity) === 1 ? "share" : "shares"}` : formatCurrency(amount!);

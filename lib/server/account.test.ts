@@ -1,11 +1,11 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { roundCents, computePositions, valueAccount, assessTrade, assessWithdrawal, planBuyIn, type PlannedTrade, type Prices, type Trade } from "./account";
+import { roundCents, computePositions, valueAccount, assessTrade, assessWithdrawal, planBuyIn, fillPrice, planDividends, positionsAt, type PlannedTrade, type Prices, type Trade } from "./account";
 
 // A trade as pg returns it: NUMERIC and DECIMAL columns come back as strings, and total is rounded to cents
 const trade = (type: "BUY" | "SELL", ticker: string, price: number, quantity: number): Trade => ({
     ticker, type,
-    price: price.toFixed(2),
+    price: price.toFixed(6),
     quantity: quantity.toFixed(6),
     total: roundCents(price * quantity).toFixed(2)
 });
@@ -363,7 +363,7 @@ const buyIn = (trades: Trade[], deposits: number, prices: Prices, staleTickers: 
     return planBuyIn({ positions, totalCash: roundCents(cash + deposits), prices, staleTickers });
 };
 const asStored = ({ type, ticker, price, quantity, total }: PlannedTrade): Trade =>
-    ({ type, ticker, price: price.toFixed(2), quantity: quantity.toFixed(6), total: total.toFixed(2) });
+    ({ type, ticker, price: price.toFixed(6), quantity: quantity.toFixed(6), total: total.toFixed(2) });
 
 describe("Automatic buy-in below 130%", () => {
     test("nothing happens at 130% or above, even in a margin call", () => {
@@ -554,5 +554,154 @@ describe("Randomized trading (600 steps over 3 tickers, with the server's rules 
         assertCents(closed.equity, open.equity, "", 0.01 + 0.005 * closing.length);
         assert.equal(closed.availableCash, Math.max(0, closed.totalCash));
         assert.equal(closed.restrictedCash, 0);
+    });
+});
+
+describe("Market orders fill at the ask (buys) and the bid (sells)", () => {
+    const quoted = { price: 100, bid: 99.98, ask: 100.02, spread: "quoted" as const };
+
+    test("quoted, simulated and missing bid/ask", () => {
+        assert.deepEqual(fillPrice("BUY", quoted), { price: 100.02, fillPolicy: "ASK" });
+        assert.deepEqual(fillPrice("SELL", quoted), { price: 99.98, fillPolicy: "BID" });
+        assert.deepEqual(fillPrice("BUY", { ...quoted, spread: "simulated" }), { price: 100.02, fillPolicy: "SIM_ASK" });
+        assert.deepEqual(fillPrice("SELL", { price: 100, bid: null, ask: null, spread: "none" }), { price: 100, fillPolicy: "LAST" });
+    });
+
+    test("a round trip at the bid and ask costs the spread, which comes out of equity", () => {
+        const { price: buyPrice } = fillPrice("BUY", quoted);
+        const { price: sellPrice } = fillPrice("SELL", quoted);
+        const closed = account([buy("AAA", buyPrice, 10), sell("AAA", sellPrice, 10)], { AAA: 100 }, 5000);
+        assertCents(closed.equity, 5000 - 10 * (buyPrice - sellPrice));
+    });
+
+    test("a buy-in covers at the ask and still restores 150%", () => {
+        // Total cash $1,500 against a $1,200 short (ratio 1.25)
+        const shorted = [sell("BBB", 100, 10)];
+        const { positions, cash } = computePositions(shorted);
+        const quotes = { BBB: { price: 120, bid: 119.9, ask: 120.1, spread: "quoted" as const } };
+        const { trades } = planBuyIn({ positions, totalCash: roundCents(cash + 500), prices: { BBB: 120 }, quotes });
+        assert.equal(trades[0].price, 120.1);
+        assert.equal(trades[0].fillPolicy, "ASK");
+        const after = account([...shorted, ...trades.map(asStored)], { BBB: 120 }, 500);
+        assert.equal(after.marginStatus, "ok");
+    });
+});
+
+// A trade on a given day, at 11:00 Eastern
+const on = (day: string, stored: Trade): Trade => ({ ...stored, date: `${day}T15:00:00Z` });
+
+describe("Splits", () => {
+    const split = { ticker: "NVDA", exDate: "2024-06-10", factor: 10 };
+    const asOf = new Date("2024-07-01T15:00:00Z");
+
+    test("a split multiplies shares and divides the average cost, so cost basis and cash don't change", () => {
+        const { positions, cash } = computePositions([on("2024-05-01", buy("NVDA", 900, 10))], [split], { asOf });
+        assert.equal(positions[0].quantity, 100);
+        assertCents(positions[0].avgCost, 90);
+        assertCents(cash, -9000);
+    });
+
+    test("a sale after the split is of post-split shares, and doesn't flip to a short", () => {
+        const trades = [on("2024-05-01", buy("NVDA", 900, 10)), on("2024-06-11", sell("NVDA", 120, 100))];
+        assert.deepEqual(computePositions(trades, [split], { asOf }).positions, []);
+    });
+
+    test("trades on or after the split date are already in post-split shares", () => {
+        const { positions } = computePositions([on("2024-06-10", buy("NVDA", 120, 5))], [split], { asOf });
+        assert.equal(positions[0].quantity, 5);
+    });
+
+    test("a split doesn't apply before its date, or to positions closed before it", () => {
+        assert.equal(computePositions([on("2024-05-01", buy("NVDA", 900, 10))], [split], { asOf: new Date("2024-06-07T15:00:00Z") }).positions[0].quantity, 10);
+        const closed = [on("2024-05-01", buy("NVDA", 900, 10)), on("2024-05-02", sell("NVDA", 910, 10)), on("2024-06-12", buy("NVDA", 120, 3))];
+        assert.equal(computePositions(closed, [split], { asOf }).positions[0].quantity, 3);
+    });
+
+    test("a short is split too, and a reverse split works the same way", () => {
+        const shorted = computePositions([on("2024-05-01", sell("NVDA", 900, 10))], [split], { asOf }).positions[0];
+        assert.equal(shorted.quantity, -100);
+        assertCents(shorted.avgCost, 90);
+        const reverse = computePositions([on("2024-05-01", buy("XYZ", 2, 1000))], [{ ticker: "XYZ", exDate: "2024-06-03", factor: 0.1 }], { asOf }).positions[0];
+        assert.equal(reverse.quantity, 100);
+        assertCents(reverse.avgCost, 20);
+    });
+
+    test("a split never changes equity at split-adjusted prices", () => {
+        const trades = [on("2024-05-01", buy("NVDA", 900, 10)), on("2024-05-01", sell("AMD", 150, 20))];
+        const before = computePositions(trades, [], { asOf });
+        const after = computePositions(trades, [split], { asOf });
+        const equityBefore = valueAccount({ positions: before.positions, totalCash: roundCents(before.cash + 20000), prices: { NVDA: 1200, AMD: 160 } }).equity;
+        const equityAfter = valueAccount({ positions: after.positions, totalCash: roundCents(after.cash + 20000), prices: { NVDA: 120, AMD: 160 } }).equity;
+        assert.equal(equityAfter, equityBefore);
+    });
+
+    test("a new (undated) trade after a split is in post-split shares", () => {
+        const result = assessTrade({ transactions: [on("2024-05-01", buy("NVDA", 900, 10))], splits: [split], netTransfers: 9000, prices: {}, trade: { type: "SELL", ticker: "NVDA", price: 120, quantity: 100, total: 12000 } });
+        assert.equal(result.allowed, true);
+    });
+});
+
+describe("Dividends", () => {
+    const dividend = { ticker: "AAPL", exDate: "2026-08-10", paymentDate: "2026-08-13", amount: 0.27 };
+    const asOf = new Date("2026-08-20T15:00:00Z");
+    const plan = (trades: Trade[], options: { posted?: string[]; asOf?: Date } = {}) =>
+        planDividends({ transactions: trades, splits: [], dividends: [dividend], posted: new Set(options.posted ?? []), asOf: options.asOf ?? asOf });
+
+    test("a long held at the ex-date's open receives it", () => {
+        assert.deepEqual(plan([on("2026-08-07", buy("AAPL", 230, 10))]), [{ type: "DIVIDEND_IN", ticker: "AAPL", exDate: "2026-08-10", shares: 10, perShare: 0.27, total: 2.7 }]);
+    });
+
+    test("a short pays it", () => {
+        const [posting] = plan([on("2026-08-07", sell("AAPL", 230, 10))]);
+        assert.equal(posting.type, "DIVIDEND_OUT");
+        assert.equal(posting.total, 2.7);
+    });
+
+    test("buying on the ex-date, or selling before it, gets nothing", () => {
+        assert.deepEqual(plan([on("2026-08-10", buy("AAPL", 230, 10))]), []);
+        assert.deepEqual(plan([on("2026-08-03", buy("AAPL", 230, 10)), on("2026-08-07", sell("AAPL", 231, 10))]), []);
+    });
+
+    test("selling on the ex-date still gets it", () => {
+        assert.equal(plan([on("2026-08-03", buy("AAPL", 230, 10)), on("2026-08-10", sell("AAPL", 229, 10))]).length, 1);
+    });
+
+    test("isn't posted before its payment date, or twice", () => {
+        assert.deepEqual(plan([on("2026-08-07", buy("AAPL", 230, 10))], { asOf: new Date("2026-08-12T15:00:00Z") }), []);
+        assert.deepEqual(plan([on("2026-08-07", buy("AAPL", 230, 10))], { posted: ["AAPL|2026-08-10"] }), []);
+    });
+
+    test("positionsAt uses split-adjusted shares", () => {
+        const positions = positionsAt([on("2024-05-01", buy("NVDA", 900, 10))], [{ ticker: "NVDA", exDate: "2024-06-10", factor: 10 }], "2024-06-11");
+        assert.equal(positions[0].quantity, 100);
+    });
+});
+
+describe("Realized P&L", () => {
+    test("buying 10 at $100 and selling 5 at $120 realizes $100; the rest keeps its cost basis", () => {
+        const trades = [buy("AAA", 100, 10), sell("AAA", 120, 5)];
+        const { realizedPnl, realized, positions } = computePositions(trades);
+        assert.equal(realizedPnl, 100);
+        assert.deepEqual(realized, [null, 100]);
+        assert.equal(positions[0].avgCost, 100);
+        assert.equal(account(trades, { AAA: 120 }, 5000).unrealizedPnl, 100);
+    });
+
+    test("covering a short below its sale price realizes a gain", () => {
+        assert.equal(computePositions([sell("BBB", 50, 10), buy("BBB", 40, 10)]).realizedPnl, 100);
+    });
+
+    test("a flip realizes only the closed part, and the new side starts at the trade price", () => {
+        const { realizedPnl, positions } = computePositions([buy("AAA", 100, 10), sell("AAA", 90, 15)]);
+        assert.equal(realizedPnl, -100);
+        assert.deepEqual(positions[0], { ticker: "AAA", quantity: -5, avgCost: 90 });
+    });
+
+    test("equity = net deposits + realized P&L + unrealized P&L", () => {
+        const trades = [buy("AAA", 100, 10), sell("AAA", 130, 4), sell("BBB", 50, 20), buy("BBB", 45, 5), buy("AAA", 120, 3), sell("CCC", 10, 100)];
+        const prices = { AAA: 125, BBB: 47, CCC: 12 };
+        const { realizedPnl } = computePositions(trades);
+        const result = account(trades, prices, 10000);
+        assertCents(result.equity, 10000 + realizedPnl + result.unrealizedPnl, "", 0.02);
     });
 });
