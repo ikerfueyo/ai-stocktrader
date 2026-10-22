@@ -3,7 +3,8 @@
 import { useAccount } from "@/context/AccountContext";
 import { formatCurrency, formatSigned } from "@/lib/orders";
 
-// Available cash (with any short collateral held back from it), equity and unrealized P&L, shown in the center of the header
+// Available cash (with any short collateral and open-order reservations held back from it), equity and unrealized P&L, shown in the
+// center of the header
 const AccountSummary = () => {
     const { account, error } = useAccount();
 
@@ -31,6 +32,11 @@ const AccountSummary = () => {
                     <span className="account-restricted"
                         title={`Held as short collateral: 150% of your ${formatCurrency(account.shortLiability)} short liability. Total cash: ${formatCurrency(account.totalCash)}.`}>
                         +{formatCurrency(account.restrictedCash)} restricted
+                    </span>
+                )}
+                {account && account.reservedCash > 0 && (
+                    <span className="account-restricted" title="Held back for open orders that would open or add to a position, until they fill or are cancelled">
+                        +{formatCurrency(account.reservedCash)} reserved for orders
                     </span>
                 )}
             </div>
