@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test lib/server/account.test.ts lib/server/orderMatching.test.ts lib/marketHours.test.ts"
+    "test": "node --import tsx --test lib/server/account.test.ts lib/server/orderMatching.test.ts lib/server/history.test.ts lib/server/technicals.test.ts lib/marketHours.test.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.19",

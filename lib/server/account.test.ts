@@ -676,3 +676,32 @@ describe("Dividends", () => {
         assert.equal(positions[0].quantity, 100);
     });
 });
+
+describe("Realized P&L", () => {
+    test("buying 10 at $100 and selling 5 at $120 realizes $100; the rest keeps its cost basis", () => {
+        const trades = [buy("AAA", 100, 10), sell("AAA", 120, 5)];
+        const { realizedPnl, realized, positions } = computePositions(trades);
+        assert.equal(realizedPnl, 100);
+        assert.deepEqual(realized, [null, 100]);
+        assert.equal(positions[0].avgCost, 100);
+        assert.equal(account(trades, { AAA: 120 }, 5000).unrealizedPnl, 100);
+    });
+
+    test("covering a short below its sale price realizes a gain", () => {
+        assert.equal(computePositions([sell("BBB", 50, 10), buy("BBB", 40, 10)]).realizedPnl, 100);
+    });
+
+    test("a flip realizes only the closed part, and the new side starts at the trade price", () => {
+        const { realizedPnl, positions } = computePositions([buy("AAA", 100, 10), sell("AAA", 90, 15)]);
+        assert.equal(realizedPnl, -100);
+        assert.deepEqual(positions[0], { ticker: "AAA", quantity: -5, avgCost: 90 });
+    });
+
+    test("equity = net deposits + realized P&L + unrealized P&L", () => {
+        const trades = [buy("AAA", 100, 10), sell("AAA", 130, 4), sell("BBB", 50, 20), buy("BBB", 45, 5), buy("AAA", 120, 3), sell("CCC", 10, 100)];
+        const prices = { AAA: 125, BBB: 47, CCC: 12 };
+        const { realizedPnl } = computePositions(trades);
+        const result = account(trades, prices, 10000);
+        assertCents(result.equity, 10000 + realizedPnl + result.unrealizedPnl, "", 0.02);
+    });
+});

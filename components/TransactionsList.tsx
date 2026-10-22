@@ -4,8 +4,8 @@ import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
-import { describeOrderSize, describeOrderType, formatCurrency, formatPrice, formatShares } from "@/lib/orders";
-import type { CashActivityRow, CashActivityType, FillPolicy, OrderRow, OrderStatus, TransactionRow } from "@/lib/types";
+import { describeOrderSize, describeOrderType, formatCurrency, formatPrice, formatShares, formatSigned } from "@/lib/orders";
+import type { CashActivityRow, CashActivityType, FillPolicy, OrderRow, OrderStatus, TradeHistoryRow } from "@/lib/types";
 
 export type HistoryTab = "orders" | "trades" | "cash";
 
@@ -24,7 +24,7 @@ const formatDate = (date: string) => new Date(date).toLocaleString("en-US", { da
 const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
     // All newest first
     const [orders, setOrders] = useState<OrderRow[] | null>(null);
-    const [trades, setTrades] = useState<TransactionRow[] | null>(null);
+    const [trades, setTrades] = useState<TradeHistoryRow[] | null>(null);
     const [cash, setCash] = useState<CashActivityRow[] | null>(null);
     const [error, setError] = useState<string | null>(null);
 
@@ -32,7 +32,7 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
         const getHistory = async () => {
             try {
                 const [ordersResponse, tradesResponse, cashResponse] = await Promise.all([
-                    axios.get<OrderRow[]>("/api/orders?status=all"), axios.get<TransactionRow[]>("/api/transactions"), axios.get<CashActivityRow[]>("/api/transfers")
+                    axios.get<OrderRow[]>("/api/orders?status=all"), axios.get<TradeHistoryRow[]>("/api/transactions"), axios.get<CashActivityRow[]>("/api/transfers")
                 ]);
                 setOrders(ordersResponse.data);
                 setTrades(tradesResponse.data);
@@ -105,6 +105,7 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                                     <th scope="col">Price</th>
                                     <th scope="col">Quantity</th>
                                     <th scope="col">Total</th>
+                                    <th scope="col">Realized P/L</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -130,6 +131,9 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                                         </td>
                                         <td>{formatShares(trade.quantity)}</td>
                                         <td>{formatCurrency(trade.total)}</td>
+                                        <td className={trade.realized_pnl === null ? "" : `price-change ${trade.realized_pnl >= 0 ? "positive" : "negative"}`}>
+                                            {trade.realized_pnl === null ? "—" : formatSigned(trade.realized_pnl)}
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>

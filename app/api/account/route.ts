@@ -13,7 +13,7 @@ import type { Account, TransactionRow } from "@/lib/types";
 // collateral buy-in check first.
 export const GET = withUser(async (request, context, userId) => {
     await withAccountLock(userId, db => updateAccount(userId, "GET /api/account", db));
-    const { positions, totalCash } = await getAccount(userId);
+    const { positions, totalCash, realizedPnl, netDividends } = await getAccount(userId);
     const [{ prices, staleTickers }, orders] = await Promise.all([fetchPrices(positions.map(({ ticker }) => ticker), "GET /api/account"), getOpenOrders(userId, pool)]);
     const reservedCash = await reservedCashFor(orders, positions, "GET /api/account");
     const { rows: liquidations } = await pool.query<TransactionRow>(
@@ -22,6 +22,8 @@ export const GET = withUser(async (request, context, userId) => {
     );
     return NextResponse.json<Account>({
         ...valueAccount({ positions, totalCash, prices, staleTickers, reservedCash }),
+        realizedPnl,
+        netDividends,
         positions: positions.map(({ ticker, quantity }) => ({ ticker, quantity })),
         liquidations
     });

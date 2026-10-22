@@ -92,9 +92,10 @@ export interface Position {
     avgCost: number;
 }
 
-// GET /api/portfolio: a position with its current price and bid/ask, or null and the reason it couldn't be fetched
+// GET /api/portfolio: a position with its current price, the previous close and bid/ask, or null and the reason it couldn't be fetched
 export interface PortfolioPosition extends Position {
     price: number | null;
+    previousClose: number | null;
     bid: number | null;
     ask: number | null;
     error: string | null;
@@ -121,6 +122,9 @@ export interface AccountValuation {
 
 // GET /api/account
 export interface Account extends AccountValuation {
+    // Gains and losses booked on closed shares (average cost), and dividends received less dividends paid on shorts
+    realizedPnl: number;
+    netDividends: number;
     positions: { ticker: string; quantity: number }[];
     // The past week's automatic buy-in trades
     liquidations: TransactionRow[];
@@ -129,14 +133,105 @@ export interface Account extends AccountValuation {
 export type TickerVerdict = "BUY" | "HOLD" | "SELL";
 export type PositionVerdict = "HOLD" | "SELL" | "COVER";
 
-// GET /api/analysis/[ticker]
-export interface TickerAnalysis {
+// GET /api/transactions: a trade with the P&L it realized (null if it only opened or added to a position)
+export interface TradeHistoryRow extends TransactionRow {
+    realized_pnl: number | null;
+}
+
+export type HistoryRange = "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
+
+// GET /api/portfolio/history: daily equity, net deposits, the time-weighted return and SPY's price return over the range (both from
+// its first day, as fractions), and the range's totals. missing lists tickers whose closes couldn't be fetched (valued at cost).
+export interface PortfolioHistory {
+    range: HistoryRange;
+    // twr is null on days that started with zero or negative equity, when the day's return isn't defined
+    points: { date: string; equity: number; netDeposits: number; twr: number | null; benchmark: number | null }[];
+    twr: number | null;
+    benchmarkReturn: number | null;
+    benchmark: string;
+    missing: string[];
+}
+
+// GET /api/quote/[ticker]/overview: a company's profile and key figures (null where Alpha Vantage has none)
+export interface CompanyOverview {
+    ticker: string;
+    name: string;
+    assetType: string | null;
+    exchange: string | null;
+    sector: string | null;
+    industry: string | null;
+    marketCap: number | null;
+    peRatio: number | null;
+    forwardPe: number | null;
+    // As a fraction (0.0031 = 0.31%)
+    dividendYield: number | null;
+    beta: number | null;
+    week52High: number | null;
+    week52Low: number | null;
+    exDividendDate: string | null;
+    dividendDate: string | null;
+}
+
+// GET /api/trading/[ticker]/intraday: a 5-minute bar; time is Eastern, "YYYY-MM-DD HH:MM:SS"
+export interface IntradayBar {
+    time: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+}
+
+// GET /api/search?q=
+export interface SymbolMatch {
+    symbol: string;
+    name: string;
+    type: string;
+    region: string;
+    currency: string;
+}
+
+// GET /api/watchlist: a watched ticker with its current price and change, and its AI verdict if one is cached
+export interface WatchlistItem {
+    ticker: string;
+    addedAt: string;
+    price: number | null;
+    previousClose: number | null;
+    verdict: TickerVerdict | null;
+    error: string | null;
+}
+
+// An article an analysis cites
+export interface AnalysisSource {
+    title: string;
+    url: string | null;
+    // ISO timestamp
+    published: string;
+}
+
+// The structured part of an AI analysis: the reasoning behind the verdict, over a fixed horizon, with the articles it cites and
+// when and by which model it was made. No confidence percentages or price targets.
+export interface AnalysisDetails {
+    horizon: string;
+    evidence: string[];
+    counterarguments: string[];
+    risks: string[];
+    catalysts: string[];
+    sources: AnalysisSource[];
+    // ISO timestamps: when the analysis was made, and the newest data it used (the latest article or price)
+    generatedAt: string;
+    dataAsOf: string | null;
+    model: string;
+}
+
+// GET /api/analysis/[ticker]: analysis is the thesis, one paragraph that agrees with the verdict
+export interface TickerAnalysis extends AnalysisDetails {
     verdict: TickerVerdict;
     analysis: string;
 }
 
-// GET /api/portfolio/[ticker]/analysis
-export interface PositionAnalysis {
+// GET /api/portfolio/[ticker]/analysis: the same for an open position, with the verdict derived from the ticker's
+export interface PositionAnalysis extends AnalysisDetails {
     verdict: PositionVerdict;
     analysis: string;
 }

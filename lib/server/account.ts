@@ -101,9 +101,14 @@ const tradeDay = (date: string | Date): string => easternParts(new Date(date)).d
 // factor and its average cost divided by it, so its cost basis, value and cash don't change.
 // With before ("YYYY-MM-DD"), only trades dated before that day count, with the splits up to and including it: the position
 // held at that day's open (positionsAt). Otherwise every trade counts, with the splits up to asOf's date.
-export const computePositions = (transactions: Trade[], splits: Split[] = [], { asOf = new Date(), before }: { asOf?: Date; before?: string } = {}): { positions: Position[]; cash: number } => {
+// Realized P&L is booked on the part of a trade that reduces or closes a position, against its average cost: (price - avgCost) x
+// shares for a long, (avgCost - price) x shares for a short. realized has each transaction's amount, by index (null for a trade
+// that only opened or added, or that a before date left out).
+export const computePositions = (transactions: Trade[], splits: Split[] = [], { asOf = new Date(), before }: { asOf?: Date; before?: string } = {}): { positions: Position[]; cash: number; realizedPnl: number; realized: (number | null)[] } => {
     const positions = new Map<string, Position>();
     let cash = 0;
+    let realizedPnl = 0;
+    const realized: (number | null)[] = transactions.map(() => null);
     const today = tradeDay(asOf);
     const pending = splits.filter(({ exDate }) => exDate <= (before ?? today)).sort((a, b) => a.exDate.localeCompare(b.exDate));
     let nextSplit = 0;
@@ -116,9 +121,9 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
             position.avgCost = position.avgCost / factor;
         }
     };
-    for (const { ticker, type, price, quantity: storedQuantity, total, date } of transactions) {
+    transactions.forEach(({ ticker, type, price, quantity: storedQuantity, total, date }, index) => {
         const day = date ? tradeDay(date) : today;
-        if (before !== undefined && day >= before) continue;
+        if (before !== undefined && day >= before) return;
         applySplitsThrough(day);
         const symbol = ticker.toUpperCase();
         const position = positions.get(symbol) ?? { ticker: symbol, quantity: 0, avgCost: 0 };
@@ -128,6 +133,12 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
         cash += type === "SELL" ? parseFloat(String(total)) : -parseFloat(String(total));
         const delta = type === "BUY" ? quantity : -quantity;
         const held = Math.abs(position.quantity);
+        if (position.quantity !== 0 && Math.sign(delta) !== Math.sign(position.quantity)) {
+            const closed = Math.min(quantity, held);
+            const gain = (position.quantity > 0 ? tradePrice - position.avgCost : position.avgCost - tradePrice) * closed;
+            realized[index] = roundCents(gain);
+            realizedPnl += gain;
+        }
         if (position.quantity === 0 || Math.sign(delta) === Math.sign(position.quantity)) {
             position.avgCost = (position.avgCost * held + tradePrice * quantity) / (held + quantity);
             position.quantity = roundShares(position.quantity + delta);
@@ -141,9 +152,9 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
             position.avgCost = tradePrice;
         }
         positions.set(symbol, position);
-    }
+    });
     applySplitsThrough(before ?? today);
-    return { positions: [...positions.values()].filter(position => position.quantity !== 0), cash };
+    return { positions: [...positions.values()].filter(position => position.quantity !== 0), cash, realizedPnl: roundCents(realizedPnl), realized };
 };
 
 // The positions held at the open of a day ("YYYY-MM-DD"): trades before it, splits through it

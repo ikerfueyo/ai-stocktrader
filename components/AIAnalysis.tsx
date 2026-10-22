@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState } from "react";
 import axios from "axios";
+import AnalysisDetailsView from "./AnalysisDetailsView";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { TickerAnalysis, TickerVerdict } from "@/lib/types";
 
@@ -30,12 +31,8 @@ const AIAnalysis = ({ ticker }: { ticker: string }) => {
         <Fragment>
             <div className="analysis-box">
                 {error ? <p className="text-danger">Couldn&apos;t load AI analysis: {error}</p>
-                    : analysis ? (
-                        <Fragment>
-                            <p className="analysis-verdict">AI verdict: {VERDICT_LABELS[analysis.verdict]}</p>
-                            <p>{analysis.analysis}</p>
-                        </Fragment>
-                    ) : <p>Loading...</p>}
+                    : analysis ? <AnalysisDetailsView verdictLabel={VERDICT_LABELS[analysis.verdict]} thesis={analysis.analysis} details={analysis} />
+                    : <p>Loading...</p>}
             </div>
         </Fragment>
     )
