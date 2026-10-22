@@ -1003,3 +1003,135 @@ header a.header-pill.withdraw:hover {
 .portfolio-stats strong {
   color: #343a40;
 }
+
+.ticker-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.watchlist-star {
+  border: none;
+  background: none;
+  font-size: 32px;
+  line-height: 1;
+  color: #adb5bd;
+  cursor: pointer;
+}
+
+.watchlist-star.watched {
+  color: #f0ad00;
+}
+
+.watchlist {
+  max-width: 700px;
+  margin: 30px auto 0;
+}
+
+.watchlist-title {
+  font-size: 20px;
+  font-weight: bold;
+  color: #343a40;
+}
+
+.verdict-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: bold;
+  color: white;
+  background-color: #6c757d;
+}
+
+.verdict-tag.buy {
+  background-color: #28a745;
+}
+
+.verdict-tag.sell {
+  background-color: #dc3545;
+}
+
+.quote-details-panel .company-name {
+  text-align: center;
+  color: gray;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.quote-details-panel .company-name strong {
+  color: #343a40;
+}
+
+.quote-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.quote-stats dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: gray;
+  font-weight: normal;
+}
+
+.quote-stats dd {
+  margin: 0;
+  font-weight: bold;
+  color: #343a40;
+}
+
+.chart-ranges {
+  align-self: center;
+  margin-top: 10px;
+}
+
+.search-field {
+  position: relative;
+  flex: 1;
+}
+
+.search-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1000;
+  min-width: 320px;
+  max-width: 90vw;
+  margin: 2px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  background: white;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  text-align: left;
+}
+
+.search-suggestions li {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: #343a40;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+}
+
+.search-suggestions li.highlighted,
+.search-suggestions li:hover {
+  background-color: #e6fafa;
+}
+
+.search-suggestions span {
+  color: gray;
+}
+
+.search-region {
+  margin-left: 6px;
+  font-size: 12px;
+}

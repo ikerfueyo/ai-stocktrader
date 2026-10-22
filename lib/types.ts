@@ -152,6 +152,55 @@ export interface PortfolioHistory {
     missing: string[];
 }
 
+// GET /api/quote/[ticker]/overview: a company's profile and key figures (null where Alpha Vantage has none)
+export interface CompanyOverview {
+    ticker: string;
+    name: string;
+    assetType: string | null;
+    exchange: string | null;
+    sector: string | null;
+    industry: string | null;
+    marketCap: number | null;
+    peRatio: number | null;
+    forwardPe: number | null;
+    // As a fraction (0.0031 = 0.31%)
+    dividendYield: number | null;
+    beta: number | null;
+    week52High: number | null;
+    week52Low: number | null;
+    exDividendDate: string | null;
+    dividendDate: string | null;
+}
+
+// GET /api/trading/[ticker]/intraday: a 5-minute bar; time is Eastern, "YYYY-MM-DD HH:MM:SS"
+export interface IntradayBar {
+    time: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+}
+
+// GET /api/search?q=
+export interface SymbolMatch {
+    symbol: string;
+    name: string;
+    type: string;
+    region: string;
+    currency: string;
+}
+
+// GET /api/watchlist: a watched ticker with its current price and change, and its AI verdict if one is cached
+export interface WatchlistItem {
+    ticker: string;
+    addedAt: string;
+    price: number | null;
+    previousClose: number | null;
+    verdict: TickerVerdict | null;
+    error: string | null;
+}
+
 // GET /api/analysis/[ticker]
 export interface TickerAnalysis {
     verdict: TickerVerdict;

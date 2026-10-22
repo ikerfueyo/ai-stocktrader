@@ -76,6 +76,16 @@ export const analyzeTicker = (ticker: string) => cachePromise(analysisCache, tic
     return { verdict: verdict as TickerVerdict, analysis: analysis.trim(), news };
 });
 
+// A ticker's verdict if its analysis is already cached and finished, without fetching anything (for the watchlist, so listing
+// tickers never costs Alpha Vantage or OpenAI calls); null otherwise
+export const peekTickerVerdict = async (ticker: string): Promise<TickerVerdict | null> => {
+    const cached = analysisCache.get(ticker);
+    if (!cached || cached.expires <= Date.now()) return null;
+    // A promise that's still pending (or failed) counts as not cached. The timeout runs after the settled promise's callbacks.
+    const pending = new Promise<null>(resolve => setTimeout(() => resolve(null), 0));
+    return Promise.race([cached.promise.then(({ verdict }) => verdict, () => null), pending]);
+};
+
 // What a ticker's verdict means for an open position: a long is sold on SELL and held otherwise (there's no buying more from the
 // Portfolio page), and a short is covered on BUY and kept open otherwise
 type Side = "long" | "short";

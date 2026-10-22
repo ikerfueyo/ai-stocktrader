@@ -4,7 +4,7 @@ import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
 import { roundPrice, type Dividend, type Split } from "./account";
 import { easternParts, easternTime, parseEasternTimestamp, sessionOn } from "../marketHours";
-import type { DailySeries, Quote, QuoteDelay } from "../types";
+import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, Quote, QuoteDelay, SymbolMatch } from "../types";
 
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
@@ -294,3 +294,67 @@ export const fetchCorporateActions = async (ticker: string): Promise<{ splits: S
             .map(row => ({ ticker, exDate: row.ex_dividend_date, paymentDate: isDate(row.payment_date) ? row.payment_date : null, amount: parseFloat(row.amount) }))
     };
 };
+
+interface OverviewReply {
+    Symbol: string;
+    Name: string;
+    AssetType: string;
+    Exchange: string;
+    Sector: string;
+    Industry: string;
+    MarketCapitalization: string;
+    PERatio: string;
+    ForwardPE: string;
+    DividendYield: string;
+    Beta: string;
+    "52WeekHigh": string;
+    "52WeekLow": string;
+    ExDividendDate: string;
+    DividendDate: string;
+}
+// Alpha Vantage writes missing numbers as "None" or "-"
+const numberOrNull = (value: string | undefined) => {
+    const parsed = parseFloat(value ?? "");
+    return Number.isFinite(parsed) ? parsed : null;
+};
+const textOrNull = (value: string | undefined) => value && value !== "None" && value !== "-" ? value : null;
+
+// A company's profile and key figures (Alpha Vantage OVERVIEW), cached for 24 hours. Funds and unknown tickers have none (404).
+const overviewCache = singleton("overviewCache", () => new Map<string, CacheEntry<CompanyOverview>>());
+export const fetchCompanyOverview = (ticker: string) => cachePromise(overviewCache, ticker, 24 * 3600000, async (): Promise<CompanyOverview> => {
+    const data = await fetchAlphaVantage<OverviewReply>({ function: "OVERVIEW", symbol: ticker }, "Symbol").catch(error => {
+        throw error instanceof UpstreamError && /returned no data/.test(error.message) ? new UpstreamError(`No company overview for ${ticker}`, 404) : error;
+    });
+    return {
+        ticker, name: data.Name, assetType: textOrNull(data.AssetType), exchange: textOrNull(data.Exchange),
+        sector: textOrNull(data.Sector), industry: textOrNull(data.Industry),
+        marketCap: numberOrNull(data.MarketCapitalization), peRatio: numberOrNull(data.PERatio), forwardPe: numberOrNull(data.ForwardPE),
+        dividendYield: numberOrNull(data.DividendYield), beta: numberOrNull(data.Beta),
+        week52High: numberOrNull(data["52WeekHigh"]), week52Low: numberOrNull(data["52WeekLow"]),
+        exDividendDate: textOrNull(data.ExDividendDate), dividendDate: textOrNull(data.DividendDate)
+    };
+});
+
+// The last month of 5-minute bars in the regular session (Alpha Vantage TIME_SERIES_INTRADAY, with the entitlement), newest last,
+// cached for 60s. Times are Eastern ("YYYY-MM-DD HH:MM:SS").
+const intradayCache = singleton("intradayCache", () => new Map<string, CacheEntry<IntradayBar[]>>());
+export const fetchIntraday = (ticker: string) => cachePromise(intradayCache, ticker, 60000, async () => {
+    const data = await fetchAlphaVantage<{ "Time Series (5min)": Record<string, DailyBar> }>({
+        function: "TIME_SERIES_INTRADAY", symbol: ticker, interval: "5min", outputsize: "full", extended_hours: "false",
+        ...(ALPHA_VANTAGE_ENTITLEMENT && { entitlement: ALPHA_VANTAGE_ENTITLEMENT })
+    }, "Time Series (5min)");
+    return Object.entries(data["Time Series (5min)"]).sort(([a], [b]) => a.localeCompare(b)).map(([time, bar]) => ({
+        time, open: parseFloat(bar["1. open"]), high: parseFloat(bar["2. high"]), low: parseFloat(bar["3. low"]), close: parseFloat(bar["4. close"]), volume: parseFloat(bar["5. volume"])
+    }));
+});
+
+interface SymbolSearchReply {
+    bestMatches: Record<string, string>[];
+}
+// Tickers matching a search (Alpha Vantage SYMBOL_SEARCH), U.S. listings first, cached for 24 hours per query
+const searchCache = singleton("symbolSearchCache", () => new Map<string, CacheEntry<SymbolMatch[]>>());
+export const searchSymbols = (query: string) => cachePromise(searchCache, query.toUpperCase(), 24 * 3600000, async () => {
+    const { bestMatches } = await fetchAlphaVantage<SymbolSearchReply>({ function: "SYMBOL_SEARCH", keywords: query }, "bestMatches");
+    const matches = bestMatches.map(match => ({ symbol: match["1. symbol"], name: match["2. name"], type: match["3. type"], region: match["4. region"], currency: match["8. currency"] }));
+    return [...matches.filter(({ region }) => region === "United States"), ...matches.filter(({ region }) => region !== "United States")];
+});
