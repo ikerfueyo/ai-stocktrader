@@ -7,6 +7,9 @@ import BuySellFunctionality from "./BuySellFunctionality";
 import CandlestickChart from "./CandlestickChart";
 import AIAnalysis from "./AIAnalysis";
 import MarketStatusBadge from "./MarketStatusBadge";
+import OpenOrders from "./OpenOrders";
+import QuoteDetails from "./QuoteDetails";
+import WatchlistStar from "./WatchlistStar";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { MarketStatus } from "@/lib/marketHours";
 import type { DailyBar, DailySeries, Quote } from "@/lib/types";
@@ -21,7 +24,7 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
     const [quoteError, setQuoteError] = useState<string | null>(null);
     const [market, setMarket] = useState<MarketStatus | null>(null);
     const [error, setError] = useState<string | null>(null);
-    // Bumped after a trade to reload the quote and market status
+    // Bumped after an order to reload the quote, the market status and the open orders
     const [quoteVersion, setQuoteVersion] = useState(0);
 
     useEffect(() => {
@@ -69,7 +72,10 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
 
     return (
         <Fragment>
-            <h1 className="ticker-header">{ticker}</h1>
+            <div className="ticker-title">
+                <h1 className="ticker-header">{ticker}</h1>
+                <WatchlistStar ticker={ticker.toUpperCase()} />
+            </div>
             <MarketStatusBadge status={market} />
             <div className="trading-interface-container">
                 <div className="left-column">
@@ -85,9 +91,9 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
                             ) : quoteError ? (
                                 <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
                             ) : null}
-                            <div className="candlestick-chart-container">
-                                <CandlestickChart data={data} />
-                            </div>
+                            <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
+                            <QuoteDetails ticker={ticker.toUpperCase()} data={data} />
+                            <CandlestickChart ticker={ticker.toUpperCase()} data={data} />
                         </Fragment>
                     )}
                 </div>

@@ -30,20 +30,26 @@ export const getPositions = async (userId: string, ticker?: string, db: Db = poo
     return (await replay(rows)).positions;
 };
 
-// A user's trade history, the traded tickers' splits and dividends, open positions (split-adjusted) and total cash (the trades'
-// cash ledger plus net cash activity: deposits and dividends received, less withdrawals and dividends paid on shorts). A client runs
+// A user's trade history, the traded tickers' splits and dividends, open positions (split-adjusted), total cash (the trades'
+// cash ledger plus net cash activity: deposits and dividends received, less withdrawals and dividends paid on shorts), realized P&L
+// (in total and per transaction, by index) and net dividends. A client runs
 // its queries one at a time, so they're only parallel on the pool.
 export const getAccount = async (userId: string, db: Db = pool) => {
-    const [{ rows: transactions }, { rows: [{ net }] }] = await Promise.all([
+    const [{ rows: transactions }, { rows: [{ net, dividends: netDividends }] }] = await Promise.all([
         db.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 ORDER BY "date", id', [userId]),
-        db.query<{ net: string }>(
-            `SELECT COALESCE(SUM(CASE WHEN "type" IN ('DEPOSIT', 'DIVIDEND_IN') THEN amount ELSE -amount END), 0) AS net FROM cash_activity WHERE user_id = $1`,
+        db.query<{ net: string; dividends: string }>(
+            `SELECT COALESCE(SUM(CASE WHEN "type" IN ('DEPOSIT', 'DIVIDEND_IN') THEN amount ELSE -amount END), 0) AS net,
+                    COALESCE(SUM(CASE "type" WHEN 'DIVIDEND_IN' THEN amount WHEN 'DIVIDEND_OUT' THEN -amount ELSE 0 END), 0) AS dividends
+             FROM cash_activity WHERE user_id = $1`,
             [userId]
         )
     ]);
     const netTransfers = parseFloat(net);
-    const { positions, cash, splits, dividends } = await replay(transactions);
-    return { transactions, splits, dividends, netTransfers, positions, totalCash: roundCents(cash + netTransfers) };
+    const { positions, cash, splits, dividends, realizedPnl, realized } = await replay(transactions);
+    return {
+        transactions, splits, dividends, netTransfers, positions, totalCash: roundCents(cash + netTransfers),
+        realizedPnl, realized, netDividends: parseFloat(netDividends)
+    };
 };
 
 // Runs fn in a database transaction on db, which must be a client (such as withAccountLock's)
@@ -93,15 +99,15 @@ export const withAccountLock = <T>(userId: string, fn: (db: PoolClient) => Promi
     return run;
 };
 
-// Inserts an executed trade, stamped now
+// Inserts an executed trade, stamped now. orderId links the fill of a stored order (limit, stop or queued).
 export const insertTrade = async (db: Db, userId: string, trade: {
     type: TradeType; ticker: string; price: number; quantity: number; total: number;
-    fillPolicy: FillPolicy; quoteTime: string | null; reason?: "LIQUIDATION";
+    fillPolicy: FillPolicy; quoteTime: string | null; reason?: "LIQUIDATION"; orderId?: number;
 }): Promise<TransactionRow> => {
     const { rows } = await db.query<TransactionRow>(
-        `INSERT INTO transactions (user_id, "date", "type", ticker, price, quantity, total, reason, quote_time, fill_policy)
-         VALUES($1, now(), $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-        [userId, trade.type, trade.ticker, trade.price, trade.quantity, trade.total, trade.reason ?? null, trade.quoteTime, trade.fillPolicy]
+        `INSERT INTO transactions (user_id, "date", "type", ticker, price, quantity, total, reason, quote_time, fill_policy, order_id)
+         VALUES($1, now(), $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [userId, trade.type, trade.ticker, trade.price, trade.quantity, trade.total, trade.reason ?? null, trade.quoteTime, trade.fillPolicy, trade.orderId ?? null]
     );
     return rows[0];
 };
@@ -135,13 +141,6 @@ export const postDividends = async (userId: string, label: string, db: PoolClien
         console.log(`${label}: posted ${inserted.length} dividend${inserted.length === 1 ? "" : "s"} for ${userId}: ${inserted.map(({ type, ticker, amount }) => `${type} ${ticker} ${amount}`).join(", ")}`);
     }
     return inserted;
-};
-
-// The account upkeep that runs before showing an account: post paid dividends, then run the buy-in check. Call it inside
-// withAccountLock with its client.
-export const updateAccount = async (userId: string, label: string, db: PoolClient) => {
-    await postDividends(userId, label, db).catch(error => console.error(`${label}: dividends: ${error.message}`));
-    return enforceCollateral(userId, label, db);
 };
 
 export const shortTickers = (positions: Position[]) => positions.filter(({ quantity }) => quantity < 0).map(({ ticker }) => ticker);

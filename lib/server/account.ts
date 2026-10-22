@@ -101,9 +101,14 @@ const tradeDay = (date: string | Date): string => easternParts(new Date(date)).d
 // factor and its average cost divided by it, so its cost basis, value and cash don't change.
 // With before ("YYYY-MM-DD"), only trades dated before that day count, with the splits up to and including it: the position
 // held at that day's open (positionsAt). Otherwise every trade counts, with the splits up to asOf's date.
-export const computePositions = (transactions: Trade[], splits: Split[] = [], { asOf = new Date(), before }: { asOf?: Date; before?: string } = {}): { positions: Position[]; cash: number } => {
+// Realized P&L is booked on the part of a trade that reduces or closes a position, against its average cost: (price - avgCost) x
+// shares for a long, (avgCost - price) x shares for a short. realized has each transaction's amount, by index (null for a trade
+// that only opened or added, or that a before date left out).
+export const computePositions = (transactions: Trade[], splits: Split[] = [], { asOf = new Date(), before }: { asOf?: Date; before?: string } = {}): { positions: Position[]; cash: number; realizedPnl: number; realized: (number | null)[] } => {
     const positions = new Map<string, Position>();
     let cash = 0;
+    let realizedPnl = 0;
+    const realized: (number | null)[] = transactions.map(() => null);
     const today = tradeDay(asOf);
     const pending = splits.filter(({ exDate }) => exDate <= (before ?? today)).sort((a, b) => a.exDate.localeCompare(b.exDate));
     let nextSplit = 0;
@@ -116,9 +121,9 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
             position.avgCost = position.avgCost / factor;
         }
     };
-    for (const { ticker, type, price, quantity: storedQuantity, total, date } of transactions) {
+    transactions.forEach(({ ticker, type, price, quantity: storedQuantity, total, date }, index) => {
         const day = date ? tradeDay(date) : today;
-        if (before !== undefined && day >= before) continue;
+        if (before !== undefined && day >= before) return;
         applySplitsThrough(day);
         const symbol = ticker.toUpperCase();
         const position = positions.get(symbol) ?? { ticker: symbol, quantity: 0, avgCost: 0 };
@@ -128,6 +133,12 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
         cash += type === "SELL" ? parseFloat(String(total)) : -parseFloat(String(total));
         const delta = type === "BUY" ? quantity : -quantity;
         const held = Math.abs(position.quantity);
+        if (position.quantity !== 0 && Math.sign(delta) !== Math.sign(position.quantity)) {
+            const closed = Math.min(quantity, held);
+            const gain = (position.quantity > 0 ? tradePrice - position.avgCost : position.avgCost - tradePrice) * closed;
+            realized[index] = roundCents(gain);
+            realizedPnl += gain;
+        }
         if (position.quantity === 0 || Math.sign(delta) === Math.sign(position.quantity)) {
             position.avgCost = (position.avgCost * held + tradePrice * quantity) / (held + quantity);
             position.quantity = roundShares(position.quantity + delta);
@@ -141,9 +152,9 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
             position.avgCost = tradePrice;
         }
         positions.set(symbol, position);
-    }
+    });
     applySplitsThrough(before ?? today);
-    return { positions: [...positions.values()].filter(position => position.quantity !== 0), cash };
+    return { positions: [...positions.values()].filter(position => position.quantity !== 0), cash, realizedPnl: roundCents(realizedPnl), realized };
 };
 
 // The positions held at the open of a day ("YYYY-MM-DD"): trades before it, splits through it
@@ -202,7 +213,8 @@ const measure = ({ positions, totalCash, prices, collateralRate = SHORT_COLLATER
 // The requirement only splits total cash, so it changes neither equity nor unrealized P&L. When total cash can't meet it, the gap
 // is a collateral shortfall: the deposit that would make the account compliant. Available cash is never negative.
 // Tickers in staleTickers (priced from a last known price) or missing from prices (priced at average cost) are listed in missingPrices.
-export const valueAccount = ({ positions, totalCash, prices, staleTickers = [], collateralRate = SHORT_COLLATERAL_RATE }: AccountState & { collateralRate?: number }): AccountValuation => {
+// reservedCash (held for open orders, reservedForOrders) also comes out of available cash, but like collateral it only splits cash.
+export const valueAccount = ({ positions, totalCash, prices, staleTickers = [], collateralRate = SHORT_COLLATERAL_RATE, reservedCash = 0 }: AccountState & { collateralRate?: number; reservedCash?: number }): AccountValuation => {
     const { longValue, longCostBasis, shortProceeds, shortLiability, requirement, shortfall } = measure({ positions, totalCash, prices, collateralRate });
     let marginStatus: MarginStatus = "ok";
     if (shortfall > CENT_SLACK) {
@@ -210,12 +222,13 @@ export const valueAccount = ({ positions, totalCash, prices, staleTickers = [], 
     }
     return {
         totalCash: roundCents(totalCash),
+        reservedCash: roundCents(reservedCash),
         equity: roundCents(totalCash + longValue - shortLiability),
         unrealizedPnl: roundCents((longValue - longCostBasis) + (shortProceeds - shortLiability)),
         shortLiability: roundCents(shortLiability),
         collateralRequirement: roundCents(requirement),
         restrictedCash: roundCents(Math.min(requirement, Math.max(totalCash, 0))),
-        availableCash: roundCents(Math.max(0, totalCash - requirement)),
+        availableCash: roundCents(Math.max(0, totalCash - requirement - reservedCash)),
         collateralShortfall: marginStatus === "ok" ? 0 : roundCents(shortfall),
         collateralRatio: shortLiability > 0 ? totalCash / shortLiability : null,
         marginStatus,
@@ -246,13 +259,15 @@ const unpricedResult = (tickers: string[]): Assessment =>
 // Anything that opens or adds to a position (including the new side of a flip) must leave no collateral shortfall, judged by
 // replaying the history with the trade added, with the traded ticker at the trade price and the others at current prices.
 // So a buy needs its cost in available cash, and a new short needs 50% of its value (its proceeds cover the other 100%).
-export const assessTrade = ({ transactions, splits = [], netTransfers = 0, prices, staleTickers = [], trade }: {
+// reservedCash (held for other open orders) isn't available.
+export const assessTrade = ({ transactions, splits = [], netTransfers = 0, prices, staleTickers = [], trade, reservedCash = 0 }: {
     transactions: Trade[];
     splits?: Split[];
     netTransfers?: number;
     prices: Prices;
     staleTickers?: string[];
     trade: Trade;
+    reservedCash?: number;
 }): Assessment => {
     const symbol = trade.ticker.toUpperCase();
     const before = computePositions(transactions, splits);
@@ -266,35 +281,40 @@ export const assessTrade = ({ transactions, splits = [], netTransfers = 0, price
     if (unpriced.length > 0) {
         return unpricedResult(unpriced);
     }
-    const shortfallAfter = measure({ positions: after.positions, totalCash: after.cash + netTransfers, prices: tradePrices }).shortfall;
+    const shortfallAfter = measure({ positions: after.positions, totalCash: after.cash + netTransfers - reservedCash, prices: tradePrices }).shortfall;
     if (shortfallAfter <= CENT_SLACK) {
         return { allowed: true };
     }
-    const valuedBefore = valueAccount({ positions: before.positions, totalCash: before.cash + netTransfers, prices: tradePrices, staleTickers: stale });
+    const valuedBefore = valueAccount({ positions: before.positions, totalCash: before.cash + netTransfers, prices: tradePrices, staleTickers: stale, reservedCash });
     if (valuedBefore.collateralShortfall > 0) {
         return { allowed: false, status: 400, message: marginCallMessage(valuedBefore.collateralShortfall) };
     }
     const available = valuedBefore.availableCash;
     const needed = formatCurrency(available + shortfallAfter);
+    const held = reservedCash > 0 ? ` (${formatCurrency(reservedCash)} is reserved for open orders)` : "";
     const message = trade.type === "BUY"
-        ? `Insufficient funds: buying ${symbol} needs ${needed} available, but only ${formatCurrency(available)} is`
-        : `Insufficient collateral: shorting ${symbol} needs ${needed} available (150% of a short's value is held as collateral, and its proceeds cover 100%), but only ${formatCurrency(available)} is`;
+        ? `Insufficient funds: buying ${symbol} needs ${needed} available, but only ${formatCurrency(available)} is${held}`
+        : `Insufficient collateral: shorting ${symbol} needs ${needed} available (150% of a short's value is held as collateral, and its proceeds cover 100%), but only ${formatCurrency(available)} is${held}`;
     return { allowed: false, status: 400, message };
 };
 
 // Whether a withdrawal may go ahead: it can only come from available cash, never from short collateral.
-export const assessWithdrawal = ({ positions, totalCash, prices, staleTickers = [], amount }: AccountState & { amount: number }): Assessment => {
+export const assessWithdrawal = ({ positions, totalCash, prices, staleTickers = [], amount, reservedCash = 0 }: AccountState & { amount: number; reservedCash?: number }): Assessment => {
     const unpriced = unpricedShorts(positions, prices, staleTickers);
     if (unpriced.length > 0) {
         return unpricedResult(unpriced);
     }
-    const valued = valueAccount({ positions, totalCash, prices });
+    const valued = valueAccount({ positions, totalCash, prices, reservedCash });
     if (valued.collateralShortfall > 0) {
         return { allowed: false, status: 400, message: marginCallMessage(valued.collateralShortfall) };
     }
     if (amount > valued.availableCash + CENT_SLACK) {
-        const held = valued.restrictedCash > 0 ? ` (${formatCurrency(valued.restrictedCash)} is held as short collateral)` : "";
-        return { allowed: false, status: 400, message: `Insufficient funds: can't withdraw ${formatCurrency(amount)}, only ${formatCurrency(valued.availableCash)} is available${held}` };
+        const held = [
+            valued.restrictedCash > 0 && `${formatCurrency(valued.restrictedCash)} is held as short collateral`,
+            reservedCash > 0 && `${formatCurrency(reservedCash)} is reserved for open orders`
+        ].filter(Boolean).join(", and ");
+        const detail = held ? ` (${held})` : "";
+        return { allowed: false, status: 400, message: `Insufficient funds: can't withdraw ${formatCurrency(amount)}, only ${formatCurrency(valued.availableCash)} is available${detail}` };
     }
     return { allowed: true };
 };

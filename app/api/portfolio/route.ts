@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { withUser } from "@/lib/server/errors";
 import { fetchQuotes } from "@/lib/server/alphaVantage";
-import { getPositions, updateAccount, withAccountLock } from "@/lib/server/portfolio";
+import { getPositions, withAccountLock } from "@/lib/server/portfolio";
+import { updateAccount } from "@/lib/server/upkeep";
 import type { PortfolioPosition } from "@/lib/types";
 
 // Get open (split-adjusted) positions with current prices (Alpha Vantage API, fetched together, shared with /api/account by the quote
@@ -15,10 +16,10 @@ export const GET = withUser(async (request, context, userId) => {
     return NextResponse.json<PortfolioPosition[]>(positions.map((position, index) => {
         const result = quotes[index];
         if (result.status === "fulfilled") {
-            const { price, bid, ask } = result.value;
-            return { ...position, price, bid, ask, error: null };
+            const { price, previousClose, bid, ask } = result.value;
+            return { ...position, price, previousClose, bid, ask, error: null };
         }
         console.error(`GET /api/portfolio: ${position.ticker}: ${result.reason.message}`);
-        return { ...position, price: null, bid: null, ask: null, error: result.reason.message };
+        return { ...position, price: null, previousClose: null, bid: null, ask: null, error: result.reason.message };
     }));
 });
