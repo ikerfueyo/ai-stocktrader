@@ -59,6 +59,7 @@ export const MIN_NEWS_RELEVANCE = 0.3;
 
 export interface NewsItem {
     title: string;
+    url: string | null;
     summary: string;
     published: string;
     tickers: { ticker: string; relevance: number; sentiment: number }[];
@@ -68,6 +69,7 @@ export interface NewsItem {
 interface NewsFeed {
     feed: {
         title: string;
+        url?: string;
         summary: string;
         time_published: string;
         ticker_sentiment?: { ticker: string; relevance_score: string; ticker_sentiment_score: string }[];
@@ -80,6 +82,7 @@ export const fetchNews = async (params: Record<string, string | number> = {}): P
     const data = await fetchAlphaVantage<NewsFeed>({ function: "NEWS_SENTIMENT", sort: "LATEST", ...params }, "feed");
     return data.feed.map(item => ({
         title: item.title,
+        url: typeof item.url === "string" && /^https?:\/\//.test(item.url) ? item.url : null,
         summary: item.summary,
         published: item.time_published,
         tickers: (item.ticker_sentiment ?? []).map(sentiment => ({

@@ -201,14 +201,37 @@ export interface WatchlistItem {
     error: string | null;
 }
 
-// GET /api/analysis/[ticker]
-export interface TickerAnalysis {
+// An article an analysis cites
+export interface AnalysisSource {
+    title: string;
+    url: string | null;
+    // ISO timestamp
+    published: string;
+}
+
+// The structured part of an AI analysis: the reasoning behind the verdict, over a fixed horizon, with the articles it cites and
+// when and by which model it was made. No confidence percentages or price targets.
+export interface AnalysisDetails {
+    horizon: string;
+    evidence: string[];
+    counterarguments: string[];
+    risks: string[];
+    catalysts: string[];
+    sources: AnalysisSource[];
+    // ISO timestamps: when the analysis was made, and the newest data it used (the latest article or price)
+    generatedAt: string;
+    dataAsOf: string | null;
+    model: string;
+}
+
+// GET /api/analysis/[ticker]: analysis is the thesis, one paragraph that agrees with the verdict
+export interface TickerAnalysis extends AnalysisDetails {
     verdict: TickerVerdict;
     analysis: string;
 }
 
-// GET /api/portfolio/[ticker]/analysis
-export interface PositionAnalysis {
+// GET /api/portfolio/[ticker]/analysis: the same for an open position, with the verdict derived from the ticker's
+export interface PositionAnalysis extends AnalysisDetails {
     verdict: PositionVerdict;
     analysis: string;
 }
