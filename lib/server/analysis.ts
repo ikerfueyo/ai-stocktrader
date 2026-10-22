@@ -3,12 +3,16 @@ import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
-import { fetchCompanyOverview, fetchDailyCloses, fetchNews, fetchTickerNews, MIN_NEWS_RELEVANCE, type NewsItem } from "./alphaVantage";
+import pool from "./db";
+import { fetchCompanyOverview, fetchDailyCloses, fetchEarnings, fetchEarningsEstimates, fetchNews, fetchNextReport, fetchTickerNews, MIN_NEWS_RELEVANCE, type NewsItem } from "./alphaVantage";
 import { computeTechnicals, type Technicals } from "./technicals";
-import { parseEasternTimestamp } from "../marketHours";
+import { summarizeEarnings, type EarningsSummary } from "./earnings";
+import { easternParts, parseEasternTimestamp } from "../marketHours";
 import type { AnalysisDetails, AnalysisSource, CompanyOverview, PositionAnalysis, PositionVerdict, Rankings, TickerAnalysis, TickerVerdict } from "../types";
 
 const MODEL = "gpt-6-luna";
+// Logged with each verdict (verdict_log), so the track record compares prompts and inputs. Bump it when either changes.
+export const PROMPT_VERSION = 2;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 1 });
 
 // The companies an article is mainly about: its most relevant tickers. Analyst notes also tag the bank that wrote them
@@ -31,7 +35,8 @@ const askAnalyst = async (content: string, options: AnalystOptions = {}) => {
         // Reasoning off: it didn't change Luna's verdicts on this prompt, and temperature (0 for the JSON calls) is only accepted without it
         reasoning_effort: "none",
         messages: [
-            { role: "system", content: "You are a financial news sentiment analyst. Your task is to analyze the titles and summaries of news articles related to stocks and determine their sentiment, giving more weight to recent articles. Provide a response based on the given prompt." },
+            // Price impact rather than tone: positive coverage often follows a move that has already happened
+            { role: "system", content: "You are an equity analyst. Your task is to judge how the information given is likely to move a stock's share price over the next few weeks, given what the market already expects and what the price already reflects, not how positive or negative the news sounds. Give more weight to recent information. Provide a response based on the given prompt." },
             { role: "user", content }
         ],
         ...options
@@ -63,11 +68,13 @@ const VERDICTS: TickerVerdict[] = ["BUY", "HOLD", "SELL"];
 const HORIZON = "1 to 4 weeks";
 const LIST_ITEMS = 4;
 
-// What an analysis is based on: the ticker's recent news (the main input), price and technical figures computed from its daily
-// closes, and its valuation from the company overview. The last two are context, left out when Alpha Vantage has none.
+// What an analysis is based on: the ticker's recent news, price and technical figures computed from its daily closes (and SPY's),
+// its earnings against estimates and how the estimates are moving, and its valuation and analyst consensus from the company
+// overview. All but the news are left out when Alpha Vantage has none.
 interface AnalysisInputs {
     news: NewsItem[];
     technicals: Technicals | null;
+    earnings: EarningsSummary | null;
     overview: CompanyOverview | null;
     // The inputs as the prompt shows them, articles numbered for citing
     text: string;
@@ -84,8 +91,34 @@ const publishedIso = (published: string) => {
 };
 const percent = (fraction: number | null) => fraction === null ? "n/a" : `${fraction >= 0 ? "+" : ""}${(fraction * 100).toFixed(1)}%`;
 const figure = (value: number | null, digits = 2) => value === null ? "n/a" : value.toLocaleString("en-US", { maximumFractionDigits: digits });
+const eps = (value: number | null) => value === null ? "n/a" : `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
+const BENCHMARK = "SPY";
 
-const formatInputs = (ticker: string, news: NewsItem[], technicals: Technicals | null, overview: CompanyOverview | null) => {
+const formatEarnings = ({ recent, estimates, next, daysSinceReport }: EarningsSummary) => {
+    const lines = ["EARNINGS AND ESTIMATES (earnings per share)"];
+    if (next) {
+        lines.push(`Next report: ${next.reportDate}${next.timeOfDay ? ` (${next.timeOfDay})` : ""}, in ${next.daysAway} ${next.daysAway === 1 ? "day" : "days"}${next.fiscalDateEnding ? `, for the quarter ending ${next.fiscalDateEnding}` : ""}`);
+    }
+    if (recent.length > 0) {
+        lines.push(`Last report: ${recent[0].reportedDate}, ${daysSinceReport} days ago`);
+        lines.push(...recent.map(({ fiscalDateEnding, reportedEps, estimatedEps, surprise }) =>
+            `Quarter ending ${fiscalDateEnding}: reported ${eps(reportedEps)} vs estimate ${eps(estimatedEps)} (surprise ${percent(surprise)})`));
+    }
+    lines.push(...estimates.map(({ fiscalDateEnding, period, average, analysts, change30Days, change90Days, revisionsUp30Days, revisionsDown30Days }) =>
+        `Consensus for the fiscal ${period} ending ${fiscalDateEnding}: ${eps(average)}${analysts ? ` (${figure(analysts, 0)} analysts)` : ""}; change in 30 days: ${percent(change30Days)}, in 90 days: ${percent(change90Days)}`
+        + (revisionsUp30Days !== null || revisionsDown30Days !== null ? `; revisions in 30 days: ${figure(revisionsUp30Days ?? 0, 0)} up, ${figure(revisionsDown30Days ?? 0, 0)} down` : "")));
+    return lines.join("\n");
+};
+
+const formatAnalysts = ({ analystTargetPrice, analystRatings }: CompanyOverview, price: number | null) => {
+    if (analystTargetPrice === null && analystRatings === null) return null;
+    const target = analystTargetPrice === null ? null
+        : `target price $${figure(analystTargetPrice)}${price ? ` (${percent(analystTargetPrice / price - 1)} from the last close)` : ""}`;
+    const ratings = analystRatings && `ratings: ${analystRatings.strongBuy} strong buy, ${analystRatings.buy} buy, ${analystRatings.hold} hold, ${analystRatings.sell} sell, ${analystRatings.strongSell} strong sell`;
+    return `Analyst consensus: ${[target, ratings].filter(Boolean).join("; ")}`;
+};
+
+const formatInputs = (ticker: string, news: NewsItem[], technicals: Technicals | null, earnings: EarningsSummary | null, overview: CompanyOverview | null) => {
     const sections = [`NEWS ABOUT ${ticker}, newest first; cite articles by their number\n\n${news.map((item, i) => `[${i + 1}] Published: ${formatPublished(item.published)}\nTitle: ${item.title}\nSummary: ${item.summary}`).join("\n\n")}`];
     if (technicals) {
         sections.push([
@@ -93,36 +126,48 @@ const formatInputs = (ticker: string, news: NewsItem[], technicals: Technicals |
             `Last close: $${figure(technicals.price)}`,
             `Return over 5 sessions: ${percent(technicals.return5d)}; 1 month: ${percent(technicals.return1m)}; 3 months: ${percent(technicals.return3m)}`,
             `Price vs 50-day average: ${percent(technicals.vsSma50)}; vs 200-day average: ${percent(technicals.vsSma200)}`,
-            `RSI (14): ${figure(technicals.rsi14, 1)}`
+            `RSI (14): ${figure(technicals.rsi14, 1)}`,
+            ...(technicals.vsBenchmark1m !== null || technicals.vsBenchmark3m !== null
+                ? [`Return less ${BENCHMARK}'s: 1 month: ${percent(technicals.vsBenchmark1m)}; 3 months: ${percent(technicals.vsBenchmark3m)}`] : [])
         ].join("\n"));
+    }
+    if (earnings) {
+        sections.push(formatEarnings(earnings));
     }
     if (overview) {
         sections.push([
             `VALUATION AND PROFILE (${overview.name}${overview.sector ? `, ${overview.sector.toLowerCase()}` : ""})`,
             `Market cap: ${overview.marketCap === null ? "n/a" : `$${figure(overview.marketCap / 1e9, 1)}B`}; P/E: ${figure(overview.peRatio)}; forward P/E: ${figure(overview.forwardPe)}`,
             `Dividend yield: ${overview.dividendYield === null ? "n/a" : `${(overview.dividendYield * 100).toFixed(2)}%`}; beta: ${figure(overview.beta)}`,
-            `52-week range: $${figure(overview.week52Low)} to $${figure(overview.week52High)}`
-        ].join("\n"));
+            `52-week range: $${figure(overview.week52Low)} to $${figure(overview.week52High)}`,
+            formatAnalysts(overview, technicals?.price ?? null)
+        ].filter(Boolean).join("\n"));
     }
     return sections.join("\n\n---\n\n");
 };
 
 const loadInputs = async (ticker: string): Promise<AnalysisInputs> => {
     const news = await fetchTickerNews(ticker);
-    // Context only: the analysis goes ahead without them
-    const [closes, overview] = await Promise.all([
+    // The analysis goes ahead without any of these. SPY's compact series (shared with the performance chart) covers 3 months.
+    const [closes, benchmarkCloses, overview, quarters, estimates, nextReport] = await Promise.all([
         fetchDailyCloses(ticker, "full").catch(() => null),
-        fetchCompanyOverview(ticker).catch(() => null)
+        fetchDailyCloses(BENCHMARK, "compact").catch(() => null),
+        fetchCompanyOverview(ticker).catch(() => null),
+        fetchEarnings(ticker).catch(() => null),
+        fetchEarningsEstimates(ticker).catch(() => null),
+        fetchNextReport(ticker).catch(() => null)
     ]);
-    const technicals = closes ? computeTechnicals(closes) : null;
-    return { news, technicals, overview, text: formatInputs(ticker, news, technicals, overview) };
+    const technicals = closes ? computeTechnicals(closes, ticker === BENCHMARK ? null : benchmarkCloses) : null;
+    const earnings = summarizeEarnings(quarters, estimates, nextReport, easternParts(new Date()).dateKey);
+    return { news, technicals, earnings, overview, text: formatInputs(ticker, news, technicals, earnings, overview) };
 };
 
-const ANALYSIS_RULES = `The time horizon is ${HORIZON}. Base the view mainly on the news, and use the price, technical and valuation figures as context. Use only the facts given: never invent figures, confidence percentages, probabilities or price targets. Each list has 2 to ${LIST_ITEMS} short items: "evidence" the facts that support the view, "counterarguments" the strongest facts or readings against it, "risks" what could make it wrong, and "catalysts" upcoming events or developments that could move the price. "sources" lists the numbers of the articles the analysis relies on most; don't put article numbers in the text.`;
+const ANALYSIS_RULES = `The time horizon is ${HORIZON}. Judge what is likely to move the price, not the tone of the coverage. News is often already reflected in the price, so compare when each article was published with the recent returns, and give little weight to recaps of old news, opinion pieces and lists of stocks. Results against expectations (earnings surprises, changes in analysts' estimates, guidance) matter more than whether the news sounds positive; a reaction to them can continue after the news, so a move that has already happened is a reason neither for nor against on its own. An earnings report within the horizon is a catalyst and a risk. Weigh the news together with the earnings, price, technical and valuation figures. Use only the facts given: never invent figures, confidence percentages, probabilities or price targets. Each list has 2 to ${LIST_ITEMS} short items: "evidence" the facts that support the view, "counterarguments" the strongest facts or readings against it, "risks" what could make it wrong, and "catalysts" upcoming events or developments that could move the price. "sources" lists the numbers of the articles the analysis relies on most; don't put article numbers in the text.`;
 const DETAILS_SHAPE = `"evidence": ["..."], "counterarguments": ["..."], "risks": ["..."], "catalysts": ["..."], "sources": [1, 2]`;
 
-// Inline article references such as "[13, 49]" or "[29–31]", which mean nothing to the reader (sources lists the articles)
-const stripCitations = (text: string) => text.replace(/\s*\[\d+(?:\s*[,–-]\s*\d+)*\]/g, "").trim();
+// Inline article references such as "[13, 49]", "[29–31]" or "(16)", which mean nothing to the reader (sources lists the
+// articles). At most 3 digits, so a year in parentheses stays.
+const stripCitations = (text: string) => text.replace(/\s*[[(]\d{1,3}(?:\s*[,–-]\s*\d{1,3})*[\])]/g, "").trim();
 
 const toList = (value: unknown) => (Array.isArray(value) ? value : [])
     .filter((item): item is string => typeof item === "string")
@@ -156,8 +201,18 @@ export const analyzeTicker = (ticker: string) => cachePromise(analysisCache, tic
     if (!VERDICTS.includes(verdict as TickerVerdict) || typeof thesis !== "string" || !thesis.trim()) {
         throw new UpstreamError("AI returned an incomplete analysis");
     }
+    logVerdict(ticker, verdict as TickerVerdict, inputs.technicals);
     return { verdict: verdict as TickerVerdict, analysis: stripCitations(thesis), ...toDetails(parsed, inputs), news: inputs.news, inputs };
 });
+
+// Records each fresh verdict with the newest close it saw, for the track record (GET /api/analysis/track-record). In the background,
+// so it never slows or fails the analysis.
+const logVerdict = (ticker: string, verdict: TickerVerdict, technicals: Technicals | null) => {
+    pool.query(
+        "INSERT INTO verdict_log (ticker, verdict, price, price_date, model, prompt_version) VALUES ($1, $2, $3, $4, $5, $6)",
+        [ticker, verdict, technicals?.price ?? null, technicals?.asOf ?? null, MODEL, PROMPT_VERSION]
+    ).catch(error => console.error(`Logging the ${ticker} verdict: ${error.message}`));
+};
 
 // The analysis as the API returns it, without the inputs
 export const publicAnalysis = ({ verdict, analysis, horizon, evidence, counterarguments, risks, catalysts, sources, generatedAt, dataAsOf, model }: CachedTickerAnalysis): TickerAnalysis =>
@@ -287,7 +342,7 @@ const buildRankings = async (): Promise<Rankings> => {
     const groupedNews = stocks
         .map(({ ticker, articles }) => `Stock: ${ticker} (${articles.length} ${articles.length === 1 ? "article" : "articles"})\n\n${formatNews(articles.slice(0, ARTICLES_PER_STOCK))}`)
         .join("\n\n---\n\n");
-    const prompt = `The news above is the latest market news, grouped by the stock each article is about, newest first. Pick up to ${RANKING_CANDIDATES} stocks to buy and up to ${RANKING_CANDIDATES} stocks to sell, strongest case first, using only the stock tickers listed. A buy needs news that is clearly positive for the share price, and a sell news that is clearly negative. Leave out stocks whose news is mixed or neutral, and never list a stock on both sides. Respond with JSON only, in the form {"buy": ["TICKER", ...], "sell": ["TICKER", ...]}.`;
+    const prompt = `The news above is the latest market news, grouped by the stock each article is about, newest first. Pick up to ${RANKING_CANDIDATES} stocks to buy and up to ${RANKING_CANDIDATES} stocks to sell, strongest case first, using only the stock tickers listed. A buy needs news likely to lift the share price over the next few weeks, and a sell news likely to lower it: new information such as results against expectations, guidance, deals, regulatory decisions or analysts' changes, not just a positive or negative tone. Leave out stocks whose news is mixed, neutral, a recap of old news or opinion, and never list a stock on both sides. Respond with JSON only, in the form {"buy": ["TICKER", ...], "sell": ["TICKER", ...]}.`;
     const parsed = parseJson(await askAnalyst(`${groupedNews}\n\n${prompt}`, { response_format: { type: "json_object" }, temperature: 0 }));
 
     const listed = new Set(stocks.map(({ ticker }) => ticker));

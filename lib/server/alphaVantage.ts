@@ -4,6 +4,7 @@ import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
 import { roundPrice, type Dividend, type Split } from "./account";
 import { easternParts, easternTime, parseEasternTimestamp, sessionOn } from "../marketHours";
+import type { EpsEstimate, NextReport, QuarterResult } from "./earnings";
 import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, Quote, QuoteDelay, SymbolMatch } from "../types";
 
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
@@ -52,6 +53,25 @@ const fetchAlphaVantage = async <T>(params: Record<string, string | number>, exp
         throw new UpstreamError(data?.["Error Message"] || data?.Note || data?.Information || `Unexpected response from Alpha Vantage: ${JSON.stringify(data).slice(0, 200)}`);
     }
     return data as T;
+};
+
+// A CSV endpoint (EARNINGS_CALENDAR) as rows keyed by its header. Errors come back as the usual JSON body. Values may be quoted.
+const fetchAlphaVantageCsv = async (params: Record<string, string | number>): Promise<Record<string, string>[]> => {
+    await waitForAlphaVantageSlot();
+    const response = await axios.get<string>(ALPHA_VANTAGE_URL, { params: { ...params, apikey: ALPHA_VANTAGE_API_KEY }, timeout: 30000, responseType: "text" });
+    const text = response.data.trim();
+    if (text.startsWith("{")) {
+        const data = JSON.parse(text);
+        throw new UpstreamError(data["Error Message"] || data.Note || data.Information || `Unexpected response from Alpha Vantage: ${text.slice(0, 200)}`);
+    }
+    const splitLine = (line: string) => [...line.matchAll(/("(?:[^"]|"")*"|[^,]*)(?:,|$)/g)].slice(0, -1).map(([, value]) =>
+        value.startsWith('"') ? value.slice(1, -1).replaceAll('""', '"') : value);
+    const [header, ...lines] = text.split(/\r?\n/).filter(Boolean);
+    const keys = splitLine(header ?? "");
+    return lines.map(line => {
+        const values = splitLine(line);
+        return Object.fromEntries(keys.map((key, i) => [key, values[i] ?? ""]));
+    });
 };
 
 // Below this relevance score an article only mentions a ticker in passing (market roundups, "12 stocks moving" lists)
@@ -314,6 +334,12 @@ interface OverviewReply {
     "52WeekLow": string;
     ExDividendDate: string;
     DividendDate: string;
+    AnalystTargetPrice: string;
+    AnalystRatingStrongBuy: string;
+    AnalystRatingBuy: string;
+    AnalystRatingHold: string;
+    AnalystRatingSell: string;
+    AnalystRatingStrongSell: string;
 }
 // Alpha Vantage writes missing numbers as "None" or "-"
 const numberOrNull = (value: string | undefined) => {
@@ -334,8 +360,66 @@ export const fetchCompanyOverview = (ticker: string) => cachePromise(overviewCac
         marketCap: numberOrNull(data.MarketCapitalization), peRatio: numberOrNull(data.PERatio), forwardPe: numberOrNull(data.ForwardPE),
         dividendYield: numberOrNull(data.DividendYield), beta: numberOrNull(data.Beta),
         week52High: numberOrNull(data["52WeekHigh"]), week52Low: numberOrNull(data["52WeekLow"]),
-        exDividendDate: textOrNull(data.ExDividendDate), dividendDate: textOrNull(data.DividendDate)
+        exDividendDate: textOrNull(data.ExDividendDate), dividendDate: textOrNull(data.DividendDate),
+        analystTargetPrice: numberOrNull(data.AnalystTargetPrice),
+        analystRatings: analystRatings(data)
     };
+});
+
+// The rating counts, or null when no analyst covers the stock (all missing or zero)
+const analystRatings = (data: OverviewReply): CompanyOverview["analystRatings"] => {
+    const counts = [data.AnalystRatingStrongBuy, data.AnalystRatingBuy, data.AnalystRatingHold, data.AnalystRatingSell, data.AnalystRatingStrongSell].map(value => numberOrNull(value) ?? 0);
+    if (counts.every(count => count === 0)) return null;
+    const [strongBuy, buy, hold, sell, strongSell] = counts;
+    return { strongBuy, buy, hold, sell, strongSell };
+};
+
+// Earnings data changes at most daily (on a report or an estimate revision), so it's cached for 12 hours per ticker. A fund or a
+// company without coverage gets {} (an UpstreamError), which the analysis goes ahead without.
+const EARNINGS_CACHE_MS = 12 * 3600000;
+
+interface EarningsReply {
+    quarterlyEarnings: { fiscalDateEnding: string; reportedDate: string; reportedEPS: string; estimatedEPS: string; surprisePercentage: string }[];
+}
+// Reported quarters with their estimates and surprises (Alpha Vantage EARNINGS), newest first
+const earningsCache = singleton("earningsCache", () => new Map<string, CacheEntry<QuarterResult[]>>());
+export const fetchEarnings = (ticker: string) => cachePromise(earningsCache, ticker, EARNINGS_CACHE_MS, async () => {
+    const { quarterlyEarnings } = await fetchAlphaVantage<EarningsReply>({ function: "EARNINGS", symbol: ticker }, "quarterlyEarnings");
+    return quarterlyEarnings.flatMap(({ fiscalDateEnding, reportedDate, reportedEPS, estimatedEPS, surprisePercentage }) => {
+        const reportedEps = numberOrNull(reportedEPS);
+        if (reportedEps === null || !isDate(fiscalDateEnding) || !isDate(reportedDate)) return [];
+        const surprise = numberOrNull(surprisePercentage);
+        return [{ fiscalDateEnding, reportedDate, reportedEps, estimatedEps: numberOrNull(estimatedEPS), surprise: surprise === null ? null : surprise / 100 }];
+    });
+});
+
+interface EarningsEstimatesReply {
+    estimates: Record<string, string | null>[];
+}
+// Consensus EPS estimates per fiscal quarter and year, with the averages 30 and 90 days ago (Alpha Vantage EARNINGS_ESTIMATES)
+const estimatesCache = singleton("earningsEstimatesCache", () => new Map<string, CacheEntry<EpsEstimate[]>>());
+export const fetchEarningsEstimates = (ticker: string) => cachePromise(estimatesCache, ticker, EARNINGS_CACHE_MS, async () => {
+    const { estimates } = await fetchAlphaVantage<EarningsEstimatesReply>({ function: "EARNINGS_ESTIMATES", symbol: ticker }, "estimates");
+    const value = (text: string | null) => numberOrNull(text ?? undefined);
+    return estimates.flatMap((row): EpsEstimate[] => {
+        const average = value(row.eps_estimate_average);
+        const period = row.horizon === "fiscal quarter" ? "quarter" : row.horizon === "fiscal year" ? "year" : null;
+        if (average === null || period === null || !isDate(row.date ?? undefined)) return [];
+        return [{
+            fiscalDateEnding: row.date!, period, average,
+            analysts: value(row.eps_estimate_analyst_count),
+            average30DaysAgo: value(row.eps_estimate_average_30_days_ago), average90DaysAgo: value(row.eps_estimate_average_90_days_ago),
+            revisionsUp30Days: value(row.eps_estimate_revision_up_trailing_30_days), revisionsDown30Days: value(row.eps_estimate_revision_down_trailing_30_days)
+        }];
+    });
+});
+
+// The next scheduled earnings report within 3 months (Alpha Vantage EARNINGS_CALENDAR), or null if none is scheduled
+const nextReportCache = singleton("nextReportCache", () => new Map<string, CacheEntry<NextReport | null>>());
+export const fetchNextReport = (ticker: string) => cachePromise(nextReportCache, ticker, EARNINGS_CACHE_MS, async () => {
+    const rows = await fetchAlphaVantageCsv({ function: "EARNINGS_CALENDAR", symbol: ticker, horizon: "3month" });
+    const row = rows.filter(({ reportDate }) => isDate(reportDate)).sort((a, b) => a.reportDate.localeCompare(b.reportDate))[0];
+    return row ? { reportDate: row.reportDate, fiscalDateEnding: isDate(row.fiscalDateEnding) ? row.fiscalDateEnding : null, timeOfDay: textOrNull(row.timeOfTheDay) } : null;
 });
 
 // The last month of 5-minute bars in the regular session (Alpha Vantage TIME_SERIES_INTRADAY, with the entitlement), newest last,

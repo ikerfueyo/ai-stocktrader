@@ -14,6 +14,9 @@ export interface Technicals {
     vsSma200: number | null;
     // 14-session RSI (Wilder's smoothing), 0 to 100
     rsi14: number | null;
+    // The 21- and 63-session returns less the benchmark's (SPY) between the same dates; null without its closes
+    vsBenchmark1m: number | null;
+    vsBenchmark3m: number | null;
 }
 
 const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -32,18 +35,35 @@ export const rsi = (closes: number[], period = 14): number | null => {
     return 100 - 100 / (1 + gain / loss);
 };
 
-// The figures from closes by date ("YYYY-MM-DD"), or null without any
-export const computeTechnicals = (closesByDate: Record<string, number>): Technicals | null => {
+// The benchmark's newest close on or before a date (its dates sorted), so a benchmark series a day behind still lines up
+const closeOnOrBefore = (closesByDate: Record<string, number>, dates: string[], date: string) => {
+    for (let i = dates.length - 1; i >= 0; i--) {
+        if (dates[i] <= date) return closesByDate[dates[i]];
+    }
+    return null;
+};
+
+// The figures from closes by date ("YYYY-MM-DD"), or null without any, with the returns compared to the benchmark's closes if given
+export const computeTechnicals = (closesByDate: Record<string, number>, benchmarkCloses: Record<string, number> | null = null): Technicals | null => {
     const dates = Object.keys(closesByDate).sort();
     if (dates.length === 0) return null;
     const closes = dates.map(date => closesByDate[date]);
     const price = closes.at(-1)!;
     const back = (sessions: number) => closes.length > sessions ? price / closes[closes.length - 1 - sessions] - 1 : null;
     const vsSma = (sessions: number) => closes.length >= sessions ? price / average(closes.slice(-sessions)) - 1 : null;
+    const benchmarkDates = benchmarkCloses ? Object.keys(benchmarkCloses).sort() : [];
+    const vsBenchmark = (sessions: number) => {
+        const stockReturn = back(sessions);
+        if (stockReturn === null || !benchmarkCloses) return null;
+        const start = closeOnOrBefore(benchmarkCloses, benchmarkDates, dates[dates.length - 1 - sessions]);
+        const end = closeOnOrBefore(benchmarkCloses, benchmarkDates, dates.at(-1)!);
+        return start && end ? stockReturn - (end / start - 1) : null;
+    };
     return {
         asOf: dates.at(-1)!, price,
         return5d: back(5), return1m: back(21), return3m: back(63),
         vsSma50: vsSma(50), vsSma200: vsSma(200),
-        rsi14: rsi(closes)
+        rsi14: rsi(closes),
+        vsBenchmark1m: vsBenchmark(21), vsBenchmark3m: vsBenchmark(63)
     };
 };

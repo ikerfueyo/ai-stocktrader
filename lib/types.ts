@@ -170,6 +170,9 @@ export interface CompanyOverview {
     week52Low: number | null;
     exDividendDate: string | null;
     dividendDate: string | null;
+    // Analysts' consensus target price and how many rate the stock each way (null when none are listed)
+    analystTargetPrice: number | null;
+    analystRatings: { strongBuy: number; buy: number; hold: number; sell: number; strongSell: number } | null;
 }
 
 // GET /api/trading/[ticker]/intraday: a 5-minute bar; time is Eastern, "YYYY-MM-DD HH:MM:SS"
@@ -234,6 +237,30 @@ export interface TickerAnalysis extends AnalysisDetails {
 export interface PositionAnalysis extends AnalysisDetails {
     verdict: PositionVerdict;
     analysis: string;
+}
+
+// How one verdict did over a number of sessions after the analysis: its count (analyses with that many sessions of closes since),
+// average price return and average return less SPY's, as fractions, and for BUY and SELL the share that beat SPY in their direction
+export interface VerdictOutcome {
+    verdict: TickerVerdict;
+    count: number;
+    hitRate: number | null;
+    averageReturn: number | null;
+    averageExcessReturn: number | null;
+}
+
+// GET /api/analysis/track-record: how past ticker verdicts turned out, per prompt version (newest first), 5 and 20 sessions later
+export interface TrackRecord {
+    benchmark: string;
+    versions: {
+        promptVersion: number;
+        // Analyses counted (one per ticker and session) and the first one's session
+        analyses: number;
+        since: string;
+        horizons: { sessions: number; outcomes: VerdictOutcome[] }[];
+    }[];
+    // Tickers whose closes couldn't be fetched (left out)
+    missing: string[];
 }
 
 // GET /api/rankings

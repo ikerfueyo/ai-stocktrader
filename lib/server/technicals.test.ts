@@ -30,6 +30,23 @@ describe("Technicals", () => {
         assert.equal(rsi([1, 2, 3]), null);
     });
 
+    test("returns less the benchmark's between the same dates", () => {
+        const stock = series(Array.from({ length: 64 }, (_, i) => 100 + i));
+        const benchmark = series(Array.from({ length: 64 }, (_, i) => 200 + i));
+        const technicals = computeTechnicals(stock, benchmark)!;
+        assert.ok(Math.abs(technicals.vsBenchmark1m! - ((163 / 142 - 1) - (263 / 242 - 1))) < 1e-12);
+        assert.ok(Math.abs(technicals.vsBenchmark3m! - ((163 / 100 - 1) - (263 / 200 - 1))) < 1e-12);
+        assert.equal(computeTechnicals(stock)!.vsBenchmark1m, null);
+    });
+
+    test("a benchmark a session behind uses its newest close on or before each date", () => {
+        const stock = series(Array.from({ length: 30 }, (_, i) => 100 + i));
+        const behind = series(Array.from({ length: 29 }, () => 50));
+        const technicals = computeTechnicals(stock, behind)!;
+        assert.ok(Math.abs(technicals.vsBenchmark1m! - (129 / 108 - 1)) < 1e-12);
+        assert.equal(technicals.vsBenchmark3m, null);
+    });
+
     test("no closes, no figures", () => {
         assert.equal(computeTechnicals({}), null);
     });
