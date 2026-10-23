@@ -5,7 +5,7 @@ import type { Quote } from "@/lib/types";
 
 const formatAmount = (amount: number) => amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
-const DELAY_LABELS: Record<Quote["delay"], string> = { realtime: "Realtime", delayed: "15-min delayed", "end-of-day": "Last close" };
+const DELAY_LABELS: Record<Quote["delay"], string> = { realtime: "Realtime", "end-of-day": "Last close" };
 
 // The latest price with its change from the previous close, and, from the quote, the bid/ask and how current the price is
 const Price = ({ price, previousClose, quote = null }: { price: number; previousClose: number | null; quote?: Quote | null }) => {

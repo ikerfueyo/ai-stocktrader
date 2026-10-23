@@ -9,23 +9,46 @@ import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, Quote, QuoteD
 
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
-// Premium price data: "delayed" (15 min) or "realtime". Without it, even premium keys only get end-of-day prices. Set to "" to turn off.
-const ALPHA_VANTAGE_ENTITLEMENT = process.env.ALPHA_VANTAGE_ENTITLEMENT ?? "delayed";
+// Price requests ask for realtime data. Without the entitlement, even premium keys only get end-of-day prices; a key that isn't
+// entitled to realtime gets a "Note" back, which fails the request.
+const REALTIME = { entitlement: "realtime" };
 
-// Alpha Vantage rejects more than 5 requests a second ("Burst pattern detected"), so requests from every route start at least 300ms apart (at most 4 a second).
-// Each caller reserves the next free slot synchronously, so parallel calls (one price per position) queue up in order.
+// Alpha Vantage rejects more than 5 requests a second ("Burst pattern detected") and more than the plan's per-minute limit
+// (ALPHA_VANTAGE_REQUESTS_PER_MINUTE, default 150), so requests from every route start at least 300ms apart (at most 4 a second)
+// and at most that many in any minute, with a second's margin since Alpha Vantage counts them as they arrive. Each caller reserves
+// the next free slot synchronously, so parallel calls (one price per position) queue up in order.
 const ALPHA_VANTAGE_SPACING_MS = 300;
-const alphaVantageSlot = singleton("alphaVantageSlot", () => ({ next: 0 }));
+const ALPHA_VANTAGE_REQUESTS_PER_MINUTE = Number(process.env.ALPHA_VANTAGE_REQUESTS_PER_MINUTE ?? 150);
+const RATE_WINDOW_MS = 61000;
+const alphaVantageSlots = singleton("alphaVantageSlots", () => ({ starts: [] as number[] }));
 const waitForAlphaVantageSlot = () => {
     const now = Date.now();
-    const start = Math.max(now, alphaVantageSlot.next);
-    alphaVantageSlot.next = start + ALPHA_VANTAGE_SPACING_MS;
+    const { starts } = alphaVantageSlots;
+    while (starts.length > 0 && starts[0] <= now - RATE_WINDOW_MS) starts.shift();
+    const last = starts.at(-1);
+    const windowFull = ALPHA_VANTAGE_REQUESTS_PER_MINUTE > 0 && starts.length >= ALPHA_VANTAGE_REQUESTS_PER_MINUTE;
+    const start = Math.max(
+        now,
+        last === undefined ? now : last + ALPHA_VANTAGE_SPACING_MS,
+        windowFull ? starts[starts.length - ALPHA_VANTAGE_REQUESTS_PER_MINUTE] + RATE_WINDOW_MS : now
+    );
+    starts.push(start);
     return new Promise(resolve => setTimeout(resolve, start - now));
 };
 
 // A premium endpoint the API key's plan doesn't include. Alpha Vantage still answers it, with artificial sample data and a
 // "message", so the reply must not be used.
 export class NotEntitledError extends UpstreamError {}
+
+// When an endpoint turns out not to be in the key's plan, skip it for an hour rather than spending a call per quote finding out
+const unavailableUntil = singleton("alphaVantageUnavailable", () => new Map<string, number>());
+const isAvailable = (endpoint: string) => (unavailableUntil.get(endpoint) ?? 0) <= Date.now();
+const markUnavailable = (endpoint: string, error: unknown) => {
+    if (error instanceof NotEntitledError) {
+        if (isAvailable(endpoint)) console.warn(`${error.message}; using the fallback for an hour`);
+        unavailableUntil.set(endpoint, Date.now() + 3600000);
+    }
+};
 
 // Alpha Vantage answers rate limits and bad symbols with a 200 and a "Note"/"Information"/"Error Message" body. Its burst limit can
 // trip even with the spacing above during a long run of calls (such as syncing a portfolio's corporate actions), so a "Burst
@@ -130,11 +153,11 @@ export const fetchDailyCloses = (ticker: string, outputsize: "compact" | "full")
         return Object.fromEntries(Object.entries(series).map(([date, bar]) => [date, parseFloat(bar["4. close"])]));
     });
 
-export const fetchDailySeries = (ticker: string, outputsize: "compact" | "full") => fetchAlphaVantage<DailySeries>({ function: "TIME_SERIES_DAILY", symbol: ticker, outputsize, ...(ALPHA_VANTAGE_ENTITLEMENT && { entitlement: ALPHA_VANTAGE_ENTITLEMENT }) }, "Time Series (Daily)");
+export const fetchDailySeries = (ticker: string, outputsize: "compact" | "full") => fetchAlphaVantage<DailySeries>({ function: "TIME_SERIES_DAILY", symbol: ticker, outputsize, ...REALTIME }, "Time Series (Daily)");
 
-// Quotes are cached for 60s, so the header's /api/account, the Portfolio page's /api/portfolio and a trade share one Alpha Vantage
-// call per ticker (one per 100 tickers with the bulk endpoints)
-const QUOTE_CACHE_MS = 60000;
+// Quotes are cached for 15s, so the header's /api/account, the Portfolio page's /api/portfolio and a trade share one Alpha Vantage
+// call per ticker (one per 100 tickers with the bulk endpoints) while staying close to the realtime price
+const QUOTE_CACHE_MS = 15000;
 const quoteCache = singleton("quoteCache", () => new Map<string, CacheEntry<Quote>>());
 
 // The last price fetched for each ticker, used to value a position while its price can't be fetched (lost on restart)
@@ -152,28 +175,17 @@ const simulatedSpread = (price: number): Pick<Quote, "bid" | "ask" | "spread"> =
     return { bid: roundPrice(price - half), ask: roundPrice(price + half), spread: "simulated" };
 };
 
-// When a bulk endpoint turns out not to be in the key's plan, skip it for an hour rather than spending a call per quote finding out
-const unavailableUntil = singleton("alphaVantageUnavailable", () => new Map<string, number>());
-const isAvailable = (endpoint: string) => (unavailableUntil.get(endpoint) ?? 0) <= Date.now();
-const markUnavailable = (endpoint: string, error: unknown) => {
-    if (error instanceof NotEntitledError) {
-        if (isAvailable(endpoint)) console.warn(`${error.message}; using the fallback for an hour`);
-        unavailableUntil.set(endpoint, Date.now() + 3600000);
-    }
-};
-
 interface BulkQuotes {
     data: { symbol: string; timestamp: string; close: string; previous_close: string }[];
 }
 interface BulkBidAsk {
     data: { symbol: string; timestamp: string; bid_price: string; ask_price: string }[];
 }
-const realtimeParams = (tickers: string[]) => ({ symbol: tickers.join(","), datatype: "json", ...(ALPHA_VANTAGE_ENTITLEMENT && { entitlement: ALPHA_VANTAGE_ENTITLEMENT }) });
+const realtimeParams = (tickers: string[]) => ({ symbol: tickers.join(","), datatype: "json", ...REALTIME });
 const bySymbol = <T extends { symbol: string }>(rows: T[]) => new Map(rows.map(row => [row.symbol.toUpperCase(), row]));
-const quoteDelay = (): QuoteDelay => ALPHA_VANTAGE_ENTITLEMENT === "realtime" ? "realtime" : "delayed";
 
-// A quote from the compact daily series, for keys without the bulk realtime endpoints. With the entitlement, today's bar is the
-// partial day, so its close is the current (realtime or 15-minute delayed) price; otherwise it's the last session's close.
+// A quote from the compact daily series, for keys without the bulk realtime endpoints. Today's bar is the partial day, so its
+// close is the current price; otherwise it's the last session's close.
 const dailyQuote = async (ticker: string): Promise<Quote> => {
     const timeSeries = (await fetchDailySeries(ticker, "compact"))["Time Series (Daily)"];
     const [latestDate, previousDate] = Object.keys(timeSeries).sort().reverse();
@@ -181,11 +193,10 @@ const dailyQuote = async (ticker: string): Promise<Quote> => {
     const now = new Date();
     const session = sessionOn(latestDate);
     const closeTime = session?.close ?? easternTime(latestDate, "16:00");
-    // Today's bar is still moving until the (delayed) price reaches the close; after that it's the session's closing price
-    const delayMs = ALPHA_VANTAGE_ENTITLEMENT === "realtime" ? 0 : 15 * 60000;
-    const live = latestDate === easternParts(now).dateKey && Boolean(ALPHA_VANTAGE_ENTITLEMENT) && now.getTime() - delayMs < closeTime.getTime();
-    const delay: QuoteDelay = live ? quoteDelay() : "end-of-day";
-    const quoteTime = live ? new Date(now.getTime() - delayMs) : closeTime;
+    // Today's bar is still moving until the close; after that it's the session's closing price
+    const live = latestDate === easternParts(now).dateKey && now.getTime() < closeTime.getTime();
+    const delay: QuoteDelay = live ? "realtime" : "end-of-day";
+    const quoteTime = live ? now : closeTime;
     return {
         ticker, price,
         previousClose: previousDate ? parseFloat(timeSeries[previousDate]["4. close"]) : null,
@@ -225,7 +236,7 @@ const loadQuotes = (tickers: string[]): Map<string, Promise<Quote>> => {
                     previousClose: parseFloat(row.previous_close) || null,
                     ...(bid > 0 && ask >= bid ? { bid, ask, spread: "quoted" as const } : simulatedSpread(price)),
                     quoteTime: parseEasternTimestamp(row.timestamp).toISOString(),
-                    delay: quoteDelay()
+                    delay: "realtime"
                 };
             }, error => {
                 markUnavailable("REALTIME_BULK_QUOTES", error);
@@ -428,7 +439,7 @@ const intradayCache = singleton("intradayCache", () => new Map<string, CacheEntr
 export const fetchIntraday = (ticker: string) => cachePromise(intradayCache, ticker, 60000, async () => {
     const data = await fetchAlphaVantage<{ "Time Series (5min)": Record<string, DailyBar> }>({
         function: "TIME_SERIES_INTRADAY", symbol: ticker, interval: "5min", outputsize: "full", extended_hours: "false",
-        ...(ALPHA_VANTAGE_ENTITLEMENT && { entitlement: ALPHA_VANTAGE_ENTITLEMENT })
+        ...REALTIME
     }, "Time Series (5min)");
     return Object.entries(data["Time Series (5min)"]).sort(([a], [b]) => a.localeCompare(b)).map(([time, bar]) => ({
         time, open: parseFloat(bar["1. open"]), high: parseFloat(bar["2. high"]), low: parseFloat(bar["3. low"]), close: parseFloat(bar["4. close"]), volume: parseFloat(bar["5. volume"])

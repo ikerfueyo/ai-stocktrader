@@ -53,8 +53,8 @@ export interface OrderRow {
 // bid/ask data, or the last price itself
 export type FillPolicy = "ASK" | "BID" | "SIM_ASK" | "SIM_BID" | "LAST";
 
-// How current a quote is: realtime, 15-minute delayed, or the last session's close
-export type QuoteDelay = "realtime" | "delayed" | "end-of-day";
+// How current a quote is: realtime, or the last session's close
+export type QuoteDelay = "realtime" | "end-of-day";
 
 // A ticker's latest quote (GET /api/quote/[ticker]). bid and ask are quoted by Alpha Vantage, simulated around the last price
 // (spread "simulated"), or null (spread "none").

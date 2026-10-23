@@ -1,6 +1,6 @@
 # AI StockTrader
 
-AI StockTrader is a full-stack web application that allows users to mock-trade over **200,000+ stocks** with **AI-driven insights**. The platform provides 15-minute delayed stock prices (with an Alpha Vantage premium plan), sentiment analysis on financial news, and an intuitive trading interface.
+AI StockTrader is a full-stack web application that allows users to mock-trade over **200,000+ stocks** with **AI-driven insights**. The platform provides realtime stock prices (with an Alpha Vantage premium plan that includes realtime U.S. market data), sentiment analysis on financial news, and an intuitive trading interface.
 
 ## Features
 
@@ -50,8 +50,8 @@ Make sure you have the following installed:
    OPENAI_API_KEY=your_openai_api_key
    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
    CLERK_SECRET_KEY=your_clerk_secret_key
-   # Optional: "delayed" (default, 15-minute delayed), "realtime", or empty for end-of-day prices on a free key
-   ALPHA_VANTAGE_ENTITLEMENT=delayed
+   # Optional: the plan's per-minute request limit (default 150)
+   ALPHA_VANTAGE_REQUESTS_PER_MINUTE=150
    ```
 
 ### Database Setup
