@@ -1,4 +1,4 @@
-// How past ticker verdicts turned out: each logged verdict's price return over the sessions after it, against the benchmark's
+// How past ticker verdicts turned out: each logged verdict's price return over the sessions after it (from baselineDate), against the benchmark's
 // (SPY) between the same closes. Pure, so it can be unit tested; the route loads the log, the closes and the stored splits.
 import type { Split } from "./account";
 import type { TickerVerdict, TrackRecord, VerdictOutcome } from "../types";
@@ -8,8 +8,17 @@ export interface LoggedVerdict {
     ticker: string;
     verdict: TickerVerdict;
     priceDate: string;
+    // The Eastern date the verdict was made: its baseline is never a close before it, since its news can be newer than the
+    // closes it saw (cached for hours)
+    generatedDay?: string;
     promptVersion: number;
 }
+
+// The session whose close a verdict is scored from: the first on or after both the newest close it saw and the day it was made
+export const baselineDate = ({ priceDate, generatedDay }: Pick<LoggedVerdict, "priceDate" | "generatedDay">, dates: string[]): string | null => {
+    const from = generatedDay && generatedDay > priceDate ? generatedDay : priceDate;
+    return dates.find(date => date >= from) ?? null;
+};
 
 export const TRACK_HORIZONS = [5, 20];
 const VERDICTS: TickerVerdict[] = ["BUY", "HOLD", "SELL"];
@@ -39,17 +48,19 @@ export const scoreVerdicts = (
             const outcomes = VERDICTS.map((verdict): VerdictOutcome => {
                 const returns: number[] = [];
                 const excess: number[] = [];
-                for (const { ticker, priceDate } of rows.filter(row => row.verdict === verdict)) {
-                    const closes = closesByTicker[ticker];
+                for (const row of rows.filter(row => row.verdict === verdict)) {
+                    const closes = closesByTicker[row.ticker];
                     if (!closes) continue;
-                    const dates = sortedDates.get(ticker)!;
-                    const stockReturn = forwardReturn(closes, dates, priceDate, sessions, splits.filter(split => split.ticker === ticker));
+                    const dates = sortedDates.get(row.ticker)!;
+                    const base = baselineDate(row, dates);
+                    if (base === null) continue;
+                    const stockReturn = forwardReturn(closes, dates, base, sessions, splits.filter(split => split.ticker === row.ticker));
                     if (stockReturn === null) continue;
                     returns.push(stockReturn);
                     // The benchmark between the same two closes
-                    const end = dates[dates.indexOf(priceDate) + sessions];
-                    if (benchmarkCloses?.[priceDate] && benchmarkCloses[end]) {
-                        excess.push(stockReturn - (benchmarkCloses[end] / benchmarkCloses[priceDate] - 1));
+                    const end = dates[dates.indexOf(base) + sessions];
+                    if (benchmarkCloses?.[base] && benchmarkCloses[end]) {
+                        excess.push(stockReturn - (benchmarkCloses[end] / benchmarkCloses[base] - 1));
                     }
                 }
                 const beat = verdict === "BUY" ? excess.filter(value => value > 0) : excess.filter(value => value < 0);

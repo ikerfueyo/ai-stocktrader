@@ -461,10 +461,15 @@ export const fetchIntraday = (ticker: string) => cachePromise(intradayCache, tic
 interface SymbolSearchReply {
     bestMatches: Record<string, string>[];
 }
-// Tickers matching a search (Alpha Vantage SYMBOL_SEARCH), U.S. listings first, cached for 24 hours per query
+// Tickers matching a search (Alpha Vantage SYMBOL_SEARCH), U.S. listings only, since trades are in dollars on NYSE hours; cached for
+// 24 hours per query
 const searchCache = singleton("symbolSearchCache", () => new Map<string, CacheEntry<SymbolMatch[]>>());
 export const searchSymbols = (query: string) => cachePromise(searchCache, query.toUpperCase(), 24 * 3600000, async () => {
     const { bestMatches } = await fetchAlphaVantage<SymbolSearchReply>({ function: "SYMBOL_SEARCH", keywords: query }, "bestMatches");
     const matches = bestMatches.map(match => ({ symbol: match["1. symbol"], name: match["2. name"], type: match["3. type"], region: match["4. region"], currency: match["8. currency"] }));
-    return [...matches.filter(({ region }) => region === "United States"), ...matches.filter(({ region }) => region !== "United States")];
+    return matches.filter(({ region }) => region === "United States");
 });
+
+// Whether a symbol is a non-U.S. listing, which Alpha Vantage writes with an exchange suffix (TSCO.LON, SHOP.TRT, SAP.DEX); U.S.
+// share classes have a single letter (BRK.A). Those listings trade in other currencies and hours, so they can't be traded here.
+export const isForeignListing = (ticker: string): boolean => /\.[A-Z]{2,}$/.test(ticker.toUpperCase());

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import axios from "axios";
-import { useAccount } from "@/context/AccountContext";
+import { accountActivityKey, useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { formatEastern } from "@/lib/marketHours";
 import { describeOrderSize, describeOrderType } from "@/lib/orders";
@@ -22,7 +22,9 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
     const [error, setError] = useState<string | null>(null);
     const [cancelling, setCancelling] = useState<number | null>(null);
     const [version, setVersion] = useState(0);
-    const { refreshAccount } = useAccount();
+    const { account, refreshAccount } = useAccount();
+    // Reloads when a fill, expiry or buy-in changes the account, such as one by the background job
+    const activity = accountActivityKey(account);
 
     useEffect(() => {
         const getOrders = async () => {
@@ -36,7 +38,7 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
             }
         };
         getOrders();
-    }, [ticker, refreshKey, version]);
+    }, [ticker, refreshKey, version, activity]);
 
     const onCancel = async (id: number) => {
         setCancelling(id);

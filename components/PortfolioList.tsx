@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import PortfolioRow, { type Status } from "./PortfolioRow";
 import { apiErrorMessage, logError } from "@/lib/apiError";
@@ -12,6 +12,10 @@ import { formatCurrency, formatSigned, roundShares } from "@/lib/orders";
 import type { MarketStatus } from "@/lib/marketHours";
 import type { PortfolioPosition } from "@/lib/types";
 
+// Positions as comparable text: each ticker and its shares, in ticker order
+const sharesKey = (positions: { ticker: string; quantity: number }[]) =>
+    positions.map(({ ticker, quantity }) => `${ticker}:${quantity}`).sort().join(",");
+
 const PortfolioList = () => {
     const [positions, setPositions] = useState<PortfolioPosition[] | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -21,17 +25,35 @@ const PortfolioList = () => {
     const [ordersVersion, setOrdersVersion] = useState(0);
     const { account } = useAccount();
 
+    const loadPortfolio = useCallback(async () => {
+        try {
+            const response = await axios.get<PortfolioPosition[]>("/api/portfolio");
+            setPositions(response.data);
+        } catch (error) {
+            logError(error);
+            setError(apiErrorMessage(error));
+        }
+    }, []);
+
     useEffect(() => {
-        const getPortfolio = async () => {
-            try {
-                const response = await axios.get<PortfolioPosition[]>("/api/portfolio");
-                setPositions(response.data);
-            } catch (error) {
-                logError(error);
-                setError(apiErrorMessage(error));
-            }
-        };
-        getPortfolio();
+        // loadPortfolio only sets state once its request finishes, not synchronously
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        loadPortfolio();
+    }, [loadPortfolio]);
+
+    // Reload when the account's positions change to something other than the rows shown, such as after a background fill or
+    // buy-in. This page's own trades update their rows first, so the account refresh that follows them matches and reloads nothing.
+    const shown = useRef<string | null>(null);
+    const shownKey = positions ? sharesKey(positions) : null;
+    useEffect(() => {
+        shown.current = shownKey;
+    }, [shownKey]);
+    const accountKey = account ? sharesKey(account.positions) : null;
+    useEffect(() => {
+        if (accountKey !== null && shown.current !== null && accountKey !== shown.current) loadPortfolio();
+    }, [accountKey, loadPortfolio]);
+
+    useEffect(() => {
         // Only used to label the trade buttons while the market is closed (orders are queued); the server decides
         axios.get<MarketStatus>("/api/market").then(response => setMarket(response.data), logError);
     }, []);

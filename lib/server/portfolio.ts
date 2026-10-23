@@ -14,13 +14,13 @@ export type Db = Pool | PoolClient;
 
 const tradedTickers = (transactions: TransactionRow[]) => [...new Set(transactions.map(({ ticker }) => ticker.toUpperCase()))];
 
-// Replays trades with the tickers' stored splits (fetching any never fetched), and refreshes the open positions' corporate
-// actions in the background once a day
+// Replays trades with the tickers' stored splits, fetching any never fetched and refreshing the open positions' once a day first;
+// unsynced lists the tickers whose fetch failed
 const replay = async (transactions: TransactionRow[]) => {
     const tickers = tradedTickers(transactions);
     const naive = computePositions(transactions).positions.map(({ ticker }) => ticker);
-    const { splits, dividends } = await loadCorporateActions(tickers, naive);
-    return { splits, dividends, ...computePositions(transactions, splits) };
+    const { splits, dividends, unsynced } = await loadCorporateActions(tickers, naive);
+    return { splits, dividends, unsynced, ...computePositions(transactions, splits) };
 };
 
 export const getPositions = async (userId: string, ticker?: string, db: Db = pool) => {
@@ -45,9 +45,9 @@ export const getAccount = async (userId: string, db: Db = pool) => {
         )
     ]);
     const netTransfers = parseFloat(net);
-    const { positions, cash, splits, dividends, realizedPnl, realized } = await replay(transactions);
+    const { positions, cash, splits, dividends, unsynced, realizedPnl, realized } = await replay(transactions);
     return {
-        transactions, splits, dividends, netTransfers, positions, totalCash: roundCents(cash + netTransfers),
+        transactions, splits, dividends, unsynced, netTransfers, positions, totalCash: roundCents(cash + netTransfers),
         realizedPnl, realized, netDividends: parseFloat(netDividends)
     };
 };
@@ -155,10 +155,16 @@ export const shortTickers = (positions: Position[]) => positions.filter(({ quant
 // Prices only arrive with requests, so this runs lazily, from GET /api/account, GET /api/portfolio and after each trade, and only
 // while the market is open (prices don't move while it's closed, and there's no market to buy in on). Call it inside
 // withAccountLock with its client. It's recalculated from the database each time, so running it again right away does nothing.
+// It waits while any position's splits couldn't be fetched, since a missed split would misstate the shares owed and the cash needed.
 export const enforceCollateral = async (userId: string, label: string, db: PoolClient): Promise<TransactionRow[]> => {
-    const { positions, totalCash } = await getAccount(userId, db);
+    const { positions, totalCash, unsynced } = await getAccount(userId, db);
     const shorts = shortTickers(positions);
     if (shorts.length === 0 || !(await isMarketOpen())) return [];
+    const unsure = positions.filter(({ ticker }) => unsynced.includes(ticker)).map(({ ticker }) => ticker);
+    if (unsure.length > 0) {
+        console.warn(`${label}: buy-in check for ${userId} skipped until ${unsure.join(", ")} corporate actions can be fetched`);
+        return [];
+    }
     const shortPrices = await fetchPrices(shorts, label);
     if (valueAccount({ positions, totalCash, ...shortPrices }).marginStatus !== "buy_in") return [];
     // Longs are only priced when a buy-in is due, in case covering every short isn't enough

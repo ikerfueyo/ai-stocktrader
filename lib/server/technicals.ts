@@ -44,6 +44,17 @@ const closeOnOrBefore = (closesByDate: Record<string, number>, dates: string[], 
 };
 
 // The figures from closes by date ("YYYY-MM-DD"), or null without any, with the returns compared to the benchmark's closes if given
+// Daily closes (by date) with splits undone, as if every close were in today's shares: each close before a split's date is divided
+// by its factor, so a 2:1 split doesn't read as a 50% fall. Splits after the newest close are ignored.
+export const adjustForSplits = (closesByDate: Record<string, number>, splits: { exDate: string; factor: number }[]): Record<string, number> => {
+    const newest = Object.keys(closesByDate).sort().at(-1);
+    const applied = splits.filter(({ exDate, factor }) => newest !== undefined && exDate <= newest && factor > 0);
+    if (applied.length === 0) return closesByDate;
+    return Object.fromEntries(Object.entries(closesByDate).map(([date, close]) => [
+        date, applied.filter(({ exDate }) => date < exDate).reduce((adjusted, { factor }) => adjusted / factor, close)
+    ]));
+};
+
 export const computeTechnicals = (closesByDate: Record<string, number>, benchmarkCloses: Record<string, number> | null = null): Technicals | null => {
     const dates = Object.keys(closesByDate).sort();
     if (dates.length === 0) return null;

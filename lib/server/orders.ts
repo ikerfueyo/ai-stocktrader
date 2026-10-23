@@ -4,6 +4,7 @@ import { fetchPrices } from "./alphaVantage";
 import { assessTrade, computePositions, reducesPosition } from "./account";
 import { evaluateOrder, reservedForOrders, toOpenOrder, type Evaluation, type OpenOrder } from "./orderMatching";
 import { getMarketStatus } from "./market";
+import { loadCorporateActions } from "./corporateActions";
 import { getAccount, inTransaction, insertTrade, shortTickers, type Db } from "./portfolio";
 import { easternParts, marketStatus, sessionOn, type MarketStatus } from "../marketHours";
 import { toOrder } from "../orders";
@@ -82,18 +83,32 @@ const recordTrigger = (db: Db, id: number) =>
     db.query(`UPDATE orders SET triggered_at = COALESCE(triggered_at, now()), updated_at = now() WHERE id = $1`, [id]);
 
 // Checks a user's open orders against current quotes (evaluateOrder), oldest first: fills the marketable ones, records stop
-// triggers (even when the fill itself has to wait), and expires DAY orders past their close. Quotes are only fetched while the
+// triggers (even when the fill itself has to wait), and expires DAY orders past their close. An order placed before a split of its
+// ticker is cancelled, since its quantity and prices are in the old shares. Quotes are only fetched while the
 // market is open, and a quote too old to trade on (isStaleQuote) counts as none. Each order is judged at the time and market status
 // after the quotes arrive, so nothing fills past its expiry or the close. Call it inside withAccountLock with its client. Returns
 // how many orders changed.
 export const matchOrders = async (userId: string, label: string, db: PoolClient): Promise<number> => {
     const rows = await getOpenOrders(userId, db);
     if (rows.length === 0) return 0;
-    const orders = rows.map(toOpenOrder);
+    let changed = 0;
+    const { splits } = await loadCorporateActions([...new Set(rows.map(({ ticker }) => ticker.toUpperCase()))]);
+    const today = easternParts(new Date()).dateKey;
+    const orders: OpenOrder[] = [];
+    for (const row of rows) {
+        const order = toOpenOrder(row);
+        const placed = easternParts(new Date(row.created_at)).dateKey;
+        const split = splits.find(({ ticker, exDate }) => ticker === order.ticker && exDate > placed && exDate <= today);
+        if (!split) {
+            orders.push(order);
+            continue;
+        }
+        await setStatus(db, order.id, "CANCELLED", `Cancelled for the ${order.ticker} stock split on ${split.exDate}`);
+        changed++;
+    }
     const { quotes, staleTickers } = (await getMarketStatus()).open
         ? await fetchPrices([...new Set(orders.map(({ ticker }) => ticker))], label)
         : { quotes: {} as Record<string, Quote>, staleTickers: [] as string[] };
-    let changed = 0;
     for (const order of orders) {
         const quote = staleTickers.includes(order.ticker) ? null : quotes[order.ticker] ?? null;
         const evaluation = evaluateOrder(order, quote, { now: new Date(), marketOpen: (await getMarketStatus()).open });

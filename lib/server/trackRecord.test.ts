@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { forwardReturn, scoreVerdicts, type LoggedVerdict } from "./trackRecord";
+import { baselineDate, forwardReturn, scoreVerdicts, type LoggedVerdict } from "./trackRecord";
 
 // Closes by date for consecutive days, oldest first
 const day = (i: number) => new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
@@ -50,6 +50,19 @@ describe("Track record", () => {
         assert.equal(outcome(versions, 5, "HOLD").hitRate, null);
         assert.equal(versions[0].analyses, 5);
         assert.equal(versions[0].since, day(0));
+    });
+
+    test("a verdict made after the newest close it saw is scored from the close of the day it was made", () => {
+        const dates = Object.keys(closes.UP).sort();
+        assert.equal(baselineDate({ priceDate: day(3) }, dates), day(3));
+        assert.equal(baselineDate({ priceDate: day(3), generatedDay: day(3) }, dates), day(3));
+        // Saw day 3's close but was made on day 4, with day 4's news: day 3 to day 4's move came before the verdict
+        assert.equal(baselineDate({ priceDate: day(3), generatedDay: day(4) }, dates), day(4));
+        // Made on a day without a session (a Saturday): the next session
+        assert.equal(baselineDate({ priceDate: "2026-10-16", generatedDay: "2026-10-17" }, ["2026-10-15", "2026-10-16", "2026-10-19"]), "2026-10-19");
+        assert.equal(baselineDate({ priceDate: day(3), generatedDay: "2027-01-01" }, dates), null);
+        const versions = scoreVerdicts([{ ticker: "UP", verdict: "BUY", priceDate: day(0), generatedDay: day(1), promptVersion: 2 }], closes, benchmark);
+        near(outcome(versions, 5, "BUY").averageReturn, 106 / 101 - 1);
     });
 
     test("versions newest first; without the benchmark, returns but no hit rate", () => {

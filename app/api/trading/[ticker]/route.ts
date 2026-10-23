@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { HttpError, UpstreamError, withUser, type TickerContext } from "@/lib/server/errors";
-import { fetchDailySeries, fetchPrices, fetchQuote, isStaleQuote } from "@/lib/server/alphaVantage";
+import { fetchDailySeries, fetchPrices, fetchQuote, isForeignListing, isStaleQuote } from "@/lib/server/alphaVantage";
 import { assessTrade, computePositions, fillPrice, reducesPosition } from "@/lib/server/account";
 import { getMarketStatus } from "@/lib/server/market";
 import { enforceCollateral, getAccount, insertTrade, shortTickers, withAccountLock } from "@/lib/server/portfolio";
@@ -33,6 +33,9 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
     const close = body?.close === true;
     if (type !== "BUY" && type !== "SELL") {
         throw new HttpError("Order type must be BUY or SELL", 400);
+    }
+    if (isForeignListing(ticker)) {
+        throw new HttpError("Only U.S. listings can be traded", 400);
     }
     if (isPositive(requestedShares) === isPositive(amount)) {
         throw new HttpError("An order needs either a positive number of shares or a positive dollar amount", 400);

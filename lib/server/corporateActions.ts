@@ -43,28 +43,32 @@ const syncTicker = (ticker: string) => cachePromise(syncs, ticker, 60000, async 
     }
 });
 
-// The stored splits and dividends of these tickers. Tickers never fetched are fetched first (a failure is logged, and the ticker
-// is replayed without corporate actions until a later request succeeds); refreshTickers (the open positions) checked more than a
-// day ago are refreshed in the background, so the next request sees any new ones.
-export const loadCorporateActions = async (tickers: string[], refreshTickers: string[] = []): Promise<{ splits: Split[]; dividends: Dividend[] }> => {
-    if (tickers.length === 0) return { splits: [], dividends: [] };
+// The stored splits and dividends of these tickers. Tickers never fetched are fetched first, and so are refreshTickers (the open
+// positions) checked more than a day ago, so a split is in place before the account is valued or traded. A failure is logged and
+// the ticker listed in unsynced (replayed with what's stored, possibly nothing) until a later request succeeds.
+export const loadCorporateActions = async (tickers: string[], refreshTickers: string[] = []): Promise<{ splits: Split[]; dividends: Dividend[]; unsynced: string[] }> => {
+    if (tickers.length === 0) return { splits: [], dividends: [], unsynced: [] };
     const { rows: checked } = await pool.query<{ ticker: string; checked_at: Date }>(
         "SELECT ticker, checked_at FROM corporate_actions_checked WHERE ticker = ANY($1)", [tickers]
     );
     const checkedAt = new Map(checked.map(({ ticker, checked_at }) => [ticker, checked_at.getTime()]));
-    const missing = tickers.filter(ticker => !checkedAt.has(ticker));
-    for (const ticker of refreshTickers.filter(ticker => (checkedAt.get(ticker) ?? Infinity) < Date.now() - REFRESH_MS)) {
-        syncTicker(ticker).catch(error => console.error(`Corporate actions for ${ticker}: ${error.message}`));
-    }
-    const results = await Promise.allSettled(missing.map(syncTicker));
+    const due = [
+        ...tickers.filter(ticker => !checkedAt.has(ticker)),
+        ...refreshTickers.filter(ticker => (checkedAt.get(ticker) ?? Infinity) < Date.now() - REFRESH_MS)
+    ];
+    const results = await Promise.allSettled(due.map(syncTicker));
+    const unsynced: string[] = [];
     results.forEach((result, index) => {
-        if (result.status === "rejected") console.error(`Corporate actions for ${missing[index]}: ${result.reason.message}`);
+        if (result.status === "fulfilled") return;
+        console.error(`Corporate actions for ${due[index]}: ${result.reason.message}`);
+        unsynced.push(due[index]);
     });
     // Dates as text: pg would turn a DATE into a Date at the server's local midnight
     const { rows } = await pool.query<{ ticker: string; type: "SPLIT" | "DIVIDEND"; ex_date: string; payment_date: string | null; factor: string | null; amount: string | null }>(
         'SELECT ticker, "type", ex_date::text, payment_date::text, factor, amount FROM corporate_actions WHERE ticker = ANY($1) ORDER BY ex_date', [tickers]
     );
     return {
+        unsynced,
         splits: rows.filter(row => row.type === "SPLIT").map(row => ({ ticker: row.ticker, exDate: row.ex_date, factor: parseFloat(row.factor!) })),
         dividends: rows.filter(row => row.type === "DIVIDEND").map(row => ({
             ticker: row.ticker, exDate: row.ex_date, paymentDate: row.payment_date, amount: parseFloat(row.amount!)

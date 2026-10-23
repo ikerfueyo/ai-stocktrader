@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { computeTechnicals, rsi } from "./technicals";
+import { adjustForSplits, computeTechnicals, rsi } from "./technicals";
 
 // Closes by date for consecutive days, oldest first
 const series = (closes: number[]) => Object.fromEntries(closes.map((close, i) => [new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10), close]));
@@ -49,5 +49,26 @@ describe("Technicals", () => {
 
     test("no closes, no figures", () => {
         assert.equal(computeTechnicals({}), null);
+    });
+});
+
+describe("Split adjustment", () => {
+    test("closes before a split are divided by its factor, so a 2:1 split isn't a 50% fall", () => {
+        // 64 sessions flat at $100 that split 2:1 on the last one, where the price is $50
+        const raw = series([...Array(63).fill(100), 50]);
+        const dates = Object.keys(raw).sort();
+        const adjusted = adjustForSplits(raw, [{ exDate: dates[63], factor: 2 }]);
+        assert.equal(adjusted[dates[0]], 50);
+        assert.equal(adjusted[dates[63]], 50);
+        const technicals = computeTechnicals(adjusted)!;
+        assert.equal(technicals.return5d, 0);
+        assert.equal(technicals.return3m, 0);
+        assert.equal(technicals.rsi14, 50);
+        assert.equal(computeTechnicals(raw)!.return5d, -0.5);
+    });
+
+    test("a split after the newest close is ignored", () => {
+        const raw = series([100, 100]);
+        assert.deepEqual(adjustForSplits(raw, [{ exDate: "2027-01-01", factor: 2 }]), raw);
     });
 });

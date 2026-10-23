@@ -14,8 +14,16 @@ interface AccountContextValue {
 
 const AccountContext = createContext<AccountContextValue>({ account: null, error: null, refreshAccount: async () => {} });
 
-// Loads /api/account once per signed-in user for the whole app, so the header keeps its figures across pages.
-// Trades and transfers call refreshAccount afterwards. AppShell keys it by user ID, so another user (or none) never sees the
+// How often the account is reloaded while the page is visible, so fills, expiries and buy-ins made by the background job show up
+const POLL_MS = 60000;
+
+// What changes when an order fills, expires or is cancelled, or a buy-in runs: the positions and the cash held for open orders.
+// Lists that are expensive to reload (positions, open orders) reload when it changes.
+export const accountActivityKey = (account: Account | null): string =>
+    account ? `${account.positions.map(({ ticker, quantity }) => `${ticker}:${quantity}`).join(",")}|${account.reservedCash}` : "";
+
+// Loads /api/account for the whole app once per signed-in user, then every minute while the page is visible and whenever it
+// becomes visible again, so the header keeps its figures across pages. Trades and transfers call refreshAccount afterwards. AppShell keys it by user ID, so another user (or none) never sees the
 // previous user's figures, or a response still on its way for them.
 export const AccountProvider = ({ children }: { children: ReactNode }) => {
     const { userId } = useAuth();
@@ -39,9 +47,21 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     }, []);
 
     useEffect(() => {
+        if (!userId) return;
         // refreshAccount only sets state once its request finishes, not synchronously
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        if (userId) refreshAccount();
+        refreshAccount();
+        const timer = setInterval(() => {
+            if (document.visibilityState === "visible") refreshAccount();
+        }, POLL_MS);
+        const onVisible = () => {
+            if (document.visibilityState === "visible") refreshAccount();
+        };
+        document.addEventListener("visibilitychange", onVisible);
+        return () => {
+            clearInterval(timer);
+            document.removeEventListener("visibilitychange", onVisible);
+        };
     }, [userId, refreshAccount]);
 
     return (

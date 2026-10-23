@@ -5,14 +5,15 @@ import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
 import pool from "./db";
 import { fetchCompanyOverview, fetchDailyCloses, fetchEarnings, fetchEarningsEstimates, fetchNews, fetchNextReport, fetchTickerNews, MIN_NEWS_RELEVANCE, type NewsItem } from "./alphaVantage";
-import { computeTechnicals, type Technicals } from "./technicals";
+import { adjustForSplits, computeTechnicals, type Technicals } from "./technicals";
+import { loadCorporateActions } from "./corporateActions";
 import { summarizeEarnings, type EarningsSummary } from "./earnings";
 import { easternParts, parseEasternTimestamp } from "../marketHours";
 import type { AnalysisDetails, AnalysisSource, CompanyOverview, PositionAnalysis, PositionVerdict, Rankings, TickerAnalysis, TickerVerdict } from "../types";
 
 const MODEL = "gpt-6-luna";
 // Logged with each verdict (verdict_log), so the track record compares prompts and inputs. Bump it when either changes.
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 1 });
 
 // The companies an article is mainly about: its most relevant tickers. Analyst notes also tag the bank that wrote them
@@ -149,15 +150,18 @@ const formatInputs = (ticker: string, news: NewsItem[], technicals: Technicals |
 const loadInputs = async (ticker: string): Promise<AnalysisInputs> => {
     const news = await fetchTickerNews(ticker);
     // The analysis goes ahead without any of these. SPY's compact series (shared with the performance chart) covers 3 months.
-    const [closes, benchmarkCloses, overview, quarters, estimates, nextReport] = await Promise.all([
+    // The daily closes aren't adjusted for splits, so the ticker's splits (stored, fetched once) are undone first.
+    const [closes, corporateActions, benchmarkCloses, overview, quarters, estimates, nextReport] = await Promise.all([
         fetchDailyCloses(ticker, "full").catch(() => null),
+        loadCorporateActions([ticker]).catch(() => null),
         fetchDailyCloses(BENCHMARK, "compact").catch(() => null),
         fetchCompanyOverview(ticker).catch(() => null),
         fetchEarnings(ticker).catch(() => null),
         fetchEarningsEstimates(ticker).catch(() => null),
         fetchNextReport(ticker).catch(() => null)
     ]);
-    const technicals = closes ? computeTechnicals(closes, ticker === BENCHMARK ? null : benchmarkCloses) : null;
+    const adjusted = closes && adjustForSplits(closes, corporateActions?.splits ?? []);
+    const technicals = adjusted ? computeTechnicals(adjusted, ticker === BENCHMARK ? null : benchmarkCloses) : null;
     const earnings = summarizeEarnings(quarters, estimates, nextReport, easternParts(new Date()).dateKey);
     return { news, technicals, earnings, overview, text: formatInputs(ticker, news, technicals, earnings, overview) };
 };
