@@ -54,6 +54,30 @@ describe("Equity history", () => {
         assert.ok(Math.abs(history[3].twr - 0.21) < 1e-9, `twr ${history[3].twr}`);
     });
 
+    test("a weekend deposit isn't return on the next trading day", () => {
+        // Cash only: $100 on Friday, $100 more on Saturday
+        const history = equityHistory({
+            trades: [],
+            cash: [{ date: at("2026-10-16"), amount: 100, external: true }, { date: at("2026-10-17"), amount: 100, external: true }],
+            closes: {}, dates: ["2026-10-16", "2026-10-19"]
+        });
+        assert.deepEqual(history.map(({ equity }) => equity), [100, 200]);
+        assert.deepEqual(history.map(({ twr }) => twr), [0, 0]);
+    });
+
+    test("a split takes effect on its date, not the day before", () => {
+        // 10 shares at $100, split 2:1 on the 14th, when the price halves: worth $1,000 throughout
+        const history = equityHistory({
+            trades: [trade("2026-10-12", "BUY", "AAA", 100, 10)],
+            cash: [{ date: at("2026-10-12"), amount: 1000, external: true }],
+            splits: [{ ticker: "AAA", exDate: "2026-10-14", factor: 2 }],
+            closes: { AAA: { "2026-10-12": 100, "2026-10-13": 100, "2026-10-14": 50, "2026-10-15": 50 } },
+            dates
+        });
+        assert.deepEqual(history.map(({ equity }) => equity), [1000, 1000, 1000, 1000]);
+        assert.deepEqual(history.map(({ twr }) => twr), [0, 0, 0, 0]);
+    });
+
     test("dividends count as return", () => {
         const history = equityHistory({
             trades: [],

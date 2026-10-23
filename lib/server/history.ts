@@ -42,9 +42,9 @@ const closesByDate = (closes: Record<string, Record<string, number>>, dates: str
 };
 
 // Daily equity at each date's close: cash (the trades' ledger plus cash activity through that day) plus each position (trades
-// through that day, splits through it) at that day's close, or its average cost without one. The time-weighted return chains each
-// day's return with the day's deposits and withdrawals taken out, (equity - flows) / previous equity - 1, so moving money in or out
-// doesn't count as performance. A return is only meaningful while the account has positive equity, so a day that starts or ends
+// through that day, splits through it, not the next day's) at that day's close, or its average cost without one. The time-weighted
+// return chains each day's return with the deposits and withdrawals since the previous date taken out (weekends and holidays
+// included), (equity - flows) / previous equity - 1, so moving money in or out doesn't count as performance. A return is only meaningful while the account has positive equity, so a day that starts or ends
 // (before that day's flows) at zero or below adds nothing to the chain and is marked not defined; otherwise a few dollars of equity
 // turning negative would read as a loss of several hundred percent.
 export const equityHistory = ({ trades, cash, splits = [], closes, dates }: {
@@ -59,17 +59,19 @@ export const equityHistory = ({ trades, cash, splits = [], closes, dates }: {
     const points: HistoryPoint[] = [];
     let growth = 1;
     let previousEquity = 0;
+    let previousDate = "";
     for (const date of dates) {
-        const { positions, cash: tradeCash } = computePositions(trades, splits, { before: addDays(date, 1) });
+        const { positions, cash: tradeCash } = computePositions(trades, splits, { before: addDays(date, 1), splitsThrough: date });
         const activity = flows.filter(({ day }) => day <= date);
         const netCash = activity.reduce((sum, { amount }) => sum + amount, 0);
         const netDeposits = activity.filter(({ external }) => external).reduce((sum, { amount }) => sum + amount, 0);
-        const todaysFlows = activity.filter(({ day, external }) => external && day === date).reduce((sum, { amount }) => sum + amount, 0);
+        const todaysFlows = activity.filter(({ day, external }) => external && day > previousDate).reduce((sum, { amount }) => sum + amount, 0);
         const holdings = positions.reduce((sum, { ticker, quantity, avgCost }) => sum + quantity * (prices[ticker]?.[date] ?? avgCost), 0);
         const equity = tradeCash + netCash + holdings;
         const defined = previousEquity > 0 && equity - todaysFlows > 0;
         if (defined) growth *= (equity - todaysFlows) / previousEquity;
         previousEquity = equity;
+        previousDate = date;
         points.push({ date, equity: roundCents(equity), netDeposits: roundCents(netDeposits), twr: growth - 1, defined });
     }
     return points;

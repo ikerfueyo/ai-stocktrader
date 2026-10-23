@@ -34,11 +34,27 @@ const setStatus = (db: Db, id: number, status: OrderRow["status"], reason: strin
     db.query(`UPDATE orders SET status = $2, status_reason = $3, updated_at = now() WHERE id = $1 AND status = 'OPEN'`, [id, status, reason.slice(0, 500)]);
 
 // Fills an order that evaluateOrder found marketable, through the same checks as a market order: a fill that opens or adds to a
-// position must leave no collateral shortfall, with the cash reserved for the user's other open orders unavailable. A fill that
-// isn't allowed rejects the order with the reason.
+// position must leave no collateral shortfall, with the cash reserved for the user's other open orders unavailable. A close-only
+// order is capped at the position now open on its closing side. A fill that isn't allowed rejects the order with the reason. The
+// market is checked again right before the fill, since the checks can wait on quotes.
 const fillOrder = async (userId: string, order: OpenOrder, fill: Extract<Evaluation, { action: "fill" }>, quote: Quote, db: PoolClient, label: string) => {
     const { transactions, splits, netTransfers, positions } = await getAccount(userId, db);
-    const { quantity, total } = toOrder({ mode: order.amount !== null ? "dollars" : "shares", value: order.amount ?? order.quantity!, price: fill.price });
+    const held = positions.find(({ ticker }) => ticker === order.ticker)?.quantity ?? 0;
+    const closable = order.side === "SELL" ? Math.max(held, 0) : Math.max(-held, 0);
+    if (order.closeOnly && closable === 0) {
+        await setStatus(db, order.id, "REJECTED", `There's no ${order.ticker} position left to close`);
+        return null;
+    }
+    const { quantity, total } = toOrder({
+        mode: order.amount !== null ? "dollars" : "shares",
+        value: order.amount ?? order.quantity!,
+        price: fill.price,
+        maxShares: order.closeOnly ? closable : Infinity
+    });
+    if (!(quantity > 0)) {
+        await setStatus(db, order.id, "REJECTED", "The order is too small to fill");
+        return null;
+    }
     const trade = { type: order.side, ticker: order.ticker, price: fill.price, quantity, total };
     if (!reducesPosition({ positions, trade })) {
         const reservedCash = await reservedCashFor(await getOpenOrders(userId, db), positions, label, order.id);
@@ -51,6 +67,7 @@ const fillOrder = async (userId: string, order: OpenOrder, fill: Extract<Evaluat
             return null;
         }
     }
+    if ((order.expiresAt && new Date() >= order.expiresAt) || !(await getMarketStatus()).open) return null;
     return inTransaction(db, async () => {
         const row = await insertTrade(db, userId, { ...trade, fillPolicy: fill.fillPolicy, quoteTime: quote.quoteTime, orderId: order.id });
         await db.query(
@@ -61,27 +78,33 @@ const fillOrder = async (userId: string, order: OpenOrder, fill: Extract<Evaluat
     });
 };
 
+const recordTrigger = (db: Db, id: number) =>
+    db.query(`UPDATE orders SET triggered_at = COALESCE(triggered_at, now()), updated_at = now() WHERE id = $1`, [id]);
+
 // Checks a user's open orders against current quotes (evaluateOrder), oldest first: fills the marketable ones, records stop
-// triggers, and expires DAY orders past their close. Quotes are only fetched while the market is open. Call it inside
-// withAccountLock with its client. Returns how many orders changed.
-export const matchOrders = async (userId: string, label: string, db: PoolClient, market?: MarketStatus): Promise<number> => {
+// triggers (even when the fill itself has to wait), and expires DAY orders past their close. Quotes are only fetched while the
+// market is open, and a quote too old to trade on (isStaleQuote) counts as none. Each order is judged at the time and market status
+// after the quotes arrive, so nothing fills past its expiry or the close. Call it inside withAccountLock with its client. Returns
+// how many orders changed.
+export const matchOrders = async (userId: string, label: string, db: PoolClient): Promise<number> => {
     const rows = await getOpenOrders(userId, db);
     if (rows.length === 0) return 0;
-    const status = market ?? await getMarketStatus();
-    const now = new Date();
     const orders = rows.map(toOpenOrder);
-    const { quotes } = status.open ? await fetchPrices([...new Set(orders.map(({ ticker }) => ticker))], label) : { quotes: {} as Record<string, Quote> };
+    const { quotes, staleTickers } = (await getMarketStatus()).open
+        ? await fetchPrices([...new Set(orders.map(({ ticker }) => ticker))], label)
+        : { quotes: {} as Record<string, Quote>, staleTickers: [] as string[] };
     let changed = 0;
     for (const order of orders) {
-        const quote = quotes[order.ticker] ?? null;
-        const evaluation = evaluateOrder(order, quote, { now, marketOpen: status.open });
+        const quote = staleTickers.includes(order.ticker) ? null : quotes[order.ticker] ?? null;
+        const evaluation = evaluateOrder(order, quote, { now: new Date(), marketOpen: (await getMarketStatus()).open });
         if (evaluation.action === "expire") {
             await setStatus(db, order.id, "EXPIRED", evaluation.reason);
         } else if (evaluation.action === "trigger") {
-            await db.query(`UPDATE orders SET triggered_at = now(), updated_at = now() WHERE id = $1`, [order.id]);
+            await recordTrigger(db, order.id);
         } else if (evaluation.action === "fill") {
             const filled = await fillOrder(userId, order, evaluation, quote!, db, label);
             if (filled) console.log(`${label}: filled order ${order.id} for ${userId}: ${order.side} ${parseFloat(filled.quantity)} ${order.ticker} @ ${filled.price}`);
+            else if (evaluation.triggered) await recordTrigger(db, order.id);
         } else {
             continue;
         }

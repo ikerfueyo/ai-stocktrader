@@ -22,17 +22,21 @@ const PerformanceChart = () => {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        // Switching ranges cancels the previous request, so a slower earlier response can't replace the newer range's figures
+        const controller = new AbortController();
         const getHistory = async () => {
             setError(null);
             try {
-                const response = await axios.get<PortfolioHistory>(`/api/portfolio/history?range=${range}`);
+                const response = await axios.get<PortfolioHistory>(`/api/portfolio/history?range=${range}`, { signal: controller.signal });
                 setHistory(response.data);
             } catch (error) {
+                if (axios.isCancel(error)) return;
                 logError(error);
                 setError(apiErrorMessage(error));
             }
         };
         getHistory();
+        return () => controller.abort();
     }, [range]);
 
     const points = history?.points ?? [];

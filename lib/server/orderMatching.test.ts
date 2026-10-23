@@ -5,7 +5,7 @@ import { valueAccount } from "./account";
 
 const order = (overrides: Partial<OpenOrder>): OpenOrder => ({
     id: 1, ticker: "AAA", side: "BUY", orderType: "LIMIT", quantity: 10, amount: null,
-    limitPrice: null, stopPrice: null, timeInForce: "GTC", expiresAt: null, triggeredAt: null,
+    limitPrice: null, stopPrice: null, timeInForce: "GTC", expiresAt: null, triggeredAt: null, closeOnly: false,
     ...overrides
 });
 const quote = (price: number, spread = 0.1) => ({ price, bid: price - spread / 2, ask: price + spread / 2, spread: "quoted" as const });

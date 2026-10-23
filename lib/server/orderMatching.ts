@@ -16,6 +16,7 @@ export interface OpenOrder {
     timeInForce: TimeInForce;
     expiresAt: Date | null;
     triggeredAt: Date | null;
+    closeOnly: boolean;
 }
 
 export const toOpenOrder = (row: OrderRow): OpenOrder => ({
@@ -29,7 +30,8 @@ export const toOpenOrder = (row: OrderRow): OpenOrder => ({
     stopPrice: row.stop_price === null ? null : parseFloat(row.stop_price),
     timeInForce: row.time_in_force,
     expiresAt: row.expires_at === null ? null : new Date(row.expires_at),
-    triggeredAt: row.triggered_at === null ? null : new Date(row.triggered_at)
+    triggeredAt: row.triggered_at === null ? null : new Date(row.triggered_at),
+    closeOnly: row.close_only === true
 });
 
 export type Evaluation =

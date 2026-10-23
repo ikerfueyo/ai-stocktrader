@@ -59,7 +59,7 @@ export const POST = withUser(async (request, context, userId) => {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
             [userId, ticker, side, orderType, quantity, limitPrice, stopPrice, timeInForce, timeInForce === "DAY" ? dayOrderExpiry(market) : null]
         );
-        if (market.open) await matchOrders(userId, label, db, market);
+        if (market.open) await matchOrders(userId, label, db);
         return (await db.query<OrderRow>("SELECT * FROM orders WHERE id = $1", [inserted.id])).rows[0];
     });
     return NextResponse.json<{ order: OrderRow }>({ order });

@@ -3,7 +3,7 @@ import axios from "axios";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
 import { roundPrice, type Dividend, type Split } from "./account";
-import { easternParts, easternTime, parseEasternTimestamp, sessionOn } from "../marketHours";
+import { easternParts, easternTime, marketStatus, parseEasternTimestamp, sessionOn } from "../marketHours";
 import type { EpsEstimate, NextReport, QuarterResult } from "./earnings";
 import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, Quote, QuoteDelay, SymbolMatch } from "../types";
 
@@ -165,13 +165,14 @@ const lastKnownPrices = singleton("lastKnownPrices", () => new Map<string, numbe
 // For local testing only: PRICE_OVERRIDES='{"TSTA": 120}' fixes those tickers' prices without calling Alpha Vantage
 const PRICE_OVERRIDES: Record<string, number> = JSON.parse(process.env.PRICE_OVERRIDES || "{}");
 
-// Without quoted bid/ask prices, fills use a simulated spread of SIMULATED_SPREAD_BPS basis points of the price (at least a cent),
-// centered on the last price. 0 turns it off, so trades fill at the last price.
+// Without quoted bid/ask prices, fills use a simulated spread of SIMULATED_SPREAD_BPS basis points of the price (at least a cent,
+// but at most half the price, so a sub-cent stock's bid stays positive), centered on the last price. 0 turns it off, so trades
+// fill at the last price.
 const SIMULATED_SPREAD_BPS = Number(process.env.SIMULATED_SPREAD_BPS ?? 5);
 
 const simulatedSpread = (price: number): Pick<Quote, "bid" | "ask" | "spread"> => {
     if (!(SIMULATED_SPREAD_BPS > 0)) return { bid: null, ask: null, spread: "none" };
-    const half = Math.max(0.01, price * SIMULATED_SPREAD_BPS / 10000) / 2;
+    const half = Math.min(Math.max(0.01, price * SIMULATED_SPREAD_BPS / 10000), price / 2) / 2;
     return { bid: roundPrice(price - half), ask: roundPrice(price + half), spread: "simulated" };
 };
 
@@ -268,10 +269,20 @@ export const fetchQuotes = (tickers: string[]): Promise<Quote>[] => {
 
 export const fetchQuote = (ticker: string): Promise<Quote> => fetchQuotes([ticker])[0];
 
+// How old a quote may be during a scheduled session and still fill a trade, approve a risky one or trigger a buy-in
+const MAX_QUOTE_AGE_MS = 15 * 60000;
+
+// Whether a quote is too old to trade on: during a scheduled NYSE session (the calendar, so MARKET_HOURS_OVERRIDE=open outside one
+// still trades on the last close), an end-of-day quote, such as yesterday's close before today's bar exists, or one more than 15
+// minutes old. Outside sessions the last close is the current price.
+export const isStaleQuote = (quote: Pick<Quote, "quoteTime" | "delay">, now = new Date()): boolean =>
+    marketStatus(now).open && (quote.delay !== "realtime" || now.getTime() - new Date(quote.quoteTime).getTime() > MAX_QUOTE_AGE_MS);
+
 export const fetchLatestPrice = async (ticker: string): Promise<number> => (await fetchQuote(ticker)).price;
 
 // Current prices for several tickers. One failing doesn't fail the rest: it falls back to its last known price (if any) and is
-// listed in staleTickers, so it's flagged in the UI and never used to approve a risky action or trigger a buy-in.
+// listed in staleTickers, so it's flagged in the UI and never used to approve a risky action or trigger a buy-in. A quote that's
+// too old to trade on (isStaleQuote) is kept for display but listed in staleTickers too.
 export const fetchPrices = async (tickers: string[], label: string) => {
     const results = await Promise.allSettled(fetchQuotes(tickers));
     const prices: Record<string, number> = {};
@@ -283,6 +294,7 @@ export const fetchPrices = async (tickers: string[], label: string) => {
         if (result.status === "fulfilled") {
             prices[ticker] = result.value.price;
             quotes[ticker] = result.value;
+            if (isStaleQuote(result.value)) staleTickers.push(ticker);
             return;
         }
         console.error(`${label}: ${ticker}: ${result.reason.message}`);

@@ -99,11 +99,16 @@ export const withAccountLock = <T>(userId: string, fn: (db: PoolClient) => Promi
     return run;
 };
 
-// Inserts an executed trade, stamped now. orderId links the fill of a stored order (limit, stop or queued).
+// Inserts an executed trade, stamped now. orderId links the fill of a stored order (limit, stop or queued). The last guard against
+// a bad fill: the price and quantity must be positive and the total not negative.
 export const insertTrade = async (db: Db, userId: string, trade: {
     type: TradeType; ticker: string; price: number; quantity: number; total: number;
     fillPolicy: FillPolicy; quoteTime: string | null; reason?: "LIQUIDATION"; orderId?: number;
 }): Promise<TransactionRow> => {
+    const isPositive = (value: number) => Number.isFinite(value) && value > 0;
+    if (!isPositive(trade.price) || !isPositive(trade.quantity) || !(Number.isFinite(trade.total) && trade.total >= 0)) {
+        throw new Error(`Refusing an invalid ${trade.type} ${trade.ticker} fill: ${trade.quantity} @ ${trade.price}, total ${trade.total}`);
+    }
     const { rows } = await db.query<TransactionRow>(
         `INSERT INTO transactions (user_id, "date", "type", ticker, price, quantity, total, reason, quote_time, fill_policy, order_id)
          VALUES($1, now(), $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,

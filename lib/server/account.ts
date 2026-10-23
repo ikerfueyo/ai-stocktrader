@@ -100,17 +100,20 @@ const tradeDay = (date: string | Date): string => easternParts(new Date(date)).d
 // Splits are applied in date order, before the first trade on or after their date: a position's shares are multiplied by the
 // factor and its average cost divided by it, so its cost basis, value and cash don't change.
 // With before ("YYYY-MM-DD"), only trades dated before that day count, with the splits up to and including it: the position
-// held at that day's open (positionsAt). Otherwise every trade counts, with the splits up to asOf's date.
+// held at that day's open (positionsAt). Otherwise every trade counts, with the splits up to asOf's date. splitsThrough
+// ("YYYY-MM-DD") sets the last split date applied instead, such as the trades before tomorrow with today's splits only: the
+// position at today's close.
 // Realized P&L is booked on the part of a trade that reduces or closes a position, against its average cost: (price - avgCost) x
 // shares for a long, (avgCost - price) x shares for a short. realized has each transaction's amount, by index (null for a trade
 // that only opened or added, or that a before date left out).
-export const computePositions = (transactions: Trade[], splits: Split[] = [], { asOf = new Date(), before }: { asOf?: Date; before?: string } = {}): { positions: Position[]; cash: number; realizedPnl: number; realized: (number | null)[] } => {
+export const computePositions = (transactions: Trade[], splits: Split[] = [], { asOf = new Date(), before, splitsThrough }: { asOf?: Date; before?: string; splitsThrough?: string } = {}): { positions: Position[]; cash: number; realizedPnl: number; realized: (number | null)[] } => {
     const positions = new Map<string, Position>();
     let cash = 0;
     let realizedPnl = 0;
     const realized: (number | null)[] = transactions.map(() => null);
     const today = tradeDay(asOf);
-    const pending = splits.filter(({ exDate }) => exDate <= (before ?? today)).sort((a, b) => a.exDate.localeCompare(b.exDate));
+    const lastSplitDay = splitsThrough ?? before ?? today;
+    const pending = splits.filter(({ exDate }) => exDate <= lastSplitDay).sort((a, b) => a.exDate.localeCompare(b.exDate));
     let nextSplit = 0;
     const applySplitsThrough = (day: string) => {
         for (; nextSplit < pending.length && pending[nextSplit].exDate <= day; nextSplit++) {
@@ -153,7 +156,7 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
         }
         positions.set(symbol, position);
     });
-    applySplitsThrough(before ?? today);
+    applySplitsThrough(lastSplitDay);
     return { positions: [...positions.values()].filter(position => position.quantity !== 0), cash, realizedPnl: roundCents(realizedPnl), realized };
 };
 

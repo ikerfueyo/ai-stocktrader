@@ -45,6 +45,7 @@ export interface OrderRow {
     status: OrderStatus;
     triggered_at: string | null;
     status_reason: string | null;
+    close_only: boolean;
     // The fill, for a FILLED order
     transaction_id?: number | null;
 }

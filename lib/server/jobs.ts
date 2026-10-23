@@ -33,7 +33,9 @@ const isLeader = async (): Promise<boolean> => {
     return true;
 };
 
-// Users with open orders, and users with a short (by raw share counts; splits don't change a position's sign)
+// Users with open orders, and users who may hold a short: a negative raw share count, or any trade in a ticker that has split,
+// since raw counts mix pre- and post-split shares (short 10, a 2:1 split, cover 15 leaves 5 short but a raw count of +5).
+// updateAccount replays the trades with their splits, so including a user who turns out to hold no short costs nothing extra.
 const usersToCheck = async (marketOpen: boolean): Promise<{ users: string[]; tickers: string[] }> => {
     const { rows } = await pool.query<{ user_id: string; ticker: string }>(
         `SELECT user_id, ticker FROM orders WHERE status = 'OPEN'
@@ -41,7 +43,10 @@ const usersToCheck = async (marketOpen: boolean): Promise<{ users: string[]; tic
          SELECT user_id, ticker FROM (
              SELECT user_id, UPPER(ticker) AS ticker, SUM(CASE "type" WHEN 'BUY' THEN quantity ELSE -quantity END) AS held
              FROM transactions GROUP BY user_id, UPPER(ticker)
-         ) positions WHERE held < 0 AND $1`,
+         ) positions
+         WHERE $1 AND (held < 0 OR EXISTS (
+             SELECT 1 FROM corporate_actions WHERE corporate_actions.ticker = positions.ticker AND "type" = 'SPLIT'
+         ))`,
         [marketOpen]
     );
     return { users: [...new Set(rows.map(({ user_id }) => user_id))], tickers: [...new Set(rows.map(({ ticker }) => ticker.toUpperCase()))] };

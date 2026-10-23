@@ -21,6 +21,8 @@ CREATE TABLE orders (
     triggered_at TIMESTAMPTZ,
     -- Why an order was rejected, expired or cancelled
     status_reason VARCHAR(500),
+    -- A closing order (Portfolio page): capped at the open position when it fills, so it can't flip it
+    close_only BOOLEAN NOT NULL DEFAULT false,
     CHECK ((quantity IS NULL) <> (amount IS NULL))
 );
 
