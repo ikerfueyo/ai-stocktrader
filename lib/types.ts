@@ -1,4 +1,7 @@
 // Shapes shared by the API route handlers (app/api) and the pages that call them
+import type { AccountApplication } from "./kyc";
+
+export type { AccountApplication };
 
 export type TradeType = "BUY" | "SELL";
 export type TransferType = "DEPOSIT" | "WITHDRAW";
@@ -418,6 +421,26 @@ export interface TransferRequest {
         method: string;
         amount: number;
     };
+}
+
+// Brokerage accounts. Account objects are Alpaca's (the broker's shape), re-exported for the pages.
+export type { Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse } from "./server/broker/types";
+
+export type BrokerAccountKind = "individual" | "traditional_ira" | "roth_ira";
+
+// GET /api/accounts: one of the user's brokerage accounts with its status, and whether requests act on it (the header's switcher)
+export interface BrokerAccountSummary {
+    accountId: string;
+    accountNumber: string;
+    kind: BrokerAccountKind;
+    status: string;
+    createdAt: string;
+    active: boolean;
+}
+
+// POST /api/accounts: an application for an individual account; options_level, with the options agreement, also asks for options
+export interface OpenAccountRequest {
+    application: AccountApplication;
 }
 
 // Every error response

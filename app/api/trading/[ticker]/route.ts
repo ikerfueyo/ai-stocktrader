@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireTradableStock } from "@/lib/server/assets";
+import { requireAccount } from "@/lib/server/brokerAccounts";
 import { HttpError, UpstreamError, withUser, type TickerContext } from "@/lib/server/errors";
 import { fetchDailySeries, fetchPrices, fetchQuote, isForeignListing, isStaleQuote } from "@/lib/server/marketData";
 import { assessTrade, computePositions, fillPrice, reducesPosition } from "@/lib/server/account";
@@ -40,6 +41,7 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
         throw new HttpError("Only U.S. listings can be traded", 400);
     }
     await requireTradableStock(ticker);
+    await requireAccount(request, userId, "trade");
     if (isPositive(requestedShares) === isPositive(amount)) {
         throw new HttpError("An order needs either a positive number of shares or a positive dollar amount", 400);
     }

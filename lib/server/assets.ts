@@ -52,6 +52,9 @@ export const findAsset = async (symbol: string): Promise<AssetRow | null | undef
     return assets.get(normalizeSymbol(symbol)) ?? null;
 };
 
+// Every asset in the universe, by symbol (empty while it's never been synced)
+export const allAssets = async (): Promise<AssetRow[]> => [...((await loadAssets())?.values() ?? [])].sort((a, b) => a.symbol.localeCompare(b.symbol));
+
 // Throws 404 unless symbol is a tradable stock in the universe (ETFs, funds and OTC listings aren't)
 export const requireTradableStock = async (symbol: string): Promise<AssetRow | null> => {
     const asset = await findAsset(symbol);

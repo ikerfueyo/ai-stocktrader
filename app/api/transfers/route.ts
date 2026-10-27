@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
+import { requireAccount } from "@/lib/server/brokerAccounts";
 import { fetchPrices } from "@/lib/server/marketData";
 import { assessWithdrawal, roundCents } from "@/lib/server/account";
 import { CASH_ACTIVITY_COLUMNS, getAccount, shortTickers, withAccountLock, type Db } from "@/lib/server/portfolio";
@@ -22,6 +23,7 @@ export const POST = withUser(async (request, context, userId) => {
     if (!(amount > 0 && amount <= 99999999.99)) {
         throw new HttpError("Amount must be between $0.01 and $99,999,999.99", 400);
     }
+    await requireAccount(request, userId, type === "DEPOSIT" ? "deposit" : "withdraw");
     const insert = (db: Db = pool) => db.query<CashActivityRow>(
         `INSERT INTO cash_activity (user_id, "type", method, amount) VALUES($1, $2, $3, $4) RETURNING ${CASH_ACTIVITY_COLUMNS}`,
         [userId, type, method.trim().slice(0, 255), amount]

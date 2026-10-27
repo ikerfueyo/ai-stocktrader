@@ -5,7 +5,7 @@
 import type {
     ACHRelationship, Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, Activity,
     Asset, CalendarDay, Clock, CreateACHRelationshipRequest, CreateOrderRequest, CreateTransferRequest, ListActivitiesQuery,
-    ListAssetsQuery, ListDocumentsQuery, ListOrdersQuery, ListTransfersQuery, OptionContract, OptionsApprovalRequest, Order,
+    ListAssetsQuery, ListDocumentsQuery, ListOrdersQuery, ListTransfersQuery, OptionContract, OptionsApprovalRequest, OptionsApprovalResponse, Order, OwnerDocumentUploadRequest,
     PortfolioHistory, PortfolioHistoryQuery, Position, TradeAccount, Transfer, UpdateOrderRequest
 } from "./types";
 
@@ -26,6 +26,8 @@ export interface Broker {
     getAccount(accountId: string): Promise<Account>;
     updateAccount(accountId: string, update: AccountUpdateRequest): Promise<Account>;
     closeAccount(accountId: string): Promise<void>;
+    // POST /v1/accounts/{id}/documents/upload, such as an ID asked for by an ACTION_REQUIRED review
+    uploadDocuments(accountId: string, documents: OwnerDocumentUploadRequest[]): Promise<void>;
 
     // Trading account: GET /v1/trading/accounts/{id}/account, its configurations, and portfolio history
     getTradeAccount(accountId: string): Promise<TradeAccount>;
@@ -56,7 +58,9 @@ export interface Broker {
 
     // Options: exercise (POST /positions/{symbol}/exercise), approval (POST /v1/accounts/{id}/options/approval), contracts
     exerciseOption(accountId: string, symbol: string): Promise<void>;
-    requestOptionsApproval(accountId: string, request: OptionsApprovalRequest): Promise<void>;
+    requestOptionsApproval(accountId: string, request: OptionsApprovalRequest): Promise<OptionsApprovalResponse>;
+    // GET /v1/accounts/options/approvals?account_id=, newest first
+    listOptionsApprovals(accountId: string): Promise<OptionsApprovalResponse[]>;
     listOptionContracts(query: { underlying_symbols?: string; expiration_date_gte?: string; expiration_date_lte?: string; type?: "call" | "put" }): Promise<OptionContract[]>;
 
     // The ledger: GET /v1/accounts/activities?account_id=

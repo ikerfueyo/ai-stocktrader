@@ -4,7 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
 import type { ApiError } from "../types";
 
-import { HttpError } from "./httpError";
+import { HttpError, isHttpError } from "./httpError";
 
 export { HttpError };
 
@@ -29,7 +29,7 @@ export const errorResponse = (request: NextRequest, error: unknown): NextRespons
     const message = errorMessage || errors?.map(e => e.message).join("; ") || code || "Unknown error";
     console.error(`${request.method} ${request.nextUrl.pathname}${request.nextUrl.search}: ${message}`);
     let status = 500;
-    if (error instanceof HttpError) {
+    if (isHttpError(error)) {
         status = error.status;
     } else if (code === "ECONNABORTED" || code === "ETIMEDOUT" || error instanceof OpenAI.APIConnectionTimeoutError) {
         status = 504;

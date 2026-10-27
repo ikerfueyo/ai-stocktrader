@@ -8,6 +8,7 @@ import logo from "@/public/AIStockTraderLogo.png";
 import TickerSearchBar from "./TickerSearchBar";
 import AccountSummary from "./AccountSummary";
 import MarginBanner from "./MarginBanner";
+import AccountSwitcher from "./AccountSwitcher";
 
 const Header = () => {
     return (
@@ -31,6 +32,7 @@ const Header = () => {
                     <Link href="/transactions" className="text-lg font-semibold mr-4">Transactions</Link>
                     <Link href="/deposit" className="header-pill deposit mr-2">Deposit</Link>
                     <Link href="/withdraw" className="header-pill withdraw mr-4">Withdraw</Link>
+                    <AccountSwitcher />
                     <UserButton />
                 </nav>
             </header>

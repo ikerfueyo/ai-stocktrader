@@ -62,10 +62,12 @@ export type TransferStatusEvent = Schemas["TransferStatusEvent"];
 // Documents
 export type AccountDocument = Schemas["AccountDocument"];
 export type AccountDocumentType = Schemas["AccountDocumentType"];
+export type OwnerDocumentUploadRequest = Schemas["OwnerDocumentUploadRequest"];
 
 // Options
 export type OptionContract = Schemas["OptionContract"];
 export type OptionsApprovalRequest = Schemas["OptionsApprovalRequest"];
+export type OptionsApprovalResponse = Schemas["OptionsApprovalResponse"];
 
 // Every error reply
 export type BrokerErrorBody = Schemas["Error"];

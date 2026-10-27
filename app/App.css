@@ -1255,3 +1255,105 @@ header a.header-pill.withdraw:hover {
   color: #495057;
   text-align: center;
 }
+
+/* Onboarding, the application's status and settings */
+.onboarding-header {
+  justify-content: space-between;
+}
+
+.onboarding-steps {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+  font-size: 13px;
+  color: #adb5bd;
+}
+
+.onboarding-steps li.active {
+  color: #343a40;
+  font-weight: bold;
+}
+
+.onboarding-steps li.done {
+  color: #00a5a8;
+}
+
+.onboarding-test-note {
+  background-color: #fff3cd;
+  border: 1px solid #ffe08a;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #6b5200;
+}
+
+.onboarding-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+}
+
+.onboarding-check input {
+  margin-top: 4px;
+}
+
+.onboarding-indent {
+  margin-left: 24px;
+}
+
+.onboarding-disclosure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboarding-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+}
+
+.onboarding-review {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.onboarding-review dt {
+  color: gray;
+  font-weight: normal;
+}
+
+.onboarding-review dd {
+  margin: 0;
+}
+
+.onboarding-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-section {
+  border-top: 1px solid rgba(52, 58, 64, 0.15);
+  padding-bottom: 8px;
+}
+
+.account-chip {
+  font-size: 13px;
+  font-weight: 600;
+  color: #adb5bd;
+  white-space: nowrap;
+}
+
+.account-chip:hover {
+  color: aqua;
+  text-decoration: none;
+}

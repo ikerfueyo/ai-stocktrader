@@ -9,6 +9,7 @@ import { updateAccount } from "./upkeep";
 import { syncAssets } from "./assets";
 import { syncCalendar } from "./calendar";
 import { isSlotDue } from "./schedule";
+import { advanceAccounts } from "./broker/sim/accounts";
 
 // The background jobs, checked every ORDER_MATCH_INTERVAL_MS (default 30s). Each job is due on every check, or at daily Eastern
 // times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
@@ -27,7 +28,7 @@ export interface Job {
 }
 
 const state = singleton("backgroundJobs", () => ({
-    started: false, running: false, leader: null as PoolClient | null, lastRuns: new Map<string, Date>(), jobsRunning: new Set<string>()
+    started: false, running: false, leader: null as PoolClient | null, lastRuns: new Map<string, Date>(), jobsRunning: new Set<string>(), missingTables: new Set<string>()
 }));
 
 // Becomes the leader if no other process is; the lock lasts as long as the kept client's connection
@@ -80,19 +81,26 @@ const updateAccounts = async () => {
 
 export const JOBS: Job[] = [
     { name: "accounts", leaderOnly: true, run: updateAccounts },
+    // The simulator's account reviews and options approvals that are due (reading an account advances it too)
+    { name: "sim-accounts", leaderOnly: true, run: () => advanceAccounts() },
     // Alpaca refreshes its asset flags 3 times a day, the last at 8:20 a.m. ET
     { name: "assets", slots: ["04:30", "08:30", "16:30"], leaderOnly: true, run: () => syncAssets(LABEL) },
     { name: "calendar", slots: ["03:00"], leaderOnly: false, run: () => syncCalendar(LABEL) }
 ];
 
 // Runs a job now (the schedule, or POST /api/dev/jobs), unless it's already running; returns false when it was. A failed run isn't
-// recorded, so a daily job is retried on the next check rather than at its next slot.
+// recorded, so a daily job is retried on the next check rather than at its next slot. A job whose table doesn't exist yet (a
+// migration not applied) is skipped quietly after one warning.
 export const runJob = async (job: Job): Promise<boolean> => {
     if (state.jobsRunning.has(job.name)) return false;
     state.jobsRunning.add(job.name);
     try {
         await job.run();
         state.lastRuns.set(job.name, new Date());
+    } catch (error) {
+        if ((error as { code?: string }).code !== "42P01") throw error;
+        if (!state.missingTables.has(job.name)) console.warn(`${LABEL}: ${job.name}: ${(error as Error).message}; apply the pending migrations in db/migrations`);
+        state.missingTables.add(job.name);
     } finally {
         state.jobsRunning.delete(job.name);
     }

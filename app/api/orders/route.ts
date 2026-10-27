@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireTradableStock } from "@/lib/server/assets";
+import { requireAccount } from "@/lib/server/brokerAccounts";
 import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { fetchPrices, fetchQuote, isForeignListing } from "@/lib/server/marketData";
@@ -27,6 +28,7 @@ export const POST = withUser(async (request, context, userId) => {
     if (!TICKER.test(ticker)) throw new HttpError("A valid ticker is required", 400);
     if (isForeignListing(ticker)) throw new HttpError("Only U.S. listings can be traded", 400);
     await requireTradableStock(ticker);
+    await requireAccount(request, userId, "trade");
     if (side !== "BUY" && side !== "SELL") throw new HttpError("Side must be BUY or SELL", 400);
     if (!orderType || !ORDER_TYPES.includes(orderType)) throw new HttpError("Order type must be LIMIT, STOP or STOP_LIMIT (market orders go to /api/trading)", 400);
     if (timeInForce !== "DAY" && timeInForce !== "GTC") throw new HttpError("Time in force must be DAY or GTC", 400);

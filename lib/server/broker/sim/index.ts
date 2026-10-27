@@ -1,0 +1,99 @@
+import "server-only";
+import pool from "../../db";
+import { allAssets, findAsset } from "../../assets";
+import { BrokerError } from "../errors";
+import type { Broker, BrokerEvent, BrokerEventStream } from "../broker";
+import * as accounts from "./accounts";
+import { toAsset, toCalendar, toClock } from "./shapes";
+
+// The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), assets, the
+// calendar and clock, and the event streams are implemented; the rest arrives phase by phase (docs/brokerage-roadmap.md) and
+// answers 501 until then, while the app still trades through the original mock ledger.
+const notYet = (what: string, phase: number) => (): never => {
+    throw new BrokerError(501, 50100000, `${what} isn't simulated yet (phase ${phase} of the brokerage roadmap)`);
+};
+
+const EVENT_POLL_MS = 2000;
+
+export class SimBroker implements Broker {
+    createAccount = accounts.createAccount;
+    getAccount = accounts.getAccount;
+    updateAccount = accounts.updateAccount;
+    closeAccount = accounts.closeAccount;
+    uploadDocuments = accounts.uploadDocuments;
+    getConfigurations = accounts.getConfigurations;
+    updateConfigurations = accounts.updateConfigurations;
+    listOptionsApprovals = accounts.listOptionsApprovals;
+    requestOptionsApproval = (accountId: string, { level }: { level?: number }) => accounts.requestOptionsApproval(accountId, level ?? 0);
+
+    listAssets = async () => (await allAssets()).map(toAsset);
+
+    async getAsset(symbol: string) {
+        const asset = await findAsset(symbol);
+        if (!asset) throw new BrokerError(404, 40410000, `asset not found for ${symbol}`);
+        return toAsset(asset);
+    }
+
+    getCalendar = async (start: string, end: string) => toCalendar(start, end);
+    getClock = async () => toClock(new Date());
+
+    // Polls sim_events every 2 seconds for the account streams asked for, after sinceId (or from now), in order
+    subscribe(streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, sinceId?: string) {
+        let last = sinceId ?? null;
+        let stopped = false;
+        let polling = false;
+        const poll = async () => {
+            if (stopped || polling) return;
+            polling = true;
+            try {
+                if (last === null) {
+                    const { rows: [newest] } = await pool.query<{ id: string }>("SELECT max(id) AS id FROM sim_events");
+                    last = newest?.id ?? "";
+                }
+                const { rows } = await pool.query<{ id: string; account_id: string; stream: BrokerEventStream; at: Date; payload: unknown }>(
+                    "SELECT * FROM sim_events WHERE id > $1 AND stream = ANY($2) ORDER BY id LIMIT 500", [last, streams]
+                );
+                for (const row of rows) {
+                    if (stopped) break;
+                    await handler({ id: row.id, stream: row.stream, accountId: row.account_id, at: row.at.toISOString(), payload: row.payload });
+                    last = row.id;
+                }
+            } catch (error) {
+                console.error(`Sim events: ${error instanceof Error ? error.message : error}`);
+            } finally {
+                polling = false;
+            }
+        };
+        const timer = setInterval(poll, EVENT_POLL_MS);
+        timer.unref();
+        poll();
+        return () => {
+            stopped = true;
+            clearInterval(timer);
+        };
+    }
+
+    getTradeAccount = notYet("The trading account", 3);
+    getPortfolioHistory = notYet("Portfolio history", 3);
+    listActivities = notYet("Account activities", 3);
+    createOrder = notYet("Orders", 4);
+    listOrders = notYet("Orders", 4);
+    getOrder = notYet("Orders", 4);
+    getOrderByClientOrderId = notYet("Orders", 4);
+    replaceOrder = notYet("Orders", 4);
+    cancelOrder = notYet("Orders", 4);
+    cancelAllOrders = notYet("Orders", 4);
+    listPositions = notYet("Positions", 3);
+    getPosition = notYet("Positions", 3);
+    closePosition = notYet("Positions", 4);
+    exerciseOption = notYet("Options", 9);
+    listOptionContracts = notYet("Options", 9);
+    createAchRelationship = notYet("Bank links", 2);
+    listAchRelationships = notYet("Bank links", 2);
+    deleteAchRelationship = notYet("Bank links", 2);
+    createTransfer = notYet("Transfers", 2);
+    listTransfers = notYet("Transfers", 2);
+    cancelTransfer = notYet("Transfers", 2);
+    listDocuments = notYet("Documents", 7);
+    downloadDocument = notYet("Documents", 7);
+}
