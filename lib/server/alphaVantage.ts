@@ -1,7 +1,7 @@
 import "server-only";
 import axios from "axios";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
-import { UpstreamError } from "./errors";
+import { UpstreamError } from "./httpError";
 import { rateLimiter } from "./rateLimit";
 import { roundPrice, type Dividend, type Split } from "./account";
 import { easternParts, easternTime, marketStatus, parseEasternTimestamp, sessionOn } from "../marketHours";

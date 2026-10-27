@@ -4,16 +4,9 @@ import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
 import type { ApiError } from "../types";
 
-import { HttpError, isHttpError } from "./httpError";
+import { HttpError, UpstreamError, isHttpError } from "./httpError";
 
-export { HttpError };
-
-// Error from a third-party API, reported to the client as 502
-export class UpstreamError extends HttpError {
-    constructor(message: string, status = 502) {
-        super(message, status);
-    }
-}
+export { HttpError, UpstreamError };
 
 // The fields of the errors thrown here: pg, axios and Node errors carry a code, and AggregateError the errors it wraps
 interface ErrorLike {

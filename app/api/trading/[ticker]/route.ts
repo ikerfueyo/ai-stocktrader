@@ -3,9 +3,9 @@ import { requireTradableStock } from "@/lib/server/assets";
 import { requireAccount } from "@/lib/server/brokerAccounts";
 import { HttpError, UpstreamError, withUser, type TickerContext } from "@/lib/server/errors";
 import { fetchDailySeries, fetchPrices, fetchQuote, isForeignListing, isStaleQuote } from "@/lib/server/marketData";
-import { assessTrade, computePositions, fillPrice, reducesPosition } from "@/lib/server/account";
+import { addTrade, assessTrade, fillPrice, reducesPosition } from "@/lib/server/account";
 import { getMarketStatus } from "@/lib/server/market";
-import { enforceCollateral, getAccount, insertTrade, shortTickers, withAccountLock } from "@/lib/server/portfolio";
+import { enforceCollateral, getAccount, inTransaction, insertTrade, shortTickers, withAccountLock } from "@/lib/server/portfolio";
 import { dayOrderExpiry, getOpenOrders, reservedCashFor } from "@/lib/server/orders";
 import { toOrder } from "@/lib/orders";
 import type { OrderRow, TradeRequest, TradeResponse } from "@/lib/types";
@@ -46,7 +46,7 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
         throw new HttpError("An order needs either a positive number of shares or a positive dollar amount", 400);
     }
     const result = await withAccountLock(userId, async (db): Promise<TradeResponse> => {
-        const { transactions, splits, netTransfers, positions } = await getAccount(userId, db);
+        const { positions, totalCash } = await getAccount(userId, db);
         const quote = await fetchQuote(ticker);
         // Checked after the lock and the quote, which can both wait, so an order can't fill after the close
         const market = await getMarketStatus();
@@ -76,10 +76,10 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
         }
         if (!reduces) {
             // Collateral depends on the shorts' current prices, except the traded ticker's, which uses the fill price
-            const { positions: after } = computePositions([...transactions, trade], splits);
+            const after = addTrade(positions, trade);
             const { prices, staleTickers } = await fetchPrices(shortTickers(after).filter(symbol => symbol !== ticker), label);
             const reservedCash = await reservedCashFor(await getOpenOrders(userId, db), positions, label);
-            const assessment = assessTrade({ transactions, splits, netTransfers, prices, staleTickers, trade, reservedCash });
+            const assessment = assessTrade({ positions, totalCash, prices, staleTickers, trade, reservedCash });
             if (!assessment.allowed) {
                 throw new HttpError(assessment.message, assessment.status);
             }
@@ -94,7 +94,7 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
             );
             return { order };
         }
-        const fill = await insertTrade(db, userId, { ...trade, fillPolicy, quoteTime: quote.quoteTime });
+        const fill = await inTransaction(db, () => insertTrade(db, userId, { ...trade, fillPolicy, quoteTime: quote.quoteTime }));
         // The trade is already saved, so a failed buy-in check is only logged; the next GET /api/account runs it again
         await enforceCollateral(userId, label, db).catch(error => console.error(`${label}: buy-in check: ${error.message}`));
         return { fill };

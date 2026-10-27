@@ -9,7 +9,8 @@ export type TransferType = "DEPOSIT" | "WITHDRAW";
 // A transactions row as the API returns it. pg returns DECIMAL/NUMERIC columns as strings (parse quantity before doing math),
 // and the date is a TIMESTAMPTZ serialized as an ISO string.
 export interface TransactionRow {
-    id: number;
+    // The fill's activity ID in the broker's ledger
+    id: number | string;
     user_id: string;
     date: string;
     type: TradeType;
@@ -160,6 +161,10 @@ export interface Account extends AccountValuation {
     // credit given before its ACH settled
     pendingTransferOut: number;
     withdrawableCash: number;
+    // Sale proceeds that haven't settled (T+1), which can be traded with but not withdrawn yet, and regulatory fees accrued today,
+    // deducted at the end of the day
+    unsettledProceeds: number;
+    accruedFees: number;
 }
 
 export type TickerVerdict = "BUY" | "HOLD" | "SELL";
@@ -168,6 +173,8 @@ export type PositionVerdict = "HOLD" | "SELL" | "COVER";
 // GET /api/transactions: a trade with the P&L it realized (null if it only opened or added to a position)
 export interface TradeHistoryRow extends TransactionRow {
     realized_pnl: number | null;
+    // When the trade settles (T+1; its sale proceeds can be withdrawn from then)
+    settle_date?: string | null;
 }
 
 export type HistoryRange = "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
@@ -443,8 +450,23 @@ export interface TransferRequest {
 // Brokerage accounts. Account objects are Alpaca's (the broker's shape), re-exported for the pages.
 export type {
     Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse, ACHRelationship as AchRelationship, Bank as RecipientBank,
-    Transfer as BrokerTransfer
+    Transfer as BrokerTransfer, TradeAccount as BrokerTradeAccount, Activity as BrokerActivity, Position as BrokerPosition
 } from "./server/broker/types";
+
+// GET /api/accounts/[id]/lots: an open tax lot (FIFO), with whether selling it now would be a long-term gain or loss
+export interface TaxLot {
+    id: string;
+    symbol: string;
+    side: "long" | "short";
+    qty: number;
+    // Split-adjusted shares when it was opened
+    originalQty: number;
+    price: number;
+    costBasis: number;
+    // ISO timestamp
+    acquiredAt: string;
+    longTerm: boolean;
+}
 
 export type BrokerAccountKind = "individual" | "traditional_ira" | "roth_ira";
 

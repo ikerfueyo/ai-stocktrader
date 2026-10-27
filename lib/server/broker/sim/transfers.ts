@@ -9,7 +9,7 @@ import {
     achTimeline, bankRequestError, instantAmount, maskAccountNumber, plannedReturn, relationshipRequestError, RETURN_REASONS, TRANSFER_FEES,
     transferRequestError, verifyRelationship, wireTimeline
 } from "./funding";
-import { toAchRelationship, toActivity, toBank, toTransfer, type SimAchRow, type SimActivityRow, type SimBankRow, type SimTransferRow } from "./shapes";
+import { toAchRelationship, toActivity, toBank, toFillActivity, toTransfer, type SimAchRow, type SimActivityRow, type SimBankRow, type SimTransferRow } from "./shapes";
 import type { ACHRelationship, Activity, Bank, CreateACHRelationshipRequest, CreateBankRequest, CreateTransferRequest, ListActivitiesQuery, ListTransfersQuery, Transfer } from "../types";
 
 // The simulator's money movement: Alpaca's ACH relationship, recipient bank, transfer and activity endpoints on the sim_* tables,
@@ -34,17 +34,19 @@ const accountStatus = async (accountId: string) => {
 const OPEN = ["ACTIVE", "ACCOUNT_UPDATED"];
 
 // Alpaca's activity ID: the time to the millisecond and a UUID
-const activityId = (at: Date) => `${at.toISOString().replace(/\D/g, "").slice(0, 17)}::${randomUUID()}`;
+export const activityId = (at: Date) => `${at.toISOString().replace(/\D/g, "").slice(0, 17)}::${randomUUID()}`;
 
 // Posts an activity to the ledger, with its nta event
 export const postActivity = async (db: PoolClient | typeof pool, activity: {
-    accountId: string; type: string; subType?: string; netAmount: number; description: string; transferId?: string; at?: Date
+    accountId: string; type: string; subType?: string; netAmount: number; description: string; transferId?: string; at?: Date;
+    symbol?: string; qty?: number; perShareAmount?: number
 }): Promise<SimActivityRow> => {
     const at = activity.at ?? new Date();
     const { rows: [row] } = await db.query<SimActivityRow>(
-        `INSERT INTO sim_activities (id, account_id, activity_type, activity_sub_type, "date", created_at, net_amount, description, transfer_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *, "date"::text AS "date"`,
-        [activityId(at), activity.accountId, activity.type, activity.subType ?? null, easternParts(at).dateKey, at, activity.netAmount.toFixed(2), activity.description.slice(0, 255), activity.transferId ?? null]
+        `INSERT INTO sim_activities (id, account_id, activity_type, activity_sub_type, "date", created_at, net_amount, description, transfer_id, symbol, qty, per_share_amount)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *, "date"::text AS "date"`,
+        [activityId(at), activity.accountId, activity.type, activity.subType ?? null, easternParts(at).dateKey, at, activity.netAmount.toFixed(2), activity.description.slice(0, 255),
+            activity.transferId ?? null, activity.symbol ?? null, activity.qty ?? null, activity.perShareAmount ?? null]
     );
     await emitEvent(activity.accountId, "nta", toActivity(row), at);
     return row;
@@ -299,10 +301,11 @@ export const cancelTransfer = async (accountId: string, transferId: string): Pro
     await step(row, "CANCELED", instant > 0 ? [{ type: "CSW", netAmount: -instant, description: "Instant deposit credit reversed (deposit canceled)" }] : [], "Canceled by the customer");
 };
 
-// GET /v1/accounts/activities?account_id=, newest first (direction asc for oldest first), filtered by type and date
+// GET /v1/accounts/activities?account_id=, newest first (direction asc for oldest first), filtered by type and date: fills as trade
+// activities, everything else as non-trade activities
 export const listActivities = async (accountId: string, query: ListActivitiesQuery = {}): Promise<Activity[]> => {
     await advanceTransfers(accountId);
-    const types = query.activity_types ? String(query.activity_types).split(",") : null;
+    const types = query.activity_types ? (Array.isArray(query.activity_types) ? query.activity_types : String(query.activity_types).split(",")) : null;
     const { rows } = await pool.query<SimActivityRow>(
         `SELECT *, "date"::text AS "date" FROM sim_activities
          WHERE account_id = $1 AND ($2::text[] IS NULL OR activity_type = ANY($2)) AND ($3::date IS NULL OR "date" = $3) AND ($4::date IS NULL OR "date" <= $4)
@@ -310,7 +313,7 @@ export const listActivities = async (accountId: string, query: ListActivitiesQue
          ORDER BY created_at ${query.direction === "asc" ? "ASC" : "DESC"}, id LIMIT $6`,
         [accountId, types, query.date ?? null, query.until ?? null, query.after ?? null, Math.min(Number(query.page_size ?? 100), 1000)]
     );
-    return rows.map(toActivity) as Activity[];
+    return rows.map(row => row.activity_type === "FILL" ? toFillActivity(row) : toActivity(row)) as Activity[];
 };
 
 // For the mock ledger until Phase 3: the accounts' ledger cash, what their queued withdrawals hold back before they're debited, and

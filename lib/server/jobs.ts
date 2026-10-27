@@ -11,6 +11,8 @@ import { syncCalendar } from "./calendar";
 import { isSlotDue } from "./schedule";
 import { advanceAccounts } from "./broker/sim/accounts";
 import { advanceTransfers, fastForwardTransfers } from "./broker/sim/transfers";
+import { endOfDay } from "./broker/sim/positions";
+import { postDividends } from "./portfolio";
 
 // The background jobs, checked every ORDER_MATCH_INTERVAL_MS (default 30s). Each job is due on every check, or at daily Eastern
 // times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
@@ -49,20 +51,13 @@ const isLeader = async (): Promise<boolean> => {
     return true;
 };
 
-// Users with open orders, and users who may hold a short: a negative raw share count, or any trade in a ticker that has split,
-// since raw counts mix pre- and post-split shares (short 10, a 2:1 split, cover 15 leaves 5 short but a raw count of +5).
-// updateAccount replays the trades with their splits, so including a user who turns out to hold no short costs nothing extra.
+// Users with open orders, and, while the market is open, users with a short (an open short lot) for the buy-in check
 const usersToCheck = async (marketOpen: boolean): Promise<{ users: string[]; tickers: string[] }> => {
     const { rows } = await pool.query<{ user_id: string; ticker: string }>(
         `SELECT user_id, ticker FROM orders WHERE status = 'OPEN'
          UNION
-         SELECT user_id, ticker FROM (
-             SELECT user_id, UPPER(ticker) AS ticker, SUM(CASE "type" WHEN 'BUY' THEN quantity ELSE -quantity END) AS held
-             FROM transactions GROUP BY user_id, UPPER(ticker)
-         ) positions
-         WHERE $1 AND (held < 0 OR EXISTS (
-             SELECT 1 FROM corporate_actions WHERE corporate_actions.ticker = positions.ticker AND "type" = 'SPLIT'
-         ))`,
+         SELECT b.user_id, l.symbol AS ticker FROM sim_lots l JOIN broker_accounts b ON b.account_id = l.account_id
+         WHERE $1 AND l.side = 'short' AND l.qty > 0`,
         [marketOpen]
     );
     return { users: [...new Set(rows.map(({ user_id }) => user_id))], tickers: [...new Set(rows.map(({ ticker }) => ticker.toUpperCase()))] };
@@ -81,12 +76,26 @@ const updateAccounts = async () => {
     }
 };
 
+// Posts due dividends for every user whose account has fills, under each user's account lock
+const postAllDividends = async () => {
+    const { rows } = await pool.query<{ user_id: string }>(
+        "SELECT DISTINCT b.user_id FROM sim_activities a JOIN broker_accounts b ON b.account_id = a.account_id WHERE a.activity_type = 'FILL'"
+    );
+    for (const { user_id } of rows) {
+        await withAccountLock(user_id, db => postDividends(user_id, LABEL, db)).catch(error => console.error(`${LABEL}: dividends: ${user_id}: ${error.message}`));
+    }
+};
+
 export const JOBS: Job[] = [
     { name: "accounts", leaderOnly: true, run: updateAccounts },
     // The simulator's account reviews and options approvals that are due (reading an account advances it too)
     { name: "sim-accounts", leaderOnly: true, run: () => advanceAccounts() },
     // The simulator's transfers that are due to clear, complete or come back (reading an account's transfers advances them too)
     { name: "sim-transfers", leaderOnly: true, run: () => advanceTransfers() },
+    // The end of the trading day: deduct the day's regulatory fees and keep each account's closing balances (last_equity)
+    { name: "eod", slots: ["20:15"], leaderOnly: true, run: () => endOfDay() },
+    // Dividends paid overnight post before the open, for every account with fills (reading an account posts them too)
+    { name: "dividends", slots: ["06:00"], leaderOnly: true, run: postAllDividends },
     // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar
     { name: "settle-transfers", leaderOnly: true, manual: true, run: () => fastForwardTransfers() },
     // Alpaca refreshes its asset flags 3 times a day, the last at 8:20 a.m. ET

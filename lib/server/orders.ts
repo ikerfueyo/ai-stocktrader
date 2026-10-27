@@ -1,7 +1,7 @@
 import "server-only";
 import type { PoolClient } from "pg";
 import { fetchPrices } from "./marketData";
-import { assessTrade, computePositions, reducesPosition } from "./account";
+import { addTrade, assessTrade, reducesPosition } from "./account";
 import { evaluateOrder, reservedForOrders, toOpenOrder, type Evaluation, type OpenOrder } from "./orderMatching";
 import { getMarketStatus } from "./market";
 import { loadCorporateActions } from "./corporateActions";
@@ -39,7 +39,7 @@ const setStatus = (db: Db, id: number, status: OrderRow["status"], reason: strin
 // order is capped at the position now open on its closing side. A fill that isn't allowed rejects the order with the reason. The
 // market is checked again right before the fill, since the checks can wait on quotes.
 const fillOrder = async (userId: string, order: OpenOrder, fill: Extract<Evaluation, { action: "fill" }>, quote: Quote, db: PoolClient, label: string) => {
-    const { transactions, splits, netTransfers, positions } = await getAccount(userId, db);
+    const { positions, totalCash } = await getAccount(userId, db);
     const held = positions.find(({ ticker }) => ticker === order.ticker)?.quantity ?? 0;
     const closable = order.side === "SELL" ? Math.max(held, 0) : Math.max(-held, 0);
     if (order.closeOnly && closable === 0) {
@@ -59,9 +59,9 @@ const fillOrder = async (userId: string, order: OpenOrder, fill: Extract<Evaluat
     const trade = { type: order.side, ticker: order.ticker, price: fill.price, quantity, total };
     if (!reducesPosition({ positions, trade })) {
         const reservedCash = await reservedCashFor(await getOpenOrders(userId, db), positions, label, order.id);
-        const { positions: after } = computePositions([...transactions, trade], splits);
+        const after = addTrade(positions, trade);
         const { prices, staleTickers } = await fetchPrices(shortTickers(after).filter(symbol => symbol !== order.ticker), label);
-        const assessment = assessTrade({ transactions, splits, netTransfers, prices, staleTickers, trade, reservedCash });
+        const assessment = assessTrade({ positions, totalCash, prices, staleTickers, trade, reservedCash });
         if (!assessment.allowed) {
             // A missing short price only delays the fill
             if (assessment.status !== 502) await setStatus(db, order.id, "REJECTED", assessment.message);

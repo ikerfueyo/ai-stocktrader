@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import pool from "@/lib/server/db";
 import { withUser } from "@/lib/server/errors";
 import { fetchDailyCloses } from "@/lib/server/marketData";
 import { loadCorporateActions } from "@/lib/server/corporateActions";
 import { cumulativeReturns, equityHistory, rebase } from "@/lib/server/history";
-import { loadCashActivity } from "@/lib/server/portfolio";
+import { getTrades, loadCashActivity } from "@/lib/server/portfolio";
 import { addDays, easternParts, isTradingDay } from "@/lib/marketHours";
-import type { HistoryRange, PortfolioHistory, TransactionRow } from "@/lib/types";
+import type { HistoryRange, PortfolioHistory } from "@/lib/types";
 
 const RANGES: HistoryRange[] = ["1W", "1M", "3M", "YTD", "1Y", "ALL"];
 const BENCHMARK = "SPY";
@@ -26,11 +25,8 @@ export const GET = withUser(async (request, context, userId) => {
     const requested = request.nextUrl.searchParams.get("range") as HistoryRange | null;
     const range: HistoryRange = requested && RANGES.includes(requested) ? requested : "1M";
     const label = "GET /api/portfolio/history";
-    const [{ rows: trades }, cash] = await Promise.all([
-        pool.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 ORDER BY "date", id', [userId]),
-        loadCashActivity(userId)
-    ]);
-    const firstDates = [...trades, ...cash].map(({ date }) => easternParts(new Date(date)).dateKey).sort();
+    const [trades, cash] = await Promise.all([getTrades(userId), loadCashActivity(userId)]);
+    const firstDates = [...trades.map(({ date }) => date!), ...cash.map(({ date }) => date)].map(date => easternParts(new Date(date)).dateKey).sort();
     if (firstDates.length === 0) {
         return NextResponse.json<PortfolioHistory>({ range, points: [], twr: null, benchmarkReturn: null, benchmark: BENCHMARK, missing: [] });
     }

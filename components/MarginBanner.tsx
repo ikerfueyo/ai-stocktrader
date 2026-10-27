@@ -6,14 +6,14 @@ import { useAuth } from "@clerk/nextjs";
 import { useAccount } from "@/context/AccountContext";
 import { formatCurrency, formatShares } from "@/lib/orders";
 
-// The newest buy-in trade each user has dismissed. Browser storage can be unavailable (private windows, or the server render),
-// so failures are ignored.
-const dismissedKey = (userId: string | null | undefined) => `dismissedLiquidationId:${userId}`;
+// The newest buy-in trade each user has dismissed, by its time (fill IDs start with it). Browser storage can be unavailable (private
+// windows, or the server render), so failures are ignored.
+const dismissedKey = (userId: string | null | undefined) => `dismissedLiquidationAt:${userId}`;
 const readDismissed = (userId: string | null | undefined) => {
     try {
-        return Number(localStorage.getItem(dismissedKey(userId))) || 0;
+        return localStorage.getItem(dismissedKey(userId)) ?? "";
     } catch {
-        return 0;
+        return "";
     }
 };
 
@@ -24,9 +24,9 @@ const MarginBanner = () => {
     const [dismissedId, setDismissedId] = useState(() => readDismissed(userId));
     if (!account) return null;
 
-    const liquidations = (account.liquidations ?? []).filter(({ id }) => id > dismissedId);
+    const liquidations = (account.liquidations ?? []).filter(({ date }) => date > dismissedId);
     const onDismiss = () => {
-        const newest = Math.max(...liquidations.map(({ id }) => id));
+        const newest = liquidations.map(({ date }) => date).sort().at(-1) ?? "";
         setDismissedId(newest);
         try {
             localStorage.setItem(dismissedKey(userId), String(newest));

@@ -49,6 +49,7 @@ export type TradeUpdateEventType = Schemas["TradeUpdateEventType"];
 export type Activity = Schemas["Activity"];
 export type ActivityType = Schemas["ActivityType"];
 export type TradeActivity = Schemas["TradeActivity"];
+export type TradeActivitySide = Schemas["TradeActivitySide"];
 export type NonTradeActivity = Schemas["NonTradeActivity"];
 
 // Funding

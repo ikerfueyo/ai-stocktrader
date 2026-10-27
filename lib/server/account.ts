@@ -93,7 +93,42 @@ export const formatCurrency = (amount: number): string => new Intl.NumberFormat(
 
 const tradeDay = (date: string | Date): string => easternParts(new Date(date)).dateKey;
 
-// Net transactions (oldest first) into one position per ticker, using average cost, and total their cash flow.
+// One trade applied to a position at average cost: adding re-averages it, reducing keeps the average, and a trade that flips the
+// side opens the remainder at the trade price. realized is the P&L on the part that reduced or closed the position, against its
+// average cost ((price - avgCost) x shares for a long, the reverse for a short), or null if the trade only opened or added.
+export const applyTrade = (position: Position, { type, price, quantity }: { type: TradeType | string; price: number; quantity: number }): { position: Position; realized: number | null } => {
+    const next = { ...position };
+    const delta = type === "BUY" ? quantity : -quantity;
+    const held = Math.abs(next.quantity);
+    let realized: number | null = null;
+    if (next.quantity !== 0 && Math.sign(delta) !== Math.sign(next.quantity)) {
+        const closed = Math.min(quantity, held);
+        realized = (next.quantity > 0 ? price - next.avgCost : next.avgCost - price) * closed;
+    }
+    if (next.quantity === 0 || Math.sign(delta) === Math.sign(next.quantity)) {
+        next.avgCost = (next.avgCost * held + price * quantity) / (held + quantity);
+        next.quantity = roundShares(next.quantity + delta);
+    } else if (quantity <= held) {
+        // Closing part of the position doesn't change its average cost
+        next.quantity = roundShares(next.quantity + delta);
+        if (next.quantity === 0) next.avgCost = 0;
+    } else {
+        // The trade flips the position; the leftover opens a new one at the trade price
+        next.quantity = roundShares(next.quantity + delta);
+        next.avgCost = price;
+    }
+    return { position: next, realized };
+};
+
+// The positions after a trade (applyTrade on its ticker's position), without any that it closed
+export const addTrade = (positions: Position[], trade: Trade): Position[] => {
+    const symbol = trade.ticker.toUpperCase();
+    const current = positions.find(({ ticker }) => ticker === symbol) ?? { ticker: symbol, quantity: 0, avgCost: 0 };
+    const { position } = applyTrade(current, { type: trade.type, price: parseFloat(String(trade.price)), quantity: parseFloat(String(trade.quantity)) });
+    return [...positions.filter(({ ticker }) => ticker !== symbol), position].filter(({ quantity }) => quantity !== 0);
+};
+
+// Net transactions (oldest first) into one position per ticker, using average cost (applyTrade), and total their cash flow.
 // quantity is signed: sells past zero open a short (negative quantity).
 // cash is a plain ledger: every sell credits its total (including a short sale's proceeds) and every buy debits it
 // (including a cover). Add net cash activity (deposits, withdrawals, dividends) to get the account's total cash.
@@ -129,30 +164,14 @@ export const computePositions = (transactions: Trade[], splits: Split[] = [], { 
         if (before !== undefined && day >= before) return;
         applySplitsThrough(day);
         const symbol = ticker.toUpperCase();
-        const position = positions.get(symbol) ?? { ticker: symbol, quantity: 0, avgCost: 0 };
-        const tradePrice = parseFloat(String(price));
         // pg returns NUMERIC columns as strings
-        const quantity = parseFloat(String(storedQuantity));
         cash += type === "SELL" ? parseFloat(String(total)) : -parseFloat(String(total));
-        const delta = type === "BUY" ? quantity : -quantity;
-        const held = Math.abs(position.quantity);
-        if (position.quantity !== 0 && Math.sign(delta) !== Math.sign(position.quantity)) {
-            const closed = Math.min(quantity, held);
-            const gain = (position.quantity > 0 ? tradePrice - position.avgCost : position.avgCost - tradePrice) * closed;
+        const { position, realized: gain } = applyTrade(positions.get(symbol) ?? { ticker: symbol, quantity: 0, avgCost: 0 }, {
+            type, price: parseFloat(String(price)), quantity: parseFloat(String(storedQuantity))
+        });
+        if (gain !== null) {
             realized[index] = roundCents(gain);
             realizedPnl += gain;
-        }
-        if (position.quantity === 0 || Math.sign(delta) === Math.sign(position.quantity)) {
-            position.avgCost = (position.avgCost * held + tradePrice * quantity) / (held + quantity);
-            position.quantity = roundShares(position.quantity + delta);
-        } else if (quantity <= held) {
-            // Closing part of the position doesn't change its average cost
-            position.quantity = roundShares(position.quantity + delta);
-            if (position.quantity === 0) position.avgCost = 0;
-        } else {
-            // The trade flips the position; the leftover opens a new one at the trade price
-            position.quantity = roundShares(position.quantity + delta);
-            position.avgCost = tradePrice;
         }
         positions.set(symbol, position);
     });
@@ -259,36 +278,35 @@ const unpricedResult = (tickers: string[]): Assessment =>
 
 // Whether a trade may go ahead. Returns { allowed: true } or { allowed: false, status, message }.
 // A trade that only reduces a position is always allowed, and is paid from total cash, restricted cash included.
-// Anything that opens or adds to a position (including the new side of a flip) must leave no collateral shortfall, judged by
-// replaying the history with the trade added, with the traded ticker at the trade price and the others at current prices.
+// Anything that opens or adds to a position (including the new side of a flip) must leave no collateral shortfall, judged on the
+// positions and cash with the trade added (addTrade), with the traded ticker at the trade price and the others at current prices.
 // So a buy needs its cost in available cash, and a new short needs 50% of its value (its proceeds cover the other 100%).
 // reservedCash (held for other open orders) isn't available.
-export const assessTrade = ({ transactions, splits = [], netTransfers = 0, prices, staleTickers = [], trade, reservedCash = 0 }: {
-    transactions: Trade[];
-    splits?: Split[];
-    netTransfers?: number;
+export const assessTrade = ({ positions, totalCash, prices, staleTickers = [], trade, reservedCash = 0 }: {
+    positions: Position[];
+    totalCash: number;
     prices: Prices;
     staleTickers?: string[];
     trade: Trade;
     reservedCash?: number;
 }): Assessment => {
     const symbol = trade.ticker.toUpperCase();
-    const before = computePositions(transactions, splits);
-    if (reducesPosition({ positions: before.positions, trade })) {
+    if (reducesPosition({ positions, trade })) {
         return { allowed: true };
     }
-    const after = computePositions([...transactions, trade], splits);
+    const after = addTrade(positions, trade);
+    const cashAfter = totalCash + (trade.type === "SELL" ? 1 : -1) * parseFloat(String(trade.total));
     const tradePrices = { ...prices, [symbol]: parseFloat(String(trade.price)) };
     const stale = staleTickers.filter(ticker => ticker !== symbol);
-    const unpriced = unpricedShorts(after.positions, tradePrices, stale);
+    const unpriced = unpricedShorts(after, tradePrices, stale);
     if (unpriced.length > 0) {
         return unpricedResult(unpriced);
     }
-    const shortfallAfter = measure({ positions: after.positions, totalCash: after.cash + netTransfers - reservedCash, prices: tradePrices }).shortfall;
+    const shortfallAfter = measure({ positions: after, totalCash: cashAfter - reservedCash, prices: tradePrices }).shortfall;
     if (shortfallAfter <= CENT_SLACK) {
         return { allowed: true };
     }
-    const valuedBefore = valueAccount({ positions: before.positions, totalCash: before.cash + netTransfers, prices: tradePrices, staleTickers: stale, reservedCash });
+    const valuedBefore = valueAccount({ positions, totalCash, prices: tradePrices, staleTickers: stale, reservedCash });
     if (valuedBefore.collateralShortfall > 0) {
         return { allowed: false, status: 400, message: marginCallMessage(valuedBefore.collateralShortfall) };
     }

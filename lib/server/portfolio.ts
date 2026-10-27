@@ -5,81 +5,93 @@ import { singleton } from "./cache";
 import { fetchPrices } from "./marketData";
 import { isMarketOpen } from "./market";
 import { loadCorporateActions } from "./corporateActions";
-import { computePositions, formatCurrency, planBuyIn, planDividends, roundCents, valueAccount } from "./account";
-import { easternTime } from "../marketHours";
-import { advanceTransfers, ledgerCash } from "./broker/sim/transfers";
-import type { CashActivityRow, FillPolicy, Position, TradeType, TransactionRow } from "../types";
+import { formatCurrency, planBuyIn, roundCents, valueAccount, type Dividend, type Split, type Trade } from "./account";
+import { advanceTransfers } from "./broker/sim/transfers";
+import { applySplits, fillsAsTrades, listFills, ledgerState, openLots, postDividends as postAccountDividends, recordFill } from "./broker/sim/positions";
+import type { SimActivityRow } from "./broker/sim/shapes";
+import type { CashActivityRow, FillPolicy, Position, TradeHistoryRow, TradeType } from "../types";
 
 // The pool, or the client holding a user's account lock (withAccountLock)
 export type Db = Pool | PoolClient;
 
-const tradedTickers = (transactions: TransactionRow[]) => [...new Set(transactions.map(({ ticker }) => ticker.toUpperCase()))];
-
-// Replays trades with the tickers' stored splits, fetching any never fetched and refreshing the open positions' once a day first;
-// unsynced lists the tickers whose fetch failed
-const replay = async (transactions: TransactionRow[]) => {
-    const tickers = tradedTickers(transactions);
-    const naive = computePositions(transactions).positions.map(({ ticker }) => ticker);
-    const { splits, dividends, unsynced } = await loadCorporateActions(tickers, naive);
-    return { splits, dividends, unsynced, ...computePositions(transactions, splits) };
+// The user's account whose ledger the app reads and trades: their newest open account (one individual account each until IRAs)
+export const ledgerAccountId = async (userId: string, db: Db = pool): Promise<string | null> => {
+    const { rows: [row] } = await db.query<{ account_id: string }>(
+        `SELECT b.account_id FROM broker_accounts b JOIN sim_accounts s ON s.id = b.account_id
+         WHERE b.user_id = $1 ORDER BY (s.status IN ('REJECTED', 'ACCOUNT_CLOSED')), b.created_at DESC LIMIT 1`,
+        [userId]
+    );
+    return row?.account_id ?? null;
 };
 
-export const getPositions = async (userId: string, ticker?: string, db: Db = pool) => {
-    const { rows } = ticker
-        ? await db.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 AND UPPER(ticker) = $2 ORDER BY "date", id', [userId, ticker])
-        : await db.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 ORDER BY "date", id', [userId]);
-    return (await replay(rows)).positions;
-};
+const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0 };
 
-// The user's brokerage account IDs (the simulator's ledger is per account; this mock ledger is still per user until Phase 3)
-const userAccountIds = async (userId: string, db: Db) =>
-    (await db.query<{ account_id: string }>("SELECT account_id FROM broker_accounts WHERE user_id = $1", [userId])).rows.map(({ account_id }) => account_id);
-
-// A user's trade history, the traded tickers' splits and dividends, open positions (split-adjusted), total cash, realized P&L (in
-// total and per transaction, by index) and net dividends. Total cash is the trades' cash ledger plus net cash activity: the
-// broker's cash activities (deposits, withdrawals and fees, ledgerCash, after advancing due transfers) and the dividends here,
-// less queued withdrawals (pendingTransferOut), which are held from the moment they're requested. unsettledInstant is deposit
-// credit given before its ACH settled: it can be traded with but not withdrawn. A client runs its queries one at a time, so they're
-// only parallel on the pool.
+// A user's account from the broker's ledger (lib/server/broker/sim/positions.ts): its fills as trades to replay (for dividends and
+// the history), the traded tickers' splits and dividends (fetching any never fetched and refreshing the held tickers' once a day,
+// then applying due splits to the lots, so a split is in place before the account is valued or traded; unsynced lists the tickers
+// whose fetch failed), positions from the open FIFO lots, total cash (every activity's net amount: fills, deposits, withdrawals,
+// fees, dividends, after advancing due transfers) less queued withdrawals (pendingTransferOut), which are held from the moment
+// they're requested, realized P&L, net dividends, and what can't be withdrawn yet: instant deposit credit (unsettledInstant) and sale
+// proceeds before they settle (unsettledProceeds). accruedFees are regulatory fees not yet deducted (the end of the day).
 export const getAccount = async (userId: string, db: Db = pool) => {
-    const [{ rows: transactions }, { rows: [{ dividends: netDividends }] }, accountIds] = await Promise.all([
-        db.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 ORDER BY "date", id', [userId]),
-        db.query<{ dividends: string }>(
-            `SELECT COALESCE(SUM(CASE "type" WHEN 'DIVIDEND_IN' THEN amount WHEN 'DIVIDEND_OUT' THEN -amount ELSE 0 END), 0) AS dividends
-             FROM cash_activity WHERE user_id = $1`,
-            [userId]
-        ),
-        userAccountIds(userId, db)
-    ]);
-    for (const accountId of accountIds) await advanceTransfers(accountId);
-    const ledger = await ledgerCash(accountIds);
-    const netTransfers = roundCents(parseFloat(netDividends) + ledger.cash - ledger.pendingOut);
-    const { positions, cash, splits, dividends, unsynced, realizedPnl, realized } = await replay(transactions);
+    const accountId = await ledgerAccountId(userId, db);
+    if (!accountId) {
+        return {
+            accountId, transactions: [] as Trade[], splits: [] as Split[], dividends: [] as Dividend[], unsynced: [] as string[], positions: [] as Position[],
+            totalCash: 0, realizedPnl: 0, netDividends: 0, pendingTransferOut: 0, unsettledInstant: 0, unsettledProceeds: 0, accruedFees: EMPTY_FEES
+        };
+    }
+    await advanceTransfers(accountId);
+    const [transactions, held] = await Promise.all([fillsAsTrades(db, accountId), openLots(db, accountId)]);
+    const heldTickers = [...new Set(held.map(({ symbol }) => symbol))];
+    const { splits, dividends, unsynced } = await loadCorporateActions([...new Set(transactions.map(({ ticker }) => ticker.toUpperCase()))], heldTickers);
+    await applySplits(db, accountId, heldTickers);
+    const ledger = await ledgerState(db, accountId);
     return {
-        transactions, splits, dividends, unsynced, netTransfers, positions, totalCash: roundCents(cash + netTransfers),
-        realizedPnl, realized, netDividends: parseFloat(netDividends), pendingTransferOut: ledger.pendingOut, unsettledInstant: ledger.unsettledInstant
+        accountId, transactions, splits, dividends, unsynced, positions: ledger.positions,
+        totalCash: roundCents(ledger.cash - ledger.pendingTransferOut), realizedPnl: roundCents(ledger.realizedPnl), netDividends: roundCents(ledger.netDividends),
+        pendingTransferOut: ledger.pendingTransferOut, unsettledInstant: ledger.unsettledInstant, unsettledProceeds: ledger.unsettledProceeds, accruedFees: ledger.accruedFees
     };
 };
 
-// The user's cash ledger, oldest first: the broker's cash activities (CSD deposits, CSW withdrawals, FEE fees) and the mock ledger's
-// dividends, as CashActivityRows
+export const getPositions = async (userId: string, db: Db = pool) => (await getAccount(userId, db)).positions;
+
+// The user's fills as trades to replay, oldest first (fillsAsTrades), for the equity history
+export const getTrades = async (userId: string, db: Db = pool): Promise<Trade[]> => {
+    const accountId = await ledgerAccountId(userId, db);
+    return accountId ? fillsAsTrades(db, accountId) : [];
+};
+
+// A fill (a FILL activity) as the pages' TransactionRow, with the P&L it realized against the lots it closed (FIFO)
+export const toTransactionRow = (row: SimActivityRow, userId: string): TradeHistoryRow => ({
+    id: row.id, user_id: userId, date: row.created_at.toISOString(), type: row.side === "buy" ? "BUY" : "SELL", ticker: row.symbol ?? "",
+    price: String(Number(row.price)), quantity: String(Number(row.qty)), total: Math.abs(Number(row.net_amount)).toFixed(2),
+    reason: row.reason === "LIQUIDATION" ? "LIQUIDATION" : null, quote_time: row.quote_time ? row.quote_time.toISOString() : null,
+    fill_policy: (row.fill_policy ?? null) as TradeHistoryRow["fill_policy"], order_id: row.legacy_order_id ?? null,
+    realized_pnl: row.realized_pl === null || row.realized_pl === undefined ? null : Number(row.realized_pl), settle_date: row.settle_date ?? null
+});
+
+// The user's fills, newest first (since a time, if given)
+export const getFills = async (userId: string, { since }: { since?: Date } = {}, db: Db = pool): Promise<TradeHistoryRow[]> => {
+    const accountId = await ledgerAccountId(userId, db);
+    return accountId ? (await listFills(db, accountId, { since })).map(row => toTransactionRow(row, userId)) : [];
+};
+
+// The user's cash ledger, oldest first, as CashActivityRows: the broker's cash activities (CSD deposits, CSW withdrawals, FEE fees,
+// DIV dividends received or charged on shorts; fills are on the Trades tab)
 export const loadCashActivity = async (userId: string, db: Db = pool): Promise<CashActivityRow[]> => {
-    const accountIds = await userAccountIds(userId, db);
-    const [{ rows: dividends }, { rows: activities }] = await Promise.all([
-        db.query<CashActivityRow>(`SELECT ${CASH_ACTIVITY_COLUMNS} FROM cash_activity WHERE user_id = $1`, [userId]),
-        db.query<{ id: string; activity_type: string; created_at: Date; net_amount: string; description: string }>(
-            "SELECT id, activity_type, created_at, net_amount, description FROM sim_activities WHERE account_id = ANY($1) AND activity_type IN ('CSD', 'CSW', 'FEE')",
-            [accountIds]
-        )
-    ]);
-    const types: Record<string, CashActivityRow["type"]> = { CSD: "DEPOSIT", CSW: "WITHDRAW", FEE: "FEE" };
-    return [
-        ...dividends.map(row => ({ ...row, date: new Date(row.date).toISOString() })),
-        ...activities.map(row => ({
-            id: row.id, user_id: userId, date: row.created_at.toISOString(), type: types[row.activity_type], method: row.description,
-            amount: Math.abs(Number(row.net_amount)).toFixed(2), ticker: null, reference: null
-        }))
-    ].sort((a, b) => a.date.localeCompare(b.date) || String(a.id).localeCompare(String(b.id)));
+    const accountId = await ledgerAccountId(userId, db);
+    if (!accountId) return [];
+    const { rows } = await db.query<{ id: string; activity_type: string; created_at: Date; net_amount: string; description: string; symbol: string | null }>(
+        "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND activity_type IN ('CSD', 'CSW', 'FEE', 'DIV') ORDER BY created_at, id",
+        [accountId]
+    );
+    const typeOf = (activity: string, amount: number): CashActivityRow["type"] =>
+        activity === "DIV" ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : activity === "CSD" ? "DEPOSIT" : activity === "CSW" ? "WITHDRAW" : "FEE";
+    return rows.map(row => ({
+        id: row.id, user_id: userId, date: row.created_at.toISOString(), type: typeOf(row.activity_type, Number(row.net_amount)), method: row.description,
+        amount: Math.abs(Number(row.net_amount)).toFixed(2), ticker: row.symbol, reference: null
+    }));
 };
 
 // Runs fn in a database transaction on db, which must be a client (such as withAccountLock's)
@@ -129,53 +141,31 @@ export const withAccountLock = <T>(userId: string, fn: (db: PoolClient) => Promi
     return run;
 };
 
-// Inserts an executed trade, stamped now. orderId links the fill of a stored order (limit, stop or queued). The last guard against
-// a bad fill: the price and quantity must be positive and the total not negative.
-export const insertTrade = async (db: Db, userId: string, trade: {
+// Records an executed fill in the user's account ledger (recordFill: lots, realized P&L, settlement, fee accruals), stamped now.
+// orderId links the fill of a stored order (limit, stop or queued). Call it inside a transaction on withAccountLock's client.
+export const insertTrade = async (db: PoolClient, userId: string, trade: {
     type: TradeType; ticker: string; price: number; quantity: number; total: number;
     fillPolicy: FillPolicy; quoteTime: string | null; reason?: "LIQUIDATION"; orderId?: number;
-}): Promise<TransactionRow> => {
-    const isPositive = (value: number) => Number.isFinite(value) && value > 0;
-    if (!isPositive(trade.price) || !isPositive(trade.quantity) || !(Number.isFinite(trade.total) && trade.total >= 0)) {
-        throw new Error(`Refusing an invalid ${trade.type} ${trade.ticker} fill: ${trade.quantity} @ ${trade.price}, total ${trade.total}`);
-    }
-    const { rows } = await db.query<TransactionRow>(
-        `INSERT INTO transactions (user_id, "date", "type", ticker, price, quantity, total, reason, quote_time, fill_policy, order_id)
-         VALUES($1, now(), $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-        [userId, trade.type, trade.ticker, trade.price, trade.quantity, trade.total, trade.reason ?? null, trade.quoteTime, trade.fillPolicy, trade.orderId ?? null]
-    );
-    return rows[0];
+}): Promise<TradeHistoryRow> => {
+    const accountId = await ledgerAccountId(userId, db);
+    if (!accountId) throw new Error(`No brokerage account to record a ${trade.type} ${trade.ticker} fill for ${userId}`);
+    const row = await recordFill(db, accountId, {
+        symbol: trade.ticker, side: trade.type === "BUY" ? "buy" : "sell", qty: trade.quantity, price: trade.price, total: trade.total,
+        reason: trade.reason, quoteTime: trade.quoteTime, fillPolicy: trade.fillPolicy, legacyOrderId: trade.orderId
+    });
+    return toTransactionRow(row, userId);
 };
 
-// cash_activity's columns, with the reference date as text (pg would turn a DATE into a Date at the server's local midnight)
-export const CASH_ACTIVITY_COLUMNS = 'id, user_id, "date", "type", method, amount, ticker, reference::text AS reference';
-
-// Posts the dividends that have been paid since they were last checked (planDividends) to cash_activity: received on longs,
-// charged to shorts, dated at the payment date's close (or now, if that's later today). The unique index makes a repeat a no-op.
-// Call it inside withAccountLock with its client.
-export const postDividends = async (userId: string, label: string, db: PoolClient): Promise<CashActivityRow[]> => {
-    const { transactions, splits, dividends } = await getAccount(userId, db);
-    const { rows: postedRows } = await db.query<{ ticker: string; reference: string }>(
-        `SELECT ticker, reference::text FROM cash_activity WHERE user_id = $1 AND "type" IN ('DIVIDEND_IN', 'DIVIDEND_OUT')`, [userId]
-    );
-    const posted = new Set(postedRows.map(({ ticker, reference }) => `${ticker}|${reference}`));
-    const postings = planDividends({ transactions, splits, dividends, posted });
-    const inserted: CashActivityRow[] = [];
-    for (const { type, ticker, exDate, shares, perShare, total } of postings) {
-        const payment = dividends.find(dividend => dividend.ticker === ticker && dividend.exDate === exDate)?.paymentDate ?? exDate;
-        const paidAt = new Date(Math.min(easternTime(payment, "16:00").getTime(), Date.now()));
-        const method = `${ticker} dividend: ${parseFloat(shares.toFixed(6))} ${type === "DIVIDEND_IN" ? "shares" : "shares short"} × $${perShare}`;
-        const { rows } = await db.query<CashActivityRow>(
-            `INSERT INTO cash_activity (user_id, "date", "type", method, amount, ticker, reference) VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (user_id, ticker, reference) WHERE "type" IN ('DIVIDEND_IN', 'DIVIDEND_OUT') DO NOTHING RETURNING ${CASH_ACTIVITY_COLUMNS}`,
-            [userId, paidAt, type, method.slice(0, 255), total, ticker, exDate]
-        );
-        inserted.push(...rows);
+// Posts the dividends paid since they were last checked to the user's ledger (DIV activities; the broker's postDividends). Call it
+// inside withAccountLock with its client.
+export const postDividends = async (userId: string, label: string, db: PoolClient) => {
+    const { accountId, splits, dividends } = await getAccount(userId, db);
+    if (!accountId) return [];
+    const posted = await postAccountDividends(db, accountId, { splits, dividends });
+    if (posted.length > 0) {
+        console.log(`${label}: posted ${posted.length} dividend${posted.length === 1 ? "" : "s"} for ${userId}: ${posted.map(({ symbol, net_amount }) => `${symbol} ${net_amount}`).join(", ")}`);
     }
-    if (inserted.length > 0) {
-        console.log(`${label}: posted ${inserted.length} dividend${inserted.length === 1 ? "" : "s"} for ${userId}: ${inserted.map(({ type, ticker, amount }) => `${type} ${ticker} ${amount}`).join(", ")}`);
-    }
-    return inserted;
+    return posted;
 };
 
 export const shortTickers = (positions: Position[]) => positions.filter(({ quantity }) => quantity < 0).map(({ ticker }) => ticker);
@@ -186,7 +176,7 @@ export const shortTickers = (positions: Position[]) => positions.filter(({ quant
 // while the market is open (prices don't move while it's closed, and there's no market to buy in on). Call it inside
 // withAccountLock with its client. It's recalculated from the database each time, so running it again right away does nothing.
 // It waits while any position's splits couldn't be fetched, since a missed split would misstate the shares owed and the cash needed.
-export const enforceCollateral = async (userId: string, label: string, db: PoolClient): Promise<TransactionRow[]> => {
+export const enforceCollateral = async (userId: string, label: string, db: PoolClient): Promise<TradeHistoryRow[]> => {
     const { positions, totalCash, unsynced } = await getAccount(userId, db);
     const shorts = shortTickers(positions);
     if (shorts.length === 0 || !(await isMarketOpen())) return [];
@@ -208,7 +198,7 @@ export const enforceCollateral = async (userId: string, label: string, db: PoolC
     });
     if (trades.length === 0) return [];
     const inserted = await inTransaction(db, async () => {
-        const rows: TransactionRow[] = [];
+        const rows: TradeHistoryRow[] = [];
         for (const { type, ticker, price, quantity, total, fillPolicy } of trades) {
             rows.push(await insertTrade(db, userId, { type, ticker, price, quantity, total, fillPolicy, quoteTime: quotes[ticker]?.quoteTime ?? null, reason: "LIQUIDATION" }));
         }

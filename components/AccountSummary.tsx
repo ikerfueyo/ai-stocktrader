@@ -39,6 +39,11 @@ const AccountSummary = () => {
                         +{formatCurrency(account.reservedCash)} reserved for orders
                     </span>
                 )}
+                {account && account.unsettledProceeds > 0 && (
+                    <span className="account-restricted" title="Sale proceeds that settle the next trading day (T+1): they can be traded with now and withdrawn once settled">
+                        {formatCurrency(account.unsettledProceeds)} settling
+                    </span>
+                )}
                 {account && account.pendingTransferOut > 0 && (
                     <span className="account-restricted" title="Withdrawals requested and not yet sent; they're already taken out of your cash">
                         −{formatCurrency(account.pendingTransferOut)} withdrawal pending

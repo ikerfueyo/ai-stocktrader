@@ -260,9 +260,11 @@ describe("Short collateral: 150% of short liability is restricted from total cas
     });
 });
 
-// What the server sees: the history, net deposits and current prices
-const assess = (trades: Trade[], deposits: number, prices: Prices, newTrade: Trade, staleTickers: string[] = []) =>
-    assessTrade({ transactions: trades, netTransfers: deposits, prices, staleTickers, trade: newTrade });
+// What the server sees: the positions and cash the history leaves, and current prices
+const assess = (trades: Trade[], deposits: number, prices: Prices, newTrade: Trade, staleTickers: string[] = []) => {
+    const { positions, cash } = computePositions(trades);
+    return assessTrade({ positions, totalCash: cash + deposits, prices, staleTickers, trade: newTrade });
+};
 const withdraw = (trades: Trade[], deposits: number, prices: Prices, amount: number, staleTickers: string[] = []) => {
     const { positions, cash } = computePositions(trades);
     return assessWithdrawal({ positions, totalCash: roundCents(cash + deposits), prices, staleTickers, amount });
@@ -461,7 +463,7 @@ describe("Randomized trading (600 steps over 3 tickers, with the server's rules 
         const quantity = Math.round((0.5 + next() * 39.5) * 1e6) / 1e6;
         const attempt = (next() < 0.5 ? buy : sell)(ticker, prices[ticker], quantity);
         let traded = moved;
-        if (assessTrade({ transactions: trades, netTransfers: deposits, prices: { ...prices }, trade: attempt }).allowed) {
+        if (assess(trades, deposits, { ...prices }, attempt).allowed) {
             trades.push(attempt);
             traded = account(trades, { ...prices }, deposits);
         } else {
@@ -636,7 +638,8 @@ describe("Splits", () => {
     });
 
     test("a new (undated) trade after a split is in post-split shares", () => {
-        const result = assessTrade({ transactions: [on("2024-05-01", buy("NVDA", 900, 10))], splits: [split], netTransfers: 9000, prices: {}, trade: { type: "SELL", ticker: "NVDA", price: 120, quantity: 100, total: 12000 } });
+        const { positions, cash } = computePositions([on("2024-05-01", buy("NVDA", 900, 10))], [split]);
+        const result = assessTrade({ positions, totalCash: cash + 9000, prices: {}, trade: { type: "SELL", ticker: "NVDA", price: 120, quantity: 100, total: 12000 } });
         assert.equal(result.allowed, true);
     });
 });

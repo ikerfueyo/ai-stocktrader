@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { conformanceErrors } from "../conformance";
 import { assetId, toAccount, toAchRelationship, toActivity, toAsset, toBank, toCalendar, toClock, toOptionsApproval, toTransfer, type SimAccountRow } from "./shapes";
 import { defaultConfigurations } from "./kyc";
+import { toAlpacaPosition, toTradeAccount } from "./tradeAccount";
 
 const row: SimAccountRow = {
     id: "6c1b2f0e-6a77-4d5e-9a3a-1f4b7f6d0a11",
@@ -102,5 +103,38 @@ describe("The simulator's replies conform to Alpaca's spec", () => {
         });
         assert.deepEqual(conformanceErrors(activity, "NonTradeActivity"), []);
         assert.equal(activity.net_amount, "600");
+    });
+});
+
+describe("The trading account and positions conform to Alpaca's spec", () => {
+    const base = {
+        account: {
+            id: "6c1b2f0e-6a77-4d5e-9a3a-1f4b7f6d0a11", account_number: "912345678", status: "ACTIVE", created_at: new Date("2026-10-27T15:00:00Z"),
+            trading_blocked: false, transfers_blocked: false, account_blocked: false,
+            configurations: { max_margin_multiplier: "2", no_shorting: false, max_options_trading_level: 1 as const, suspend_trade: false }, options_approved_level: 1, hasMarginAgreement: true
+        },
+        cash: 1500, longMarketValue: 1000, shortMarketValue: 400, buyingPower: 900, initialMargin: 600, maintenanceMargin: 520, withdrawable: 800,
+        accruedFees: { REG: 0.01, TAF: 0.02, CAT: 0.001 }, pendingTransferOut: 0, last: null
+    };
+
+    test("a trading account", () => {
+        const account = toTradeAccount(base);
+        assert.deepEqual(conformanceErrors(account, "TradeAccount"), []);
+        assert.equal(account.equity, "2100.00", "cash + longs - shorts");
+        assert.equal(account.short_market_value, "-400.00", "Alpaca reports shorts as negative");
+        assert.equal(account.accrued_fees, "0.03");
+        assert.equal(account.last_equity, "2100.00", "before the first snapshot, the current equity");
+        assert.equal(account.shorting_enabled, true);
+        assert.equal(toTradeAccount({ ...base, account: { ...base.account, hasMarginAgreement: false } }).shorting_enabled, false);
+    });
+
+    test("long and short positions", () => {
+        const asset = { id: "b0b6dd9d-8b9b-48a9-ba46-b9d54906e415", exchange: "NASDAQ", marginable: true };
+        const long = toAlpacaPosition({ ticker: "AAPL", quantity: 10, avgCost: 100 }, asset, { price: 110, previousClose: 105 });
+        assert.deepEqual(conformanceErrors(long, "Position"), []);
+        assert.deepEqual([long.side, long.market_value, long.cost_basis, long.unrealized_pl, long.unrealized_intraday_pl], ["long", "1100.00", "1000.00", "100.00", "50.00"]);
+        const short = toAlpacaPosition({ ticker: "AAPL", quantity: -10, avgCost: 100 }, asset, { price: 90, previousClose: 95 });
+        assert.deepEqual(conformanceErrors(short, "Position"), []);
+        assert.deepEqual([short.side, short.qty, short.market_value, short.unrealized_pl], ["short", "-10", "-900.00", "100.00"], "a short gains as the price falls");
     });
 });

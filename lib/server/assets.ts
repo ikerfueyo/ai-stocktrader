@@ -1,7 +1,7 @@
 import "server-only";
 import pool from "./db";
 import { singleton } from "./cache";
-import { HttpError } from "./errors";
+import { HttpError } from "./httpError";
 import { fetchAlpacaAssets, fetchListings, isAlpacaConfigured } from "./marketData";
 import { buildUniverse, normalizeSymbol, type AssetRow } from "./universe";
 

@@ -5,6 +5,7 @@ import { BrokerError } from "../errors";
 import type { Broker, BrokerEvent, BrokerEventStream } from "../broker";
 import * as accounts from "./accounts";
 import * as transfers from "./transfers";
+import * as positions from "./positions";
 import { toAsset, toCalendar, toClock } from "./shapes";
 
 // The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), funding
@@ -75,8 +76,8 @@ export class SimBroker implements Broker {
         };
     }
 
-    getTradeAccount = notYet("The trading account", 3);
-    getPortfolioHistory = notYet("Portfolio history", 3);
+    getTradeAccount = positions.getTradeAccount;
+    getPortfolioHistory = positions.getPortfolioHistory;
     createOrder = notYet("Orders", 4);
     listOrders = notYet("Orders", 4);
     getOrder = notYet("Orders", 4);
@@ -84,8 +85,8 @@ export class SimBroker implements Broker {
     replaceOrder = notYet("Orders", 4);
     cancelOrder = notYet("Orders", 4);
     cancelAllOrders = notYet("Orders", 4);
-    listPositions = notYet("Positions", 3);
-    getPosition = notYet("Positions", 3);
+    listPositions = positions.listPositions;
+    getPosition = positions.getPosition;
     closePosition = notYet("Positions", 4);
     exerciseOption = notYet("Options", 9);
     listOptionContracts = notYet("Options", 9);
@@ -98,7 +99,6 @@ export class SimBroker implements Broker {
     createTransfer = transfers.createTransfer;
     listTransfers = transfers.listTransfers;
     cancelTransfer = transfers.cancelTransfer;
-    // Only non-trade activities (cash movements and fees) until fills join the ledger in Phase 3
     listActivities = transfers.listActivities;
     listDocuments = notYet("Documents", 7);
     downloadDocument = notYet("Documents", 7);

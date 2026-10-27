@@ -3,7 +3,7 @@ import { filterTradable } from "./assets";
 import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
-import { UpstreamError } from "./errors";
+import { UpstreamError } from "./httpError";
 import pool from "./db";
 import { fetchCompanyOverview, fetchDailyCloses, fetchEarnings, fetchEarningsEstimates, fetchNews, fetchNextReport, fetchTickerNews, mainTickers, parseNewsTime, type NewsItem } from "./marketData";
 import { adjustForSplits, computeTechnicals, type Technicals } from "./technicals";

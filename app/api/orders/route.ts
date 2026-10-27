@@ -4,7 +4,7 @@ import { requireAccount } from "@/lib/server/brokerAccounts";
 import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { fetchPrices, fetchQuote, isForeignListing } from "@/lib/server/marketData";
-import { assessTrade, computePositions, reducesPosition, roundCents, roundPrice } from "@/lib/server/account";
+import { addTrade, assessTrade, reducesPosition, roundCents, roundPrice } from "@/lib/server/account";
 import { stopReached } from "@/lib/server/orderMatching";
 import { getMarketStatus } from "@/lib/server/market";
 import { dayOrderExpiry, getOpenOrders, matchOrders, reservedCashFor } from "@/lib/server/orders";
@@ -49,14 +49,14 @@ export const POST = withUser(async (request, context, userId) => {
         if (stopPrice !== null && stopReached(side, stopPrice, quote.price)) {
             throw new HttpError(`A ${side === "BUY" ? "buy" : "sell"} stop must be ${side === "BUY" ? "above" : "below"} the current price (${quote.price})`, 400);
         }
-        const { transactions, splits, netTransfers, positions } = await getAccount(userId, db);
+        const { positions, totalCash } = await getAccount(userId, db);
         const price = limitPrice ?? stopPrice!;
         const trade = { type: side, ticker, price, quantity, total: roundCents(quantity * price) };
         if (!reducesPosition({ positions, trade })) {
-            const { positions: after } = computePositions([...transactions, trade], splits);
+            const after = addTrade(positions, trade);
             const { prices, staleTickers } = await fetchPrices(shortTickers(after).filter(symbol => symbol !== ticker), label);
             const reservedCash = await reservedCashFor(await getOpenOrders(userId, db), positions, label);
-            const assessment = assessTrade({ transactions, splits, netTransfers, prices, staleTickers, trade, reservedCash });
+            const assessment = assessTrade({ positions, totalCash, prices, staleTickers, trade, reservedCash });
             if (!assessment.allowed) throw new HttpError(assessment.message, assessment.status);
         }
         const { rows: [inserted] } = await db.query<OrderRow>(
@@ -79,7 +79,7 @@ export const GET = withUser(async (request, context, userId) => {
         await withAccountLock(userId, db => matchOrders(userId, "GET /api/orders", db));
     }
     const { rows } = await pool.query<OrderRow>(
-        `SELECT o.*, t.id AS transaction_id FROM orders o LEFT JOIN transactions t ON t.order_id = o.id
+        `SELECT o.*, f.id AS transaction_id FROM orders o LEFT JOIN sim_activities f ON f.legacy_order_id = o.id AND f.activity_type = 'FILL'
          WHERE o.user_id = $1 AND ($2 = 'all' OR o.status = 'OPEN') AND ($3::text IS NULL OR o.ticker = $3)
          ORDER BY o.created_at DESC, o.id DESC LIMIT 500`,
         [userId, status, ticker]

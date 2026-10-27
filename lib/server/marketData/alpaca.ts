@@ -1,7 +1,7 @@
 import "server-only";
 import axios, { isAxiosError } from "axios";
 import { cachePromise, singleton, type CacheEntry } from "../cache";
-import { UpstreamError } from "../errors";
+import { UpstreamError } from "../httpError";
 import { rateLimiter } from "../rateLimit";
 import type { components as Trading } from "./generated/tradingApi";
 import type { components as MarketData } from "./generated/marketDataApi";

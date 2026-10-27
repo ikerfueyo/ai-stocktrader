@@ -1,5 +1,5 @@
-// Error reported to the client with the given status, such as 400 for a bad request. Kept out of errors.ts (server-only), so
-// pure modules that throw it can be unit tested.
+// Errors reported to the client with a status, such as 400 for a bad request. Kept out of errors.ts (server-only, and it loads Clerk
+// for withUser), so pure and library modules can throw them without depending on the request layer, and can be unit tested.
 export class HttpError extends Error {
     status: number;
     // Marks the error as one of these, so it's recognized even when a dev hot reload has loaded this module twice and instanceof
@@ -9,6 +9,13 @@ export class HttpError extends Error {
     constructor(message: string, status: number) {
         super(message);
         this.status = status;
+    }
+}
+
+// Error from a third-party API, reported to the client as 502
+export class UpstreamError extends HttpError {
+    constructor(message: string, status = 502) {
+        super(message, status);
     }
 }
 

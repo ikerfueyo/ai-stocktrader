@@ -6,6 +6,7 @@ import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
 import TradeModeToggle from "./TradeModeToggle";
 import AnalysisDetailsView from "./AnalysisDetailsView";
+import PositionLots from "./PositionLots";
 import { useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { convertValue, formatCurrency, formatPrice, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
@@ -43,6 +44,7 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
     const [analysis, setAnalysis] = useState<PositionAnalysis | null>(null);
     const [analysisError, setAnalysisError] = useState<string | null>(null);
     const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+    const [showLots, setShowLots] = useState(false);
     const { refreshAccount } = useAccount();
 
     const hasPrice = price !== null;
@@ -149,12 +151,18 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
                     </div>
                 </td>
                 <td>
+                    <button className={`lots-btn ${showLots ? "open" : ""}`} onClick={() => setShowLots(!showLots)} title="Tax lots" aria-expanded={showLots}>Lots</button>
                     <button className={`ai-btn ${showAnalysis ? "open" : ""}`} onClick={onAnalysisClick}
                         title={`AI ${isLong ? "hold/sell" : "hold/cover"} analysis`} aria-expanded={showAnalysis}>
                         {loadingAnalysis ? <span className="spinner-border spinner-border-sm" role="status" /> : "AI"}
                     </button>
                 </td>
             </tr>
+            {showLots && (
+                <tr className="portfolio-analysis-row">
+                    <td colSpan={9}><PositionLots ticker={ticker} /></td>
+                </tr>
+            )}
             {showAnalysis && (
                 <tr className="portfolio-analysis-row">
                     <td colSpan={9}>

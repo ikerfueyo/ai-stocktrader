@@ -140,7 +140,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 
 ### Phase 3: Ledger, positions, lots, settlement and fees
 - **Ledger tables:**
-  - `sim_activities`, one row per Alpaca activity. Trades are `FILL` rows with `qty`, `price`, `side`, `leaves_qty`, `cum_qty` and `order_id`. Non-trade activities (`CSD`, `CSW`, `FEE`, `INT`, `DIV`, `SSP`, `MA`, `OPASN`, `OPEXP`, `OPXRC`, `MEM`) carry `net_amount` and `per_share_amount`. Each row has a settle date.
+  - `sim_activities`, one row per Alpaca activity. Trades are `FILL` rows with `qty`, `price`, `side`, `leaves_qty`, `cum_qty` and `order_id`. Non-trade activities (`CSD`, `CSW`, `FEE`, `INT`, `DIV`, `SPLIT` (the research said `SSP`; Alpaca's enum has `SPLIT`), `MA`, `OPASN`, `OPEXP`, `OPXRC`, `MEM`) carry `net_amount` and `per_share_amount`. Each row has a settle date.
   - `sim_positions`, updated in the same database transaction as the fill. Positions are no longer replayed on every request.
 - **FIFO tax lots** in `sim_lots`: acquired date, quantity, cost and wash-sale adjustments.
   - `avg_entry_price` = the cost of the remaining lots divided by their quantity, so it differs from today's average cost after a partial sale.
@@ -232,7 +232,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 ### Phase 6: Corporate actions
 - Splits and dividends keep coming from Alpha Vantage `SPLITS`/`DIVIDENDS` (`lib/server/corporateActions.ts`). Mergers, spinoffs and symbol changes come from Alpaca's corporate-actions endpoint, all stored in `corporate_actions` (add the types).
 - **Effects:**
-  - Forward and reverse splits post `SSP`, adjust positions and lots, and keep fractional shares (cash in lieu is configurable).
+  - Forward and reverse splits post `SPLIT` (done in Phase 3 for lots), adjust positions and lots, and keep fractional shares (cash in lieu is configurable).
   - Cash dividends post `DIV` on longs and a charge on shorts, on the payment date, for holders at the ex-date (keep `planDividends`'s logic).
   - Cash and stock mergers post `MA`. Spinoffs add a new position with a basis allocation. Symbol or CUSIP changes rename the asset. Delistings are handled too.
 - **Orders, following Alpaca:** a reverse split cancels GTC orders. A forward split adjusts GTC buy-limit and sell-stop orders and cancels the others with `reason=CORPORATE_ACTION`. This replaces today's "cancel every order placed before a split".

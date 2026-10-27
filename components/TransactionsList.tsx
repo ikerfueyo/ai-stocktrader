@@ -2,14 +2,15 @@
 
 import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
+import ActivityFeed from "./ActivityFeed";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { describeOrderSize, describeOrderType, formatCurrency, formatPrice, formatShares, formatSigned } from "@/lib/orders";
 import type { CashActivityRow, CashActivityType, FillPolicy, OrderRow, OrderStatus, TradeHistoryRow } from "@/lib/types";
 
-export type HistoryTab = "orders" | "trades" | "cash";
+export type HistoryTab = "orders" | "trades" | "cash" | "activity";
 
-const TABS: { tab: HistoryTab; label: string }[] = [{ tab: "orders", label: "Orders" }, { tab: "trades", label: "Trades" }, { tab: "cash", label: "Cash Activity" }];
+const TABS: { tab: HistoryTab; label: string }[] = [{ tab: "orders", label: "Orders" }, { tab: "trades", label: "Trades" }, { tab: "cash", label: "Cash Activity" }, { tab: "activity", label: "All Activity" }];
 
 const STATUS_CLASSES: Record<OrderStatus, string> = { OPEN: "text-primary", FILLED: "text-success", CANCELLED: "text-muted", EXPIRED: "text-muted", REJECTED: "text-danger" };
 
@@ -54,7 +55,9 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                     </li>
                 ))}
             </ul>
-            {error ? (
+            {tab === "activity" ? (
+                <ActivityFeed />
+            ) : error ? (
                 <p className="text-danger mt-3">Couldn&apos;t load your history: {error}</p>
             ) : orders === null || trades === null || cash === null ? (
                 <p className="mt-3">Loading...</p>
@@ -105,7 +108,8 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                                     <th scope="col">Price</th>
                                     <th scope="col">Quantity</th>
                                     <th scope="col">Total</th>
-                                    <th scope="col">Realized P/L</th>
+                                    <th scope="col" title="Against the tax lots the trade closed, oldest first (FIFO)">Realized P/L</th>
+                                    <th scope="col" title="When the trade settles (T+1): a sale's proceeds can be withdrawn from then">Settles</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -134,6 +138,7 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                                         <td className={trade.realized_pnl === null ? "" : `price-change ${trade.realized_pnl >= 0 ? "positive" : "negative"}`}>
                                             {trade.realized_pnl === null ? "—" : formatSigned(trade.realized_pnl)}
                                         </td>
+                                        <td>{trade.settle_date ?? "—"}</td>
                                     </tr>
                                 ))}
                             </tbody>

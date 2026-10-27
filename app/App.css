@@ -1404,3 +1404,44 @@ header a.header-pill.withdraw:hover {
 .transfer-status.returned {
   background-color: #dc3545;
 }
+
+/* Tax lots under a Portfolio row, and the All Activity toolbar */
+.lots-btn {
+  margin-right: 6px;
+  padding: 2px 8px;
+  border: 2px solid #343a40;
+  border-radius: 999px;
+  background-color: white;
+  color: #343a40;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.lots-btn.open {
+  background-color: #343a40;
+  color: aqua;
+}
+
+.lots-table {
+  font-size: 13px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.lots-table caption {
+  caption-side: top;
+  font-size: 12px;
+}
+
+.activity-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.activity-toolbar select {
+  max-width: 260px;
+}

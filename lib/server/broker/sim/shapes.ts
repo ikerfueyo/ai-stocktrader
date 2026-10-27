@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { addDays, easternParts, marketStatus, sessionOn, settlementDate } from "../../../marketHours";
 import type { AssetRow } from "../../universe";
-import type { ACHRelationship, Account, AccountConfigurations, Asset, Bank, CalendarDay, Clock, KYCResults, NonTradeActivity, OptionsApprovalResponse, Transfer } from "../types";
+import type { ACHRelationship, Account, AccountConfigurations, Asset, Bank, CalendarDay, Clock, KYCResults, NonTradeActivity, OptionsApprovalResponse, TradeActivity, Transfer } from "../types";
 
 // A sim_accounts row as pg returns it (JSONB columns parsed)
 export interface SimAccountRow {
@@ -138,6 +138,9 @@ export interface SimTransferRow {
 export interface SimActivityRow {
     id: string; account_id: string; activity_type: string; activity_sub_type: string | null; date: string; created_at: Date; net_amount: string;
     description: string; status: string; transfer_id: string | null; symbol: string | null; qty: string | null; per_share_amount: string | null;
+    // A FILL's fields
+    side?: "buy" | "sell" | null; price?: string | null; leaves_qty?: string | null; cum_qty?: string | null; realized_pl?: string | null;
+    settle_date?: string | null; reason?: string | null; quote_time?: Date | null; fill_policy?: string | null; legacy_order_id?: number | null;
 }
 
 // Account numbers are stored and returned masked (••••6789), like the simulator's tax IDs
@@ -159,6 +162,14 @@ export const toTransfer = (row: SimTransferRow): Transfer => ({
     reason: row.reason, created_at: row.created_at.toISOString(), updated_at: row.updated_at.toISOString(),
     // When the funds are expected: an incoming deposit's settlement, or an outgoing transfer's arrival
     expires_at: row.complete_at.toISOString()
+});
+
+// A fill as GET /v1/accounts/activities returns it (Alpaca's TradeActivity). The mock orders it fills until Phase 4 have no UUID, so
+// order_id is left out for them.
+export const toFillActivity = (row: SimActivityRow): TradeActivity & { id: string; activity_type: "FILL"; account_id: string } => ({
+    id: row.id, account_id: row.account_id, activity_type: "FILL", type: "fill", transaction_time: row.created_at.toISOString(),
+    symbol: row.symbol ?? "", side: row.side ?? "buy", qty: decimal(row.qty)!, price: decimal(row.price ?? "0")!,
+    cum_qty: decimal(row.cum_qty ?? row.qty)!, leaves_qty: decimal(row.leaves_qty ?? "0")!, order_status: "filled"
 });
 
 // A non-trade activity as GET /v1/accounts/activities returns it

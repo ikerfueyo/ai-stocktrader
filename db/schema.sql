@@ -256,8 +256,8 @@ CREATE TABLE sim_transfers (
 CREATE INDEX sim_transfers_account_idx ON sim_transfers (account_id, created_at);
 CREATE INDEX sim_transfers_due_idx ON sim_transfers (status, sent_at, complete_at);
 
--- The account ledger's activities (Alpaca's non-trade activities for now: CSD cash deposits, CSW cash withdrawals, FEE), each with a
--- signed net_amount. Trade fills join it in Phase 3. id is Alpaca's activity id format ("YYYYMMDDHHMMSSmmm::uuid").
+-- The account ledger's activities: FILL trade fills, CSD cash deposits, CSW cash withdrawals, FEE fees, DIV dividends and SPLIT
+-- splits, each with a signed net_amount. id is Alpaca's activity id format ("YYYYMMDDHHMMSSmmm::uuid").
 CREATE TABLE sim_activities (
     id VARCHAR(64) PRIMARY KEY,
     account_id UUID NOT NULL REFERENCES sim_accounts(id),
@@ -271,6 +271,85 @@ CREATE TABLE sim_activities (
     transfer_id UUID REFERENCES sim_transfers(id),
     symbol VARCHAR(32),
     qty NUMERIC(18, 9),
-    per_share_amount NUMERIC(18, 6)
+    per_share_amount NUMERIC(18, 6),
+    -- A FILL's fields (Alpaca's TradeActivity), the P&L it realized against the lots it closed, its settlement date (T+1), the quote it
+    -- filled against, and, until orders move to the simulator (Phase 4), the mock order it filled
+    side VARCHAR(4) CHECK (side IN ('buy', 'sell')),
+    price NUMERIC(18, 6),
+    leaves_qty NUMERIC(18, 9),
+    cum_qty NUMERIC(18, 9),
+    realized_pl NUMERIC(14, 2),
+    settle_date DATE,
+    reason VARCHAR(32),
+    quote_time TIMESTAMPTZ,
+    fill_policy VARCHAR(16),
+    legacy_order_id INTEGER REFERENCES orders(id)
 );
 CREATE INDEX sim_activities_account_idx ON sim_activities (account_id, created_at);
+
+CREATE INDEX sim_activities_type_idx ON sim_activities (account_id, activity_type, symbol, created_at);
+
+-- Tax lots: shares bought (long) or sold short (short) together. qty is what's still open (0 once closed); original_qty, price and
+-- acquired_at are split-adjusted. wash_sale_adjustment is added to the basis by a disallowed loss (Phase 7).
+CREATE TABLE sim_lots (
+    id UUID PRIMARY KEY,
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(5) NOT NULL CHECK (side IN ('long', 'short')),
+    qty NUMERIC(18, 9) NOT NULL CHECK (qty >= 0),
+    original_qty NUMERIC(18, 9) NOT NULL,
+    price NUMERIC(18, 8) NOT NULL,
+    acquired_at TIMESTAMPTZ NOT NULL,
+    fill_id VARCHAR(64) NOT NULL REFERENCES sim_activities(id),
+    wash_sale_adjustment NUMERIC(14, 2) NOT NULL DEFAULT 0
+);
+CREATE INDEX sim_lots_open_idx ON sim_lots (account_id, symbol, acquired_at) WHERE qty > 0;
+
+-- What each fill closed of each lot, for realized gains by lot and holding period
+CREATE TABLE sim_lot_closings (
+    id SERIAL PRIMARY KEY,
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    lot_id UUID NOT NULL REFERENCES sim_lots(id),
+    fill_id VARCHAR(64) NOT NULL REFERENCES sim_activities(id),
+    qty NUMERIC(18, 9) NOT NULL,
+    lot_price NUMERIC(18, 8) NOT NULL,
+    close_price NUMERIC(18, 6) NOT NULL,
+    realized NUMERIC(14, 2) NOT NULL,
+    closed_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX sim_lot_closings_account_idx ON sim_lot_closings (account_id, closed_at);
+
+-- Regulatory fees accrued by fills (REG SEC fee, TAF, CAT), unrounded, until the end-of-day job deducts them (deducted_by, the FEE
+-- activity)
+CREATE TABLE sim_fee_accruals (
+    id SERIAL PRIMARY KEY,
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    "date" DATE NOT NULL,
+    fee_type VARCHAR(4) NOT NULL CHECK (fee_type IN ('REG', 'TAF', 'CAT')),
+    amount NUMERIC(18, 8) NOT NULL,
+    fill_id VARCHAR(64) NOT NULL REFERENCES sim_activities(id),
+    deducted_by VARCHAR(64) REFERENCES sim_activities(id)
+);
+CREATE INDEX sim_fee_accruals_open_idx ON sim_fee_accruals (account_id, "date") WHERE deducted_by IS NULL;
+
+-- The splits and dividends already applied to each account, so each is applied once
+CREATE TABLE sim_corporate_actions_applied (
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    symbol VARCHAR(32) NOT NULL,
+    "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('SPLIT', 'DIVIDEND')),
+    ex_date DATE NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, symbol, "type", ex_date)
+);
+
+-- Each trading day's closing balances (the end-of-day job), for last_equity and the other last_* figures
+CREATE TABLE sim_daily_balances (
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    "date" DATE NOT NULL,
+    equity NUMERIC(16, 2) NOT NULL,
+    cash NUMERIC(16, 2) NOT NULL,
+    long_market_value NUMERIC(16, 2) NOT NULL,
+    short_market_value NUMERIC(16, 2) NOT NULL,
+    maintenance_margin NUMERIC(16, 2) NOT NULL,
+    PRIMARY KEY (account_id, "date")
+);

@@ -1,7 +1,7 @@
 import "server-only";
 import type { NextRequest } from "next/server";
 import pool from "./db";
-import { HttpError } from "./errors";
+import { HttpError } from "./httpError";
 import { getBroker } from "./broker";
 import type { Account } from "./broker/types";
 import { FINAL_ACCOUNT_STATUSES as FINAL_STATUSES } from "../accounts";
