@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { addDays, easternParts, marketStatus, sessionOn, settlementDate } from "../../../marketHours";
 import type { AssetRow } from "../../universe";
-import type { Account, AccountConfigurations, Asset, CalendarDay, Clock, KYCResults, OptionsApprovalResponse } from "../types";
+import type { ACHRelationship, Account, AccountConfigurations, Asset, Bank, CalendarDay, Clock, KYCResults, NonTradeActivity, OptionsApprovalResponse, Transfer } from "../types";
 
 // A sim_accounts row as pg returns it (JSONB columns parsed)
 export interface SimAccountRow {
@@ -118,4 +118,54 @@ export const toOptionsApproval = (row: { id: string; account_id: string; request
     requester: "CORRESPONDENT",
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString()
+});
+
+const decimal = (value: string | number | null) => value === null ? null : String(Number(value));
+
+// sim_ach_relationships, sim_recipient_banks, sim_transfers and sim_activities rows as pg returns them (NUMERIC as strings)
+export interface SimAchRow {
+    id: string; account_id: string; status: string; reason: string | null; account_owner_name: string; bank_account_type: "CHECKING" | "SAVINGS";
+    bank_account_number: string; bank_routing_number: string; nickname: string | null; created_at: Date; updated_at: Date;
+}
+export interface SimBankRow {
+    id: string; account_id: string; status: string; name: string; bank_code: string; bank_code_type: "ABA" | "BIC"; account_number: string; created_at: Date; updated_at: Date;
+}
+export interface SimTransferRow {
+    id: string; account_id: string; type: "ach" | "wire"; direction: "INCOMING" | "OUTGOING"; status: string; amount: string; instant_amount: string;
+    fee: string; relationship_id: string | null; bank_id: string | null; reason: string | null; sent_at: Date; complete_at: Date;
+    return_at: Date | null; return_code: string | null; created_at: Date; updated_at: Date;
+}
+export interface SimActivityRow {
+    id: string; account_id: string; activity_type: string; activity_sub_type: string | null; date: string; created_at: Date; net_amount: string;
+    description: string; status: string; transfer_id: string | null; symbol: string | null; qty: string | null; per_share_amount: string | null;
+}
+
+// Account numbers are stored and returned masked (••••6789), like the simulator's tax IDs
+export const toAchRelationship = (row: SimAchRow): ACHRelationship => ({
+    id: row.id, account_id: row.account_id, status: row.status as ACHRelationship["status"], account_owner_name: row.account_owner_name,
+    bank_account_type: row.bank_account_type, bank_account_number: row.bank_account_number, bank_routing_number: row.bank_routing_number,
+    ...(row.nickname ? { nickname: row.nickname } : {}), created_at: row.created_at.toISOString(), updated_at: row.updated_at.toISOString()
+});
+
+export const toBank = (row: SimBankRow): Bank => ({
+    id: row.id, account_id: row.account_id, status: row.status as Bank["status"], name: row.name, bank_code: row.bank_code,
+    bank_code_type: row.bank_code_type, account_number: row.account_number, created_at: row.created_at.toISOString(), updated_at: row.updated_at.toISOString()
+});
+
+export const toTransfer = (row: SimTransferRow): Transfer => ({
+    id: row.id, account_id: row.account_id, type: row.type, direction: row.direction, status: row.status as Transfer["status"],
+    amount: decimal(row.amount)!, requested_amount: decimal(row.amount), instant_amount: decimal(row.instant_amount)!, fee: decimal(row.fee),
+    ...(row.relationship_id ? { relationship_id: row.relationship_id } : {}), ...(row.bank_id ? { bank_id: row.bank_id } : {}),
+    reason: row.reason, created_at: row.created_at.toISOString(), updated_at: row.updated_at.toISOString(),
+    // When the funds are expected: an incoming deposit's settlement, or an outgoing transfer's arrival
+    expires_at: row.complete_at.toISOString()
+});
+
+// A non-trade activity as GET /v1/accounts/activities returns it
+export const toActivity = (row: SimActivityRow): NonTradeActivity & { id: string; activity_type: string; account_id: string } => ({
+    id: row.id, account_id: row.account_id, activity_type: row.activity_type, ...(row.activity_sub_type ? { activity_sub_type: row.activity_sub_type as NonTradeActivity["activity_sub_type"] } : {}),
+    date: row.date, created_at: row.created_at.toISOString(), net_amount: decimal(row.net_amount)!, description: row.description,
+    status: row.status as NonTradeActivity["status"], currency: "USD",
+    ...(row.transfer_id ? { transfer_id: row.transfer_id } : {}), ...(row.symbol ? { symbol: row.symbol } : {}),
+    ...(row.qty ? { qty: decimal(row.qty)! } : {}), ...(row.per_share_amount ? { per_share_amount: decimal(row.per_share_amount)! } : {})
 });

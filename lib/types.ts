@@ -97,12 +97,13 @@ export interface QuoteBook {
     time: string;
 }
 
-export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT";
+export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE";
 
-// A cash_activity row as the API returns it: a deposit or withdrawal (method is the payment method's label), or a dividend received
-// on a long or paid on a short (method describes it; ticker and reference, the ex-dividend date, identify it)
+// An entry of the account's cash ledger as GET /api/transfers returns it: a deposit, withdrawal or fee from the broker's activities
+// (method is its description; id is the activity's), or a dividend received on a long or paid on a short from the mock ledger
+// (method describes it; ticker and reference, the ex-dividend date, identify it). amount is positive; the type gives the direction.
 export interface CashActivityRow {
-    id: number;
+    id: number | string;
     user_id: string;
     date: string;
     type: CashActivityType;
@@ -155,6 +156,10 @@ export interface Account extends AccountValuation {
     positions: { ticker: string; quantity: number }[];
     // The past week's automatic buy-in trades
     liquidations: TransactionRow[];
+    // Withdrawals requested and not yet sent, already held from cash; and what can be withdrawn now: available cash less deposit
+    // credit given before its ACH settled
+    pendingTransferOut: number;
+    withdrawableCash: number;
 }
 
 export type TickerVerdict = "BUY" | "HOLD" | "SELL";
@@ -414,17 +419,32 @@ export interface OrderRequest {
     };
 }
 
-// POST /api/transfers
+// GET /api/funding: transfer limits and fees, in dollars (minimum and dailyAch per transfer and banking day, instant the deposit
+// credit given before settlement)
+export interface FundingTerms {
+    minimum: number;
+    dailyAch: number;
+    instant: number;
+    wireFee: number;
+    achReturnFee: number;
+}
+
+// POST /api/accounts/[id]/transfers: an ACH deposit from the bank link, or a withdrawal by ACH to it or by wire to a recipient bank
 export interface TransferRequest {
     transfer: {
-        type: TransferType;
-        method: string;
+        type: "ach" | "wire";
+        direction: "INCOMING" | "OUTGOING";
         amount: number;
+        relationshipId?: string;
+        bankId?: string;
     };
 }
 
 // Brokerage accounts. Account objects are Alpaca's (the broker's shape), re-exported for the pages.
-export type { Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse } from "./server/broker/types";
+export type {
+    Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse, ACHRelationship as AchRelationship, Bank as RecipientBank,
+    Transfer as BrokerTransfer
+} from "./server/broker/types";
 
 export type BrokerAccountKind = "individual" | "traditional_ira" | "roth_ira";
 

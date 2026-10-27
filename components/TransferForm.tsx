@@ -1,227 +1,161 @@
 "use client";
 
-import { useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
+import BankLink from "./BankLink";
+import { useFunding } from "./useFunding";
 import { useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { formatCurrency, roundCents } from "@/lib/orders";
-import { describeMethod, detectCardBrand, digitsOnly, expiryValid, formatCardNumber, luhnValid, routingValid, type PaymentDetails, type PaymentMethod } from "@/lib/payments";
-import type { TransferRequest } from "@/lib/types";
+import { formatEastern } from "@/lib/marketHours";
+import { accountNumberValid, digitsOnly, routingValid } from "@/lib/payments";
+import type { BrokerTransfer, TransferRequest } from "@/lib/types";
 
 type Direction = "deposit" | "withdraw";
-type FieldErrors = Partial<Record<keyof PaymentDetails, string>>;
 
-const METHODS: Record<Direction, { id: PaymentMethod; label: string }[]> = {
-    deposit: [
-        { id: "card", label: "Card" },
-        { id: "apple", label: "Apple Pay" },
-        { id: "google", label: "Google Pay" },
-        { id: "paypal", label: "PayPal" },
-        { id: "bank", label: "Bank account" }
-    ],
-    withdraw: [
-        { id: "bank", label: "Bank account" },
-        { id: "card", label: "Debit card" }
-    ]
-};
-
-const EMPTY_DETAILS: PaymentDetails = { cardNumber: "", expiry: "", cvc: "", cardName: "", holderName: "", routingNumber: "", accountNumber: "", email: "" };
 const QUICK_AMOUNTS = [100, 500, 1000];
 const DEFAULT_AMOUNT = 100;
-// The most the server's amount column holds
-const MAX_AMOUNT = 99999999.99;
 
-// A message per invalid field of the chosen method (Apple Pay and Google Pay have no fields)
-const validate = (method: PaymentMethod, details: PaymentDetails): FieldErrors => {
-    const errors: FieldErrors = {};
-    if (method === "card") {
-        if (!luhnValid(details.cardNumber)) errors.cardNumber = "Enter a valid card number";
-        if (!expiryValid(details.expiry)) errors.expiry = "Enter a valid date (MM/YY)";
-        const cvcLength = detectCardBrand(details.cardNumber) === "American Express" ? 4 : 3;
-        if (details.cvc.length !== cvcLength) errors.cvc = `Enter ${cvcLength} digits`;
-        if (!details.cardName.trim()) errors.cardName = "Enter the name on the card";
-    } else if (method === "bank") {
-        if (!details.holderName.trim()) errors.holderName = "Enter the account holder's name";
-        if (!routingValid(details.routingNumber)) errors.routingNumber = "Enter a valid 9-digit routing number";
-        if (details.accountNumber.length < 4) errors.accountNumber = "Enter a 4 to 17 digit account number";
-    } else if (method === "paypal") {
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(details.email.trim())) errors.email = "Enter a valid email address";
-    }
-    return errors;
-};
+const expected = (iso: string) => formatEastern(iso, { withDay: true });
 
-const Field = ({ label, error, children }: { label: ReactNode; error?: string; children: ReactNode }) => (
-    <label className="transfer-field">
-        <span className="transfer-field-label">{label}</span>
-        {children}
-        {error && <small className="text-danger">{error}</small>}
-    </label>
-);
-
-// Mock deposit (direction="deposit") or withdrawal (direction="withdraw") form. Only the method's label and the amount are sent.
-const TransferForm = ({ direction = "deposit" }: { direction?: Direction }) => {
-    const isDeposit = direction === "deposit";
-    const methods = METHODS[direction];
+// Deposit or withdraw money. Deposits come by ACH from the linked bank account (linked here first if there's none), with up to the
+// instant limit credited at once. Withdrawals go by ACH to it (free, next banking day) or by wire to a recipient bank (with its fee,
+// the same day), and only from withdrawable cash.
+const TransferForm = ({ direction }: { direction: Direction }) => {
     const { account, refreshAccount } = useAccount();
-    const [method, setMethod] = useState<PaymentMethod>(methods[0].id);
-    const [details, setDetails] = useState(EMPTY_DETAILS);
-    const [amount, setAmount] = useState(DEFAULT_AMOUNT);
-    // Field errors only show once the user has tried to submit
-    const [attempted, setAttempted] = useState(false);
+    const { accountId, relationships, approved, banks, holderName, terms, error: loadError, reload } = useFunding();
+    const wireFee = terms?.wireFee ?? 0;
+    const isDeposit = direction === "deposit";
+    const [method, setMethod] = useState<"ach" | "wire">("ach");
+    const [bankId, setBankId] = useState<string>("");
+    const [newBank, setNewBank] = useState({ name: "", routing: "", account: "" });
+    const [value, setValue] = useState(DEFAULT_AMOUNT);
     const [submitting, setSubmitting] = useState(false);
     const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
-    // Withdrawals are capped at the available cash, which excludes short collateral (the server checks again)
-    const maxAmount = isDeposit || !account ? MAX_AMOUNT : account.availableCash;
-    const marginCall = (account?.collateralShortfall ?? 0) > 0;
-    const value = Math.min(amount, maxAmount);
-    const errors = validate(method, details);
-    const shownErrors: FieldErrors = attempted ? errors : {};
-    const brand = details.cardNumber ? detectCardBrand(details.cardNumber) : null;
+    const fee = !isDeposit && method === "wire" ? wireFee : 0;
+    const withdrawable = account?.withdrawableCash ?? 0;
+    const maxAmount = isDeposit ? terms?.dailyAch ?? 0 : Math.max(0, roundCents(withdrawable - fee));
+    const marginCall = account?.marginStatus !== undefined && account.marginStatus !== "ok";
+    const chosenBank = method === "wire" ? (bankId || banks[0]?.id || "") : "";
+    const addingBank = method === "wire" && !chosenBank;
+    const newBankValid = newBank.name.trim() !== "" && routingValid(newBank.routing) && accountNumberValid(newBank.account);
 
-    const setDetail = (field: keyof PaymentDetails, text: string) => setDetails(prev => ({ ...prev, [field]: text }));
-    const setDigits = (field: keyof PaymentDetails, maxLength: number) => (e: ChangeEvent<HTMLInputElement>) => setDetail(field, digitsOnly(e.target.value).slice(0, maxLength));
-
-    const onMethodChange = (id: PaymentMethod) => {
-        setMethod(id);
-        setAttempted(false);
-    };
-
-    const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        setAttempted(true);
-        if (Object.keys(errors).length > 0 || !(value > 0)) return;
-        const transfer: TransferRequest["transfer"] = { type: isDeposit ? "DEPOSIT" : "WITHDRAW", method: describeMethod(method, details), amount: roundCents(value) };
+    const submit = async (event: FormEvent) => {
+        event.preventDefault();
+        if (!accountId) return;
         setSubmitting(true);
         setStatus(null);
         try {
-            await axios.post("/api/transfers", { transfer } satisfies TransferRequest);
-            setStatus({ ok: true, message: `${isDeposit ? "Deposited" : "Withdrew"} ${formatCurrency(transfer.amount)} ${isDeposit ? "from" : "to"} ${transfer.method}` });
-            setDetails(EMPTY_DETAILS);
-            setAmount(DEFAULT_AMOUNT);
-            setAttempted(false);
-            refreshAccount();
+            let recipient = chosenBank;
+            if (addingBank) {
+                const created = await axios.post<{ id: string }>(`/api/accounts/${accountId}/banks`, { name: newBank.name.trim(), bank_code: newBank.routing, account_number: newBank.account });
+                recipient = created.data.id;
+                setBankId(recipient);
+                setNewBank({ name: "", routing: "", account: "" });
+            }
+            const transfer: TransferRequest["transfer"] = {
+                type: isDeposit ? "ach" : method, direction: isDeposit ? "INCOMING" : "OUTGOING", amount: roundCents(value),
+                ...(isDeposit || method === "ach" ? { relationshipId: approved?.id } : { bankId: recipient })
+            };
+            const { data } = await axios.post<BrokerTransfer>(`/api/accounts/${accountId}/transfers`, { transfer } satisfies TransferRequest);
+            const instant = Number(data.instant_amount ?? 0);
+            setStatus({
+                ok: true,
+                message: isDeposit
+                    ? `Deposit of ${formatCurrency(Number(data.amount))} requested. ${instant > 0 ? `${formatCurrency(instant)} is available to trade now; ` : ""}it settles by ${expected(data.expires_at!)}.`
+                    : `Withdrawal of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. It should arrive by ${expected(data.expires_at!)}.`
+            });
+            await Promise.all([refreshAccount(), reload()]);
         } catch (error) {
             logError(error);
-            setStatus({ ok: false, message: `Couldn't ${isDeposit ? "deposit" : "withdraw"}: ${apiErrorMessage(error)}` });
+            setStatus({ ok: false, message: apiErrorMessage(error) });
         } finally {
             setSubmitting(false);
         }
     };
 
-    const expiry = details.expiry.length > 2 ? `${details.expiry.slice(0, 2)}/${details.expiry.slice(2)}` : details.expiry;
-    const isWallet = method === "apple" || method === "google";
-    const submitLabel = method === "apple" ? `Pay ${formatCurrency(value)} with Apple Pay`
-        : method === "google" ? `Pay ${formatCurrency(value)} with Google Pay`
-        : `${isDeposit ? "Deposit" : "Withdraw"} ${formatCurrency(value)}`;
+    const needsBank = (isDeposit || method === "ach") && !approved;
+    const canSubmit = !submitting && value > 0 && value <= maxAmount && !needsBank && (!addingBank || newBankValid) && !(isDeposit ? false : marginCall);
 
     return (
         <div className="transfer-container mt-5">
-            <h1 className="transfer-title">{isDeposit ? "Deposit funds" : "Withdraw funds"}</h1>
-            <p className="transfer-available">
-                Available: <strong>{account ? formatCurrency(account.availableCash) : "…"}</strong>
-                {account && account.restrictedCash > 0 && (
-                    <span className="transfer-restricted"> ({formatCurrency(account.restrictedCash)} held as short collateral)</span>
-                )}
-            </p>
-            <form onSubmit={onSubmit} noValidate>
-                <div className="method-tiles" role="radiogroup" aria-label={isDeposit ? "Pay with" : "Send to"}>
-                    {methods.map(({ id, label }) => (
-                        <button type="button" key={id} role="radio" aria-checked={method === id}
-                            className={`method-tile ${method === id ? "active" : ""}`} onClick={() => onMethodChange(id)}>
-                            {label}
-                        </button>
-                    ))}
+            <h1 className="transfer-title">{isDeposit ? "Deposit" : "Withdraw"}</h1>
+            {!isDeposit && account && (
+                <p className="transfer-available">
+                    Withdrawable: <strong>{formatCurrency(withdrawable)}</strong>
+                    {account.pendingTransferOut > 0 && <span className="transfer-restricted"><br />{formatCurrency(account.pendingTransferOut)} already requested</span>}
+                    {account.restrictedCash > 0 && <span className="transfer-restricted"><br />{formatCurrency(account.restrictedCash)} is held as short collateral</span>}
+                </p>
+            )}
+            {loadError && <p className="text-danger">Couldn&apos;t load your bank details: {loadError}</p>}
+
+            {!isDeposit && (
+                <div className="method-tiles" role="radiogroup" aria-label="Withdrawal method">
+                    <button type="button" role="radio" aria-checked={method === "ach"} className={`method-tile${method === "ach" ? " active" : ""}`} onClick={() => setMethod("ach")}>ACH (free, next banking day)</button>
+                    <button type="button" role="radio" aria-checked={method === "wire"} className={`method-tile${method === "wire" ? " active" : ""}`} onClick={() => setMethod("wire")}>Wire ({formatCurrency(wireFee)}, same day)</button>
                 </div>
+            )}
 
-                {method === "card" && (
-                    <div className="transfer-fields">
-                        <Field label={<>Card number {brand && <span className="card-brand">{brand}</span>}</>} error={shownErrors.cardNumber}>
-                            <input className="form-control" inputMode="numeric" autoComplete="off" placeholder="4242 4242 4242 4242"
-                                value={formatCardNumber(details.cardNumber)} onChange={setDigits("cardNumber", 19)} />
-                        </Field>
-                        <div className="transfer-row">
-                            <Field label="Expiry" error={shownErrors.expiry}>
-                                <input className="form-control" inputMode="numeric" autoComplete="off" placeholder="MM/YY"
-                                    value={expiry} onChange={setDigits("expiry", 4)} />
-                            </Field>
-                            <Field label="CVC" error={shownErrors.cvc}>
-                                <input className="form-control" inputMode="numeric" autoComplete="off" placeholder="123"
-                                    value={details.cvc} onChange={setDigits("cvc", 4)} />
-                            </Field>
+            {(isDeposit || method === "ach") && relationships !== null && accountId && (
+                <section className="transfer-fields">
+                    <span className="transfer-field-label">{isDeposit ? "From" : "To"} your linked bank</span>
+                    <BankLink accountId={accountId} holderName={holderName} relationships={relationships} onChanged={reload} />
+                </section>
+            )}
+
+            {method === "wire" && !isDeposit && (
+                <section className="transfer-fields">
+                    <span className="transfer-field-label">To</span>
+                    {banks.length > 0 && (
+                        <select className="form-control" value={chosenBank} onChange={event => setBankId(event.target.value)} aria-label="Recipient bank">
+                            {banks.map(bank => <option key={bank.id} value={bank.id}>{bank.name} {bank.account_number}</option>)}
+                            <option value="">Another bank…</option>
+                        </select>
+                    )}
+                    {addingBank && (
+                        <div className="transfer-fields">
+                            <input className="form-control" placeholder="Bank name" value={newBank.name} onChange={event => setNewBank({ ...newBank, name: event.target.value })} />
+                            <div className="transfer-row">
+                                <input className="form-control" placeholder="Routing number" inputMode="numeric" maxLength={9} value={newBank.routing} onChange={event => setNewBank({ ...newBank, routing: digitsOnly(event.target.value) })} />
+                                <input className="form-control" placeholder="Account number" inputMode="numeric" maxLength={17} value={newBank.account} onChange={event => setNewBank({ ...newBank, account: digitsOnly(event.target.value) })} />
+                            </div>
+                            <small className="text-muted">The account must be in your name. Domestic wires only.</small>
                         </div>
-                        <Field label="Name on card" error={shownErrors.cardName}>
-                            <input className="form-control" autoComplete="off" value={details.cardName}
-                                onChange={e => setDetail("cardName", e.target.value)} />
-                        </Field>
-                    </div>
-                )}
+                    )}
+                </section>
+            )}
 
-                {method === "bank" && (
-                    <div className="transfer-fields">
-                        <Field label="Account holder" error={shownErrors.holderName}>
-                            <input className="form-control" autoComplete="off" value={details.holderName}
-                                onChange={e => setDetail("holderName", e.target.value)} />
-                        </Field>
-                        <div className="transfer-row">
-                            <Field label="Routing number" error={shownErrors.routingNumber}>
-                                <input className="form-control" inputMode="numeric" autoComplete="off" placeholder="9 digits"
-                                    value={details.routingNumber} onChange={setDigits("routingNumber", 9)} />
-                            </Field>
-                            <Field label="Account number" error={shownErrors.accountNumber}>
-                                <input className="form-control" inputMode="numeric" autoComplete="off" placeholder="4 to 17 digits"
-                                    value={details.accountNumber} onChange={setDigits("accountNumber", 17)} />
-                            </Field>
-                        </div>
-                    </div>
-                )}
-
-                {method === "paypal" && (
-                    <div className="transfer-fields">
-                        <Field label="PayPal email" error={shownErrors.email}>
-                            <input className="form-control" type="email" autoComplete="off" value={details.email}
-                                onChange={e => setDetail("email", e.target.value)} />
-                        </Field>
-                    </div>
-                )}
-
-                {isWallet && (
-                    <p className="transfer-wallet-note">No details needed. Confirm with the button below.</p>
-                )}
-
+            <form onSubmit={submit}>
                 <div className="transfer-amount">
                     <span className="transfer-field-label">Amount</span>
-                    <QuantityStepper value={value} setValue={setAmount} max={maxAmount} decimals={2} prefix="$" />
+                    <QuantityStepper value={value} setValue={setValue} max={maxAmount} decimals={2} prefix="$" />
                     <div className="amount-chips">
                         {QUICK_AMOUNTS.map(quick => (
-                            <button type="button" key={quick} className="amount-chip" disabled={quick > maxAmount}
-                                onClick={() => setAmount(quick)}>{formatCurrency(quick)}</button>
+                            <button type="button" key={quick} className="amount-chip" disabled={quick > maxAmount} onClick={() => setValue(quick)}>{formatCurrency(quick)}</button>
                         ))}
-                        {!isDeposit && (
-                            <button type="button" className="amount-chip" disabled={maxAmount <= 0}
-                                onClick={() => setAmount(maxAmount)}>Max</button>
-                        )}
+                        {!isDeposit && <button type="button" className="amount-chip" disabled={maxAmount <= 0} onClick={() => setValue(maxAmount)}>Max</button>}
                     </div>
                     {!isDeposit && account && maxAmount <= 0 && (
-                        <small className="text-danger">
-                            {marginCall ? "Withdrawals are blocked during a margin call (collateral shortfall)." : "Nothing available to withdraw."}
-                        </small>
+                        <small className="text-danger">{marginCall ? "Withdrawals are blocked during a margin call (collateral shortfall)." : "Nothing available to withdraw."}</small>
                     )}
                     {isDeposit && marginCall && account && (
-                        <small className="text-danger">
-                            Depositing {formatCurrency(account.collateralShortfall)} or more fixes your collateral shortfall.
-                        </small>
+                        <small className="text-danger">Depositing {formatCurrency(account.collateralShortfall)} or more fixes your collateral shortfall.</small>
+                    )}
+                    {isDeposit && terms && terms.instant > 0 && (
+                        <small className="text-muted">Up to {formatCurrency(terms.instant)} is available to trade at once; the rest when the deposit settles, usually the next banking day.</small>
                     )}
                 </div>
-
-                <button type="submit" disabled={submitting || !(value > 0)}
-                    className={isWallet ? `wallet-btn ${method}` : `transfer-submit ${isDeposit ? "buy-btn" : "sell-btn"}`}>
-                    {submitting ? "Processing…" : submitLabel}
+                <button type="submit" disabled={!canSubmit} className={`transfer-submit ${isDeposit ? "buy-btn" : "sell-btn"}`}>
+                    {submitting ? "Processing…" : `${isDeposit ? "Deposit" : "Withdraw"} ${formatCurrency(value)}`}
                 </button>
             </form>
             {status && <p className={`mt-3 ${status.ok ? "text-success" : "text-danger"}`}>{status.message}</p>}
-            <p className="mock-note">Mock payments: no real money moves. Test card: 4242 4242 4242 4242, routing number: 011000015.</p>
+            <p className="mock-note">
+                Simulated transfers: no real money moves. Deposits with .01, .02 or .10 cents come back as returns (R01, R02, R10). <Link href="/transfers">Transfer history</Link>
+            </p>
         </div>
     );
 };

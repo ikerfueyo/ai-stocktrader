@@ -51,6 +51,7 @@ const pickActive = (request: NextRequest, rows: BrokerAccountRow[], accounts: Ac
 
 // The user's account by ID (404 when it isn't theirs)
 export const findUserAccount = async (userId: string, accountId: string): Promise<BrokerAccountRow> => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(accountId)) throw new HttpError("Account not found", 404);
     const { rows: [row] } = await pool.query<BrokerAccountRow>("SELECT * FROM broker_accounts WHERE user_id = $1 AND account_id = $2", [userId, accountId]);
     if (!row) throw new HttpError("Account not found", 404);
     return row;

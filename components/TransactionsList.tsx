@@ -14,7 +14,7 @@ const TABS: { tab: HistoryTab; label: string }[] = [{ tab: "orders", label: "Ord
 const STATUS_CLASSES: Record<OrderStatus, string> = { OPEN: "text-primary", FILLED: "text-success", CANCELLED: "text-muted", EXPIRED: "text-muted", REJECTED: "text-danger" };
 
 const FILL_LABELS: Record<FillPolicy, string> = { ASK: "at ask", BID: "at bid", SIM_ASK: "at ask (simulated)", SIM_BID: "at bid (simulated)", LAST: "at last price" };
-const CASH_LABELS: Record<CashActivityType, string> = { DEPOSIT: "Deposit", WITHDRAW: "Withdrawal", DIVIDEND_IN: "Dividend received", DIVIDEND_OUT: "Dividend paid (short)" };
+const CASH_LABELS: Record<CashActivityType, string> = { DEPOSIT: "Deposit", WITHDRAW: "Withdrawal", DIVIDEND_IN: "Dividend received", DIVIDEND_OUT: "Dividend paid (short)", FEE: "Fee" };
 const isCredit = (type: CashActivityType) => type === "DEPOSIT" || type === "DIVIDEND_IN";
 
 const formatDate = (date: string) => new Date(date).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
@@ -141,8 +141,9 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                     </div>
                 )
             ) : (
-                cash.length === 0 ? <p className="mt-3">No cash activity yet.</p> : (
+                cash.length === 0 ? <p className="mt-3">No cash activity yet. Transfers in progress are on the <Link href="/transfers">Transfers</Link> page.</p> : (
                     <div className="table-container mt-3">
+                        <p className="text-muted">Deposits post when they&apos;re credited (up to the instant limit at once, the rest when they settle) and withdrawals when they leave; transfers in progress are on the <Link href="/transfers">Transfers</Link> page.</p>
                         <table className="table text-center">
                             <thead className="thead-dark">
                                 <tr>

@@ -133,7 +133,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - Returns are simulated: test amounts trigger NACHA codes such as R01 (insufficient funds) and R10 (unauthorized), with a returned-ACH fee.
   - Each transfer posts `CSD`/`CSW` activities. `pending_transfer_out` comes off withdrawable cash right away.
 - **Outgoing wire withdrawals** carry the fee from the fee schedule. Incoming wires aren't offered, as in Alpaca's API.
-- **Instant funding** (optional and configurable): up to $1,000 of buying power right away, as a `MEM` activity that becomes a `CSD` once settled.
+- **Instant funding** (done, configurable): up to $1,000 credited right away. Alpaca's activity types have no `MEM`, so it's the Transfer's `instant_amount`, posted as a `CSD` at once and the rest as a `CSD` when the deposit settles.
 - **Limits are configurable** (`SIM_ACH_DAILY_LIMIT` and others), because Alpaca's production limits are set per partner. That still needs confirming.
 - **Withdrawable cash** = `cash_withdrawable`: settled cash, minus unsettled sale proceeds, pending withdrawals and margin requirements. Withdrawals are blocked while there's a margin call or `ACCOUNT_UPDATED` is pending.
 - UI: Transfers page with linked bank, transfer history with statuses, and cancel while queued.

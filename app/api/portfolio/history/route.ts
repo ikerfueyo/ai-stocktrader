@@ -4,9 +4,9 @@ import { withUser } from "@/lib/server/errors";
 import { fetchDailyCloses } from "@/lib/server/marketData";
 import { loadCorporateActions } from "@/lib/server/corporateActions";
 import { cumulativeReturns, equityHistory, rebase } from "@/lib/server/history";
-import { CASH_ACTIVITY_COLUMNS } from "@/lib/server/portfolio";
+import { loadCashActivity } from "@/lib/server/portfolio";
 import { addDays, easternParts, isTradingDay } from "@/lib/marketHours";
-import type { CashActivityRow, HistoryRange, PortfolioHistory, TransactionRow } from "@/lib/types";
+import type { HistoryRange, PortfolioHistory, TransactionRow } from "@/lib/types";
 
 const RANGES: HistoryRange[] = ["1W", "1M", "3M", "YTD", "1Y", "ALL"];
 const BENCHMARK = "SPY";
@@ -26,9 +26,9 @@ export const GET = withUser(async (request, context, userId) => {
     const requested = request.nextUrl.searchParams.get("range") as HistoryRange | null;
     const range: HistoryRange = requested && RANGES.includes(requested) ? requested : "1M";
     const label = "GET /api/portfolio/history";
-    const [{ rows: trades }, { rows: cash }] = await Promise.all([
+    const [{ rows: trades }, cash] = await Promise.all([
         pool.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 ORDER BY "date", id', [userId]),
-        pool.query<CashActivityRow>(`SELECT ${CASH_ACTIVITY_COLUMNS} FROM cash_activity WHERE user_id = $1 ORDER BY "date", id`, [userId])
+        loadCashActivity(userId)
     ]);
     const firstDates = [...trades, ...cash].map(({ date }) => easternParts(new Date(date)).dateKey).sort();
     if (firstDates.length === 0) {
@@ -57,6 +57,7 @@ export const GET = withUser(async (request, context, userId) => {
         cash: cash.map(({ date, type, amount }) => ({
             date,
             amount: (type === "DEPOSIT" || type === "DIVIDEND_IN" ? 1 : -1) * parseFloat(amount),
+            // Fees count against the return; deposits and withdrawals don't
             external: type === "DEPOSIT" || type === "WITHDRAW"
         })),
         splits, closes, dates

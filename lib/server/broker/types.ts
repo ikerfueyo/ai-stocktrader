@@ -58,6 +58,8 @@ export type Transfer = Schemas["Transfer"];
 export type CreateTransferRequest = Schemas["CreateTransferRequest"];
 export type TransferStatus = Schemas["TransferStatus"];
 export type TransferStatusEvent = Schemas["TransferStatusEvent"];
+export type Bank = Schemas["Bank"];
+export type CreateBankRequest = Schemas["CreateBankRequest"];
 
 // Documents
 export type AccountDocument = Schemas["AccountDocument"];

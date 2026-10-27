@@ -3,7 +3,7 @@
 // are interchangeable. Routes never compute balances or enforce trading rules themselves: the broker does, and rejects what it
 // doesn't allow with a BrokerError (./errors).
 import type {
-    ACHRelationship, Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, Activity,
+    ACHRelationship, Bank, CreateBankRequest, Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, Activity,
     Asset, CalendarDay, Clock, CreateACHRelationshipRequest, CreateOrderRequest, CreateTransferRequest, ListActivitiesQuery,
     ListAssetsQuery, ListDocumentsQuery, ListOrdersQuery, ListTransfersQuery, OptionContract, OptionsApprovalRequest, OptionsApprovalResponse, Order, OwnerDocumentUploadRequest,
     PortfolioHistory, PortfolioHistoryQuery, Position, TradeAccount, Transfer, UpdateOrderRequest
@@ -73,6 +73,10 @@ export interface Broker {
     createTransfer(accountId: string, request: CreateTransferRequest): Promise<Transfer>;
     listTransfers(accountId: string, query?: ListTransfersQuery): Promise<Transfer[]>;
     cancelTransfer(accountId: string, transferId: string): Promise<void>;
+    // Banks to wire money out to: /v1/accounts/{id}/recipient_banks (POST, GET, DELETE)
+    createRecipientBank(accountId: string, request: CreateBankRequest): Promise<Bank>;
+    listRecipientBanks(accountId: string): Promise<Bank[]>;
+    deleteRecipientBank(accountId: string, bankId: string): Promise<void>;
 
     // Documents: GET /v1/accounts/{id}/documents and /documents/{document_id}/download (a PDF, or HTML for the simulator's)
     listDocuments(accountId: string, query?: ListDocumentsQuery): Promise<AccountDocument[]>;

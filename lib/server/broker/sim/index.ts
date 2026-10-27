@@ -4,10 +4,12 @@ import { allAssets, findAsset } from "../../assets";
 import { BrokerError } from "../errors";
 import type { Broker, BrokerEvent, BrokerEventStream } from "../broker";
 import * as accounts from "./accounts";
+import * as transfers from "./transfers";
 import { toAsset, toCalendar, toClock } from "./shapes";
 
-// The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), assets, the
-// calendar and clock, and the event streams are implemented; the rest arrives phase by phase (docs/brokerage-roadmap.md) and
+// The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), funding
+// (./transfers.ts: bank links, recipient banks, transfers and the cash activities they post), assets, the calendar and clock, and the
+// event streams are implemented; the rest arrives phase by phase (docs/brokerage-roadmap.md) and
 // answers 501 until then, while the app still trades through the original mock ledger.
 const notYet = (what: string, phase: number) => (): never => {
     throw new BrokerError(501, 50100000, `${what} isn't simulated yet (phase ${phase} of the brokerage roadmap)`);
@@ -75,7 +77,6 @@ export class SimBroker implements Broker {
 
     getTradeAccount = notYet("The trading account", 3);
     getPortfolioHistory = notYet("Portfolio history", 3);
-    listActivities = notYet("Account activities", 3);
     createOrder = notYet("Orders", 4);
     listOrders = notYet("Orders", 4);
     getOrder = notYet("Orders", 4);
@@ -88,12 +89,17 @@ export class SimBroker implements Broker {
     closePosition = notYet("Positions", 4);
     exerciseOption = notYet("Options", 9);
     listOptionContracts = notYet("Options", 9);
-    createAchRelationship = notYet("Bank links", 2);
-    listAchRelationships = notYet("Bank links", 2);
-    deleteAchRelationship = notYet("Bank links", 2);
-    createTransfer = notYet("Transfers", 2);
-    listTransfers = notYet("Transfers", 2);
-    cancelTransfer = notYet("Transfers", 2);
+    createAchRelationship = transfers.createAchRelationship;
+    listAchRelationships = transfers.listAchRelationships;
+    deleteAchRelationship = transfers.deleteAchRelationship;
+    createRecipientBank = transfers.createRecipientBank;
+    listRecipientBanks = transfers.listRecipientBanks;
+    deleteRecipientBank = transfers.deleteRecipientBank;
+    createTransfer = transfers.createTransfer;
+    listTransfers = transfers.listTransfers;
+    cancelTransfer = transfers.cancelTransfer;
+    // Only non-trade activities (cash movements and fees) until fills join the ledger in Phase 3
+    listActivities = transfers.listActivities;
     listDocuments = notYet("Documents", 7);
     downloadDocument = notYet("Documents", 7);
 }

@@ -7,6 +7,7 @@ import { isMarketOpen } from "./market";
 import { loadCorporateActions } from "./corporateActions";
 import { computePositions, formatCurrency, planBuyIn, planDividends, roundCents, valueAccount } from "./account";
 import { easternTime } from "../marketHours";
+import { advanceTransfers, ledgerCash } from "./broker/sim/transfers";
 import type { CashActivityRow, FillPolicy, Position, TradeType, TransactionRow } from "../types";
 
 // The pool, or the client holding a user's account lock (withAccountLock)
@@ -30,26 +31,55 @@ export const getPositions = async (userId: string, ticker?: string, db: Db = poo
     return (await replay(rows)).positions;
 };
 
-// A user's trade history, the traded tickers' splits and dividends, open positions (split-adjusted), total cash (the trades'
-// cash ledger plus net cash activity: deposits and dividends received, less withdrawals and dividends paid on shorts), realized P&L
-// (in total and per transaction, by index) and net dividends. A client runs
-// its queries one at a time, so they're only parallel on the pool.
+// The user's brokerage account IDs (the simulator's ledger is per account; this mock ledger is still per user until Phase 3)
+const userAccountIds = async (userId: string, db: Db) =>
+    (await db.query<{ account_id: string }>("SELECT account_id FROM broker_accounts WHERE user_id = $1", [userId])).rows.map(({ account_id }) => account_id);
+
+// A user's trade history, the traded tickers' splits and dividends, open positions (split-adjusted), total cash, realized P&L (in
+// total and per transaction, by index) and net dividends. Total cash is the trades' cash ledger plus net cash activity: the
+// broker's cash activities (deposits, withdrawals and fees, ledgerCash, after advancing due transfers) and the dividends here,
+// less queued withdrawals (pendingTransferOut), which are held from the moment they're requested. unsettledInstant is deposit
+// credit given before its ACH settled: it can be traded with but not withdrawn. A client runs its queries one at a time, so they're
+// only parallel on the pool.
 export const getAccount = async (userId: string, db: Db = pool) => {
-    const [{ rows: transactions }, { rows: [{ net, dividends: netDividends }] }] = await Promise.all([
+    const [{ rows: transactions }, { rows: [{ dividends: netDividends }] }, accountIds] = await Promise.all([
         db.query<TransactionRow>('SELECT * FROM transactions WHERE user_id = $1 ORDER BY "date", id', [userId]),
-        db.query<{ net: string; dividends: string }>(
-            `SELECT COALESCE(SUM(CASE WHEN "type" IN ('DEPOSIT', 'DIVIDEND_IN') THEN amount ELSE -amount END), 0) AS net,
-                    COALESCE(SUM(CASE "type" WHEN 'DIVIDEND_IN' THEN amount WHEN 'DIVIDEND_OUT' THEN -amount ELSE 0 END), 0) AS dividends
+        db.query<{ dividends: string }>(
+            `SELECT COALESCE(SUM(CASE "type" WHEN 'DIVIDEND_IN' THEN amount WHEN 'DIVIDEND_OUT' THEN -amount ELSE 0 END), 0) AS dividends
              FROM cash_activity WHERE user_id = $1`,
             [userId]
-        )
+        ),
+        userAccountIds(userId, db)
     ]);
-    const netTransfers = parseFloat(net);
+    for (const accountId of accountIds) await advanceTransfers(accountId);
+    const ledger = await ledgerCash(accountIds);
+    const netTransfers = roundCents(parseFloat(netDividends) + ledger.cash - ledger.pendingOut);
     const { positions, cash, splits, dividends, unsynced, realizedPnl, realized } = await replay(transactions);
     return {
         transactions, splits, dividends, unsynced, netTransfers, positions, totalCash: roundCents(cash + netTransfers),
-        realizedPnl, realized, netDividends: parseFloat(netDividends)
+        realizedPnl, realized, netDividends: parseFloat(netDividends), pendingTransferOut: ledger.pendingOut, unsettledInstant: ledger.unsettledInstant
     };
+};
+
+// The user's cash ledger, oldest first: the broker's cash activities (CSD deposits, CSW withdrawals, FEE fees) and the mock ledger's
+// dividends, as CashActivityRows
+export const loadCashActivity = async (userId: string, db: Db = pool): Promise<CashActivityRow[]> => {
+    const accountIds = await userAccountIds(userId, db);
+    const [{ rows: dividends }, { rows: activities }] = await Promise.all([
+        db.query<CashActivityRow>(`SELECT ${CASH_ACTIVITY_COLUMNS} FROM cash_activity WHERE user_id = $1`, [userId]),
+        db.query<{ id: string; activity_type: string; created_at: Date; net_amount: string; description: string }>(
+            "SELECT id, activity_type, created_at, net_amount, description FROM sim_activities WHERE account_id = ANY($1) AND activity_type IN ('CSD', 'CSW', 'FEE')",
+            [accountIds]
+        )
+    ]);
+    const types: Record<string, CashActivityRow["type"]> = { CSD: "DEPOSIT", CSW: "WITHDRAW", FEE: "FEE" };
+    return [
+        ...dividends.map(row => ({ ...row, date: new Date(row.date).toISOString() })),
+        ...activities.map(row => ({
+            id: row.id, user_id: userId, date: row.created_at.toISOString(), type: types[row.activity_type], method: row.description,
+            amount: Math.abs(Number(row.net_amount)).toFixed(2), ticker: null, reference: null
+        }))
+    ].sort((a, b) => a.date.localeCompare(b.date) || String(a.id).localeCompare(String(b.id)));
 };
 
 // Runs fn in a database transaction on db, which must be a client (such as withAccountLock's)

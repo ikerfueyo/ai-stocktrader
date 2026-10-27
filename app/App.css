@@ -1357,3 +1357,50 @@ header a.header-pill.withdraw:hover {
   color: aqua;
   text-decoration: none;
 }
+
+/* The bank link and transfer history */
+.bank-link {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(52, 58, 64, 0.2);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.transfers-page {
+  max-width: 720px;
+}
+
+.transfers-table {
+  font-size: 14px;
+}
+
+.transfer-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: bold;
+  color: white;
+  background-color: #6c757d;
+}
+
+.transfer-status.approved,
+.transfer-status.complete {
+  background-color: #28a745;
+}
+
+.transfer-status.queued,
+.transfer-status.sent_to_clearing,
+.transfer-status.pending {
+  background-color: #fd7e14;
+}
+
+.transfer-status.rejected,
+.transfer-status.returned {
+  background-color: #dc3545;
+}

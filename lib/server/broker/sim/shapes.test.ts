@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { conformanceErrors } from "../conformance";
-import { assetId, toAccount, toAsset, toCalendar, toClock, toOptionsApproval, type SimAccountRow } from "./shapes";
+import { assetId, toAccount, toAchRelationship, toActivity, toAsset, toBank, toCalendar, toClock, toOptionsApproval, toTransfer, type SimAccountRow } from "./shapes";
 import { defaultConfigurations } from "./kyc";
 
 const row: SimAccountRow = {
@@ -66,5 +66,41 @@ describe("The simulator's replies conform to Alpaca's spec", () => {
     test("an options approval", () => {
         const approval = toOptionsApproval({ id: "0d18ae51-3c94-4511-b209-101e1666416b", account_id: row.id, requested_level: 3, approved_level: 2, status: "LOWER_LEVEL_APPROVED", created_at: row.created_at, updated_at: row.updated_at });
         assert.deepEqual(conformanceErrors(approval, "OptionsApprovalResponse"), []);
+    });
+
+    const created = new Date("2026-10-27T15:00:00Z");
+
+    test("a bank link and a wire recipient, with masked account numbers", () => {
+        const link = toAchRelationship({
+            id: "0d18ae51-3c94-4511-b209-101e1666416b", account_id: row.id, status: "APPROVED", reason: null, account_owner_name: "Test User",
+            bank_account_type: "CHECKING", bank_account_number: "••••6789", bank_routing_number: "011000015", nickname: null, created_at: created, updated_at: created
+        });
+        assert.deepEqual(conformanceErrors(link, "ACHRelationship"), []);
+        const bank = toBank({
+            id: "0d18ae51-3c94-4511-b209-101e1666416b", account_id: row.id, status: "APPROVED", name: "Test Bank", bank_code: "011000015",
+            bank_code_type: "ABA", account_number: "••••6789", created_at: created, updated_at: created
+        });
+        assert.deepEqual(conformanceErrors(bank, "Bank"), []);
+    });
+
+    test("a transfer, with its expected arrival", () => {
+        const transfer = toTransfer({
+            id: "0d18ae51-3c94-4511-b209-101e1666416b", account_id: row.id, type: "ach", direction: "INCOMING", status: "QUEUED", amount: "600.00",
+            instant_amount: "600.00", fee: "0.00", relationship_id: "6c1b2f0e-6a77-4d5e-9a3a-1f4b7f6d0a11", bank_id: null, reason: null,
+            sent_at: created, complete_at: new Date("2026-10-28T13:00:00Z"), return_at: null, return_code: null, created_at: created, updated_at: created
+        });
+        assert.deepEqual(conformanceErrors(transfer, "Transfer"), []);
+        assert.equal(transfer.amount, "600");
+        assert.equal(transfer.expires_at, "2026-10-28T13:00:00.000Z");
+    });
+
+    test("a cash activity (against NonTradeActivity: Alpaca's Activity schema is a oneOf of two schemas with no required fields, which nothing can match)", () => {
+        const activity = toActivity({
+            id: "20261027150000000::0d18ae51-3c94-4511-b209-101e1666416b", account_id: row.id, activity_type: "CSD", activity_sub_type: null,
+            date: "2026-10-27", created_at: created, net_amount: "600.00", description: "ACH deposit", status: "executed",
+            transfer_id: "0d18ae51-3c94-4511-b209-101e1666416b", symbol: null, qty: null, per_share_amount: null
+        });
+        assert.deepEqual(conformanceErrors(activity, "NonTradeActivity"), []);
+        assert.equal(activity.net_amount, "600");
     });
 });

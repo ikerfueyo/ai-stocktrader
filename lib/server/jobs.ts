@@ -10,6 +10,7 @@ import { syncAssets } from "./assets";
 import { syncCalendar } from "./calendar";
 import { isSlotDue } from "./schedule";
 import { advanceAccounts } from "./broker/sim/accounts";
+import { advanceTransfers, fastForwardTransfers } from "./broker/sim/transfers";
 
 // The background jobs, checked every ORDER_MATCH_INTERVAL_MS (default 30s). Each job is due on every check, or at daily Eastern
 // times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
@@ -21,8 +22,9 @@ const LABEL = "Background job";
 
 export interface Job {
     name: string;
-    // Daily Eastern times ("HH:MM") it runs at; without them it runs on every check
+    // Daily Eastern times ("HH:MM") it runs at; without them it runs on every check, unless it's manual (POST /api/dev/jobs only)
     slots?: string[];
+    manual?: boolean;
     leaderOnly: boolean;
     run: () => Promise<unknown>;
 }
@@ -83,6 +85,10 @@ export const JOBS: Job[] = [
     { name: "accounts", leaderOnly: true, run: updateAccounts },
     // The simulator's account reviews and options approvals that are due (reading an account advances it too)
     { name: "sim-accounts", leaderOnly: true, run: () => advanceAccounts() },
+    // The simulator's transfers that are due to clear, complete or come back (reading an account's transfers advances them too)
+    { name: "sim-transfers", leaderOnly: true, run: () => advanceTransfers() },
+    // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar
+    { name: "settle-transfers", leaderOnly: true, manual: true, run: () => fastForwardTransfers() },
     // Alpaca refreshes its asset flags 3 times a day, the last at 8:20 a.m. ET
     { name: "assets", slots: ["04:30", "08:30", "16:30"], leaderOnly: true, run: () => syncAssets(LABEL) },
     { name: "calendar", slots: ["03:00"], leaderOnly: false, run: () => syncCalendar(LABEL) }
@@ -112,7 +118,7 @@ const tick = async () => {
     state.running = true;
     try {
         const now = new Date();
-        const due = JOBS.filter(job => !job.slots || isSlotDue(job.slots, state.lastRuns.get(job.name) ?? null, now));
+        const due = JOBS.filter(job => !job.manual).filter(job => !job.slots || isSlotDue(job.slots, state.lastRuns.get(job.name) ?? null, now));
         const leader = due.some(job => job.leaderOnly) && await isLeader().catch(error => {
             console.error(`${LABEL}: ${error.message}`);
             return false;
