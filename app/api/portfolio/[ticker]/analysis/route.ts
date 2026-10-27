@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { UpstreamError, withUser, type TickerContext } from "@/lib/server/errors";
 import { analyzePosition } from "@/lib/server/analysis";
-import { fetchPrices } from "@/lib/server/alphaVantage";
+import { fetchPrices } from "@/lib/server/marketData";
 import { valueAccount } from "@/lib/server/account";
 import { getAccount } from "@/lib/server/portfolio";
 import type { PositionAnalysis } from "@/lib/types";

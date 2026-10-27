@@ -2,45 +2,9 @@
 // quarter being reported next and the fiscal years ahead with how they've been revised, and the next report date. Alpha Vantage
 // returns decades of each; this picks what matters over the analysis horizon. Pure, so it can be unit tested.
 
-// A reported quarter (Alpha Vantage EARNINGS), dates as "YYYY-MM-DD"
-export interface QuarterResult {
-    fiscalDateEnding: string;
-    reportedDate: string;
-    reportedEps: number;
-    estimatedEps: number | null;
-    // As a fraction of the estimate
-    surprise: number | null;
-}
+import type { EarningsSummary, EpsEstimate, NextReport, QuarterResult } from "../types";
 
-// A consensus EPS estimate (Alpha Vantage EARNINGS_ESTIMATES) with the averages it's been revised from
-export interface EpsEstimate {
-    fiscalDateEnding: string;
-    period: "quarter" | "year";
-    average: number;
-    analysts: number | null;
-    average30DaysAgo: number | null;
-    average90DaysAgo: number | null;
-    revisionsUp30Days: number | null;
-    revisionsDown30Days: number | null;
-}
-
-// The next scheduled report (Alpha Vantage EARNINGS_CALENDAR)
-export interface NextReport {
-    reportDate: string;
-    fiscalDateEnding: string | null;
-    // "pre-market" or "post-market"
-    timeOfDay: string | null;
-}
-
-export interface EarningsSummary {
-    // Newest first
-    recent: QuarterResult[];
-    // The quarter being reported next, then the fiscal years from the one it ends in
-    estimates: (EpsEstimate & { change30Days: number | null; change90Days: number | null })[];
-    next: (NextReport & { daysAway: number }) | null;
-    // Days since the newest reported quarter's report
-    daysSinceReport: number | null;
-}
+export type { EarningsSummary, EpsEstimate, NextReport, QuarterResult };
 
 export const RECENT_QUARTERS = 4;
 const FISCAL_YEARS = 2;

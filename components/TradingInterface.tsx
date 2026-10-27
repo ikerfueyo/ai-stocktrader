@@ -9,6 +9,8 @@ import AIAnalysis from "./AIAnalysis";
 import MarketStatusBadge from "./MarketStatusBadge";
 import OpenOrders from "./OpenOrders";
 import QuoteDetails from "./QuoteDetails";
+import EarningsDetails from "./EarningsDetails";
+import TickerNews from "./TickerNews";
 import WatchlistStar from "./WatchlistStar";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { MarketStatus } from "@/lib/marketHours";
@@ -92,13 +94,15 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
                                 <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
                             ) : null}
                             <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
-                            <QuoteDetails ticker={ticker.toUpperCase()} data={data} />
+                            <QuoteDetails ticker={ticker.toUpperCase()} data={data} quote={quote} />
+                            <EarningsDetails ticker={ticker.toUpperCase()} />
                             <CandlestickChart ticker={ticker.toUpperCase()} data={data} />
                         </Fragment>
                     )}
                 </div>
                 <div className="right-column">
                     <AIAnalysis ticker={ticker} />
+                    <TickerNews ticker={ticker.toUpperCase()} />
                 </div>
             </div>
         </Fragment>

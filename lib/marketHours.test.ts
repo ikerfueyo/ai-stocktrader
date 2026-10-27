@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { easternTime, isTradingDay, latestTradingDay, marketStatus, nextTradingDay, parseEasternTimestamp } from "./marketHours";
+import { easternTime, isTradingDay, latestTradingDay, marketStatus, nextTradingDay, parseEasternTimestamp, registerCalendar, sessionOn, settlementDate } from "./marketHours";
 
 const at = (dateKey: string, time: string) => marketStatus(easternTime(dateKey, time));
 
@@ -79,5 +79,56 @@ describe("marketStatus", () => {
     test("reports whether the year's holidays are known", () => {
         assert.equal(at("2026-10-21", "10:00").calendarKnown, true);
         assert.equal(at("2030-10-21", "10:00").calendarKnown, false);
+    });
+});
+
+describe("Extended hours", () => {
+    test("the pre-market runs from 4:00 a.m. and after-hours until 8:00 p.m.", () => {
+        assert.equal(at("2026-10-21", "03:59").session, "closed");
+        assert.equal(at("2026-10-21", "03:59").extendedOpen, false);
+        assert.equal(at("2026-10-21", "04:00").session, "pre-market");
+        assert.equal(at("2026-10-21", "04:00").extendedOpen, true);
+        assert.equal(at("2026-10-21", "10:00").extendedOpen, false, "the regular session isn't extended hours");
+        assert.equal(at("2026-10-21", "19:59").session, "after-hours");
+        assert.equal(at("2026-10-21", "20:00").session, "closed");
+        assert.equal(at("2026-10-21", "20:00").extendedOpen, false);
+    });
+
+    test("after an early close, after-hours ends at 5:00 p.m.", () => {
+        assert.equal(at("2026-11-27", "16:59").session, "after-hours");
+        assert.equal(at("2026-11-27", "17:00").session, "closed");
+    });
+
+    test("there are no extended sessions on holidays", () => {
+        assert.equal(at("2026-12-25", "05:00").extendedOpen, false);
+    });
+});
+
+describe("Alpaca's registered calendar", () => {
+    const day = (date: string, close = "16:00") => ({ date, open: "09:30", close, sessionOpen: "0400", sessionClose: close === "16:00" ? "2000" : "1700", settlementDate: "" });
+
+    test("takes precedence over the lists for the dates it covers", () => {
+        // Covers 2030-10-21 (a Monday) to 2030-10-23, with the 22nd closed (an unscheduled closure) and the 23rd closing early
+        registerCalendar({
+            days: [{ ...day("2030-10-21"), settlementDate: "2030-10-23" }, { ...day("2030-10-23", "13:00"), settlementDate: "2030-10-24" }],
+            from: "2030-10-21", to: "2030-10-23"
+        });
+        try {
+            assert.equal(isTradingDay("2030-10-21"), true);
+            assert.equal(isTradingDay("2030-10-22"), false, "missing from the calendar, so closed");
+            assert.equal(sessionOn("2030-10-23")!.earlyClose, true);
+            assert.equal(at("2030-10-23", "16:30").session, "after-hours");
+            assert.equal(at("2030-10-23", "17:00").session, "closed");
+            assert.equal(at("2030-10-21", "10:00").calendarKnown, true);
+            assert.equal(settlementDate("2030-10-21"), "2030-10-23", "its settlement date skips the closure");
+            assert.equal(isTradingDay("2030-10-24"), true, "outside the calendar, weekdays are trading days");
+        } finally {
+            registerCalendar(null);
+        }
+    });
+
+    test("trades settle the next trading day without it", () => {
+        assert.equal(settlementDate("2026-10-23"), "2026-10-26", "Friday to Monday");
+        assert.equal(settlementDate("2026-11-25"), "2026-11-27", "over Thanksgiving");
     });
 });

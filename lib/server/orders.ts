@@ -1,6 +1,6 @@
 import "server-only";
 import type { PoolClient } from "pg";
-import { fetchPrices } from "./alphaVantage";
+import { fetchPrices } from "./marketData";
 import { assessTrade, computePositions, reducesPosition } from "./account";
 import { evaluateOrder, reservedForOrders, toOpenOrder, type Evaluation, type OpenOrder } from "./orderMatching";
 import { getMarketStatus } from "./market";

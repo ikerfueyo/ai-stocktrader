@@ -2,10 +2,11 @@ import "server-only";
 import axios from "axios";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
+import { rateLimiter } from "./rateLimit";
 import { roundPrice, type Dividend, type Split } from "./account";
 import { easternParts, easternTime, marketStatus, parseEasternTimestamp, sessionOn } from "../marketHours";
 import type { EpsEstimate, NextReport, QuarterResult } from "./earnings";
-import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, Quote, QuoteDelay, SymbolMatch } from "../types";
+import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, MarketMovers, Mover, Quote, QuoteDelay, SymbolMatch } from "../types";
 
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
@@ -15,26 +16,8 @@ const REALTIME = { entitlement: "realtime" };
 
 // Alpha Vantage rejects more than 5 requests a second ("Burst pattern detected") and more than the plan's per-minute limit
 // (ALPHA_VANTAGE_REQUESTS_PER_MINUTE, default 150), so requests from every route start at least 300ms apart (at most 4 a second)
-// and at most that many in any minute, with a second's margin since Alpha Vantage counts them as they arrive. Each caller reserves
-// the next free slot synchronously, so parallel calls (one price per position) queue up in order.
-const ALPHA_VANTAGE_SPACING_MS = 300;
-const ALPHA_VANTAGE_REQUESTS_PER_MINUTE = Number(process.env.ALPHA_VANTAGE_REQUESTS_PER_MINUTE ?? 150);
-const RATE_WINDOW_MS = 61000;
-const alphaVantageSlots = singleton("alphaVantageSlots", () => ({ starts: [] as number[] }));
-const waitForAlphaVantageSlot = () => {
-    const now = Date.now();
-    const { starts } = alphaVantageSlots;
-    while (starts.length > 0 && starts[0] <= now - RATE_WINDOW_MS) starts.shift();
-    const last = starts.at(-1);
-    const windowFull = ALPHA_VANTAGE_REQUESTS_PER_MINUTE > 0 && starts.length >= ALPHA_VANTAGE_REQUESTS_PER_MINUTE;
-    const start = Math.max(
-        now,
-        last === undefined ? now : last + ALPHA_VANTAGE_SPACING_MS,
-        windowFull ? starts[starts.length - ALPHA_VANTAGE_REQUESTS_PER_MINUTE] + RATE_WINDOW_MS : now
-    );
-    starts.push(start);
-    return new Promise(resolve => setTimeout(resolve, start - now));
-};
+// and at most that many in any minute
+const waitForAlphaVantageSlot = rateLimiter("alphaVantage", 300, Number(process.env.ALPHA_VANTAGE_REQUESTS_PER_MINUTE ?? 150));
 
 // A premium endpoint the API key's plan doesn't include. Alpha Vantage still answers it, with artificial sample data and a
 // "message", so the reply must not be used.
@@ -108,6 +91,13 @@ export interface NewsItem {
     tickers: { ticker: string; relevance: number; sentiment: number }[];
 }
 
+// The companies an article is mainly about: its most relevant tickers. Analyst notes also tag the bank that wrote them
+// ("JPMorgan cuts target for Bunge" is BG 1.0, JPM 0.63), which this leaves out.
+export const mainTickers = (item: NewsItem) => {
+    const top = Math.max(...item.tickers.map(({ relevance }) => relevance));
+    return item.tickers.filter(({ relevance }) => relevance >= Math.max(MIN_NEWS_RELEVANCE, top - 0.1));
+};
+
 // The parts of a NEWS_SENTIMENT article used here; scores are strings
 interface NewsFeed {
     feed: {
@@ -136,14 +126,24 @@ export const fetchNews = async (params: Record<string, string | number> = {}): P
     }));
 };
 
-export const fetchTickerNews = async (ticker: string): Promise<NewsItem[]> => {
+// A NEWS_SENTIMENT publication time ("20261020T223723", in UTC: the newest articles would otherwise be hours in the future) as an
+// ISO timestamp (unchanged if it doesn't parse)
+export const parseNewsTime = (published: string): string => {
+    const date = new Date(published.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?.*$/, (_, y, mo, d, h, mi, sec = "00") => `${y}-${mo}-${d}T${h}:${mi}:${sec}Z`));
+    return Number.isNaN(date.getTime()) ? published : date.toISOString();
+};
+
+// A ticker's recent news (relevance at least MIN_NEWS_RELEVANCE), cached for 5 minutes per ticker, so the Trading page's news list
+// and a fresh analysis share one call; 404 when there's none
+const tickerNewsCache = singleton("tickerNewsCache", () => new Map<string, CacheEntry<NewsItem[]>>());
+export const fetchTickerNews = (ticker: string): Promise<NewsItem[]> => cachePromise(tickerNewsCache, ticker.toUpperCase(), 5 * 60000, async () => {
     const symbol = ticker.replaceAll(".", "-");
     const news = (await fetchNews({ tickers: symbol })).filter(item => item.tickers.some(({ ticker, relevance }) => ticker === symbol && relevance >= MIN_NEWS_RELEVANCE));
     if (news.length === 0) {
         throw new UpstreamError(`No recent news found for ${ticker}`, 404);
     }
     return news;
-};
+});
 
 // Daily closes by date for the performance history, cached for 12 hours per ticker and size (compact is about the last 100 sessions)
 const closesCache = singleton("dailyClosesCache", () => new Map<string, CacheEntry<Record<string, number>>>());
@@ -177,11 +177,19 @@ const simulatedSpread = (price: number): Pick<Quote, "bid" | "ask" | "spread"> =
 };
 
 interface BulkQuotes {
-    data: { symbol: string; timestamp: string; close: string; previous_close: string }[];
+    data: {
+        symbol: string; timestamp: string; open: string; high: string; low: string; close: string; volume: string; previous_close: string;
+        // Empty during the regular session
+        extended_hours_quote?: string;
+    }[];
 }
 interface BulkBidAsk {
     data: { symbol: string; timestamp: string; bid_price: string; ask_price: string }[];
 }
+const positiveOrNull = (value: string | undefined): number | null => {
+    const number = parseFloat(value ?? "");
+    return number > 0 ? number : null;
+};
 const realtimeParams = (tickers: string[]) => ({ symbol: tickers.join(","), datatype: "json", ...REALTIME });
 const bySymbol = <T extends { symbol: string }>(rows: T[]) => new Map(rows.map(row => [row.symbol.toUpperCase(), row]));
 
@@ -198,12 +206,15 @@ const dailyQuote = async (ticker: string): Promise<Quote> => {
     const live = latestDate === easternParts(now).dateKey && now.getTime() < closeTime.getTime();
     const delay: QuoteDelay = live ? "realtime" : "end-of-day";
     const quoteTime = live ? now : closeTime;
+    const bar = timeSeries[latestDate];
     return {
         ticker, price,
         previousClose: previousDate ? parseFloat(timeSeries[previousDate]["4. close"]) : null,
         ...simulatedSpread(price),
         quoteTime: quoteTime.toISOString(),
-        delay
+        delay,
+        open: parseFloat(bar["1. open"]), high: parseFloat(bar["2. high"]), low: parseFloat(bar["3. low"]), volume: parseFloat(bar["5. volume"]),
+        extendedHoursPrice: null
     };
 };
 
@@ -237,7 +248,9 @@ const loadQuotes = (tickers: string[]): Map<string, Promise<Quote>> => {
                     previousClose: parseFloat(row.previous_close) || null,
                     ...(bid > 0 && ask >= bid ? { bid, ask, spread: "quoted" as const } : simulatedSpread(price)),
                     quoteTime: parseEasternTimestamp(row.timestamp).toISOString(),
-                    delay: "realtime"
+                    delay: "realtime",
+                    open: positiveOrNull(row.open), high: positiveOrNull(row.high), low: positiveOrNull(row.low), volume: positiveOrNull(row.volume),
+                    extendedHoursPrice: positiveOrNull(row.extended_hours_quote)
                 };
             }, error => {
                 markUnavailable("REALTIME_BULK_QUOTES", error);
@@ -258,7 +271,9 @@ export const fetchQuotes = (tickers: string[]): Promise<Quote>[] => {
     return symbols.map(ticker => {
         if (PRICE_OVERRIDES[ticker] !== undefined) {
             const price = PRICE_OVERRIDES[ticker];
-            return Promise.resolve({ ticker, price, previousClose: null, bid: null, ask: null, spread: "none", quoteTime: new Date().toISOString(), delay: "realtime" });
+            return Promise.resolve({ ticker, price, previousClose: null, bid: null, ask: null, spread: "none", quoteTime: new Date().toISOString(), delay: "realtime",
+                open: null, high: null, low: null, volume: null, extendedHoursPrice: null
+            });
         }
         return cachePromise(quoteCache, ticker, QUOTE_CACHE_MS, () => loaded.get(ticker) ?? loadQuotes([ticker]).get(ticker)!).then(quote => {
             lastKnownPrices.set(ticker, quote.price);
@@ -445,18 +460,57 @@ export const fetchNextReport = (ticker: string) => cachePromise(nextReportCache,
     return row ? { reportDate: row.reportDate, fiscalDateEnding: isDate(row.fiscalDateEnding) ? row.fiscalDateEnding : null, timeOfDay: textOrNull(row.timeOfTheDay) } : null;
 });
 
-// The last month of 5-minute bars in the regular session (Alpha Vantage TIME_SERIES_INTRADAY, with the entitlement), newest last,
-// cached for 60s. Times are Eastern ("YYYY-MM-DD HH:MM:SS").
+// The last month of 5-minute bars, pre-market and after-hours included (Alpha Vantage TIME_SERIES_INTRADAY, with the
+// entitlement), newest last, cached for 60s. Times are Eastern ("YYYY-MM-DD HH:MM:SS").
 const intradayCache = singleton("intradayCache", () => new Map<string, CacheEntry<IntradayBar[]>>());
 export const fetchIntraday = (ticker: string) => cachePromise(intradayCache, ticker, 60000, async () => {
     const data = await fetchAlphaVantage<{ "Time Series (5min)": Record<string, DailyBar> }>({
-        function: "TIME_SERIES_INTRADAY", symbol: ticker, interval: "5min", outputsize: "full", extended_hours: "false",
+        function: "TIME_SERIES_INTRADAY", symbol: ticker, interval: "5min", outputsize: "full", extended_hours: "true",
         ...REALTIME
     }, "Time Series (5min)");
     return Object.entries(data["Time Series (5min)"]).sort(([a], [b]) => a.localeCompare(b)).map(([time, bar]) => ({
         time, open: parseFloat(bar["1. open"]), high: parseFloat(bar["2. high"]), low: parseFloat(bar["3. low"]), close: parseFloat(bar["4. close"]), volume: parseFloat(bar["5. volume"])
     }));
 });
+
+interface TopMoversReply {
+    last_updated?: string;
+    top_gainers: { ticker: string; price: string; change_amount: string; change_percentage: string; volume: string }[];
+    top_losers: TopMoversReply["top_gainers"];
+    most_actively_traded: TopMoversReply["top_gainers"];
+}
+// Today's top 20 gainers, losers and most traded tickers (Alpha Vantage TOP_GAINERS_LOSERS, realtime), cached for a minute. They
+// include warrants, units and ETFs; the route keeps the tradable stocks.
+const moversCache = singleton("topMoversCache", () => new Map<string, CacheEntry<MarketMovers>>());
+export const fetchTopMovers = () => cachePromise(moversCache, "movers", 60000, async (): Promise<MarketMovers> => {
+    const data = await fetchAlphaVantage<TopMoversReply>({ function: "TOP_GAINERS_LOSERS", ...REALTIME }, "top_gainers");
+    const toMovers = (rows: TopMoversReply["top_gainers"]): Mover[] => rows.map(row => ({
+        ticker: row.ticker,
+        price: parseFloat(row.price),
+        change: parseFloat(row.change_amount),
+        changePercent: parseFloat(row.change_percentage) / 100,
+        volume: parseFloat(row.volume)
+    })).filter(({ price, changePercent }) => Number.isFinite(price) && Number.isFinite(changePercent));
+    return {
+        gainers: toMovers(data.top_gainers),
+        losers: toMovers(data.top_losers ?? []),
+        mostActive: toMovers(data.most_actively_traded ?? []),
+        updatedAt: data.last_updated ? parseEasternTimestamp(data.last_updated).toISOString() : null
+    };
+});
+
+// An active U.S. listing (Alpha Vantage LISTING_STATUS, a CSV of every active stock and ETF), as of the latest trading day
+export interface Listing {
+    symbol: string;
+    name: string;
+    exchange: string;
+    assetType: string;
+}
+const listingCache = singleton("listingCache", () => new Map<string, CacheEntry<Listing[]>>());
+export const fetchListings = () => cachePromise(listingCache, "active", 6 * 3600000, async () =>
+    (await fetchAlphaVantageCsv({ function: "LISTING_STATUS", state: "active" }))
+        .filter(row => row.symbol)
+        .map(({ symbol, name, exchange, assetType }) => ({ symbol, name, exchange, assetType })));
 
 interface SymbolSearchReply {
     bestMatches: Record<string, string>[];

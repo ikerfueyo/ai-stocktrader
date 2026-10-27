@@ -4,15 +4,9 @@ import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
 import type { ApiError } from "../types";
 
-// Error reported to the client with the given status, such as 400 for a bad request
-export class HttpError extends Error {
-    status: number;
+import { HttpError } from "./httpError";
 
-    constructor(message: string, status: number) {
-        super(message);
-        this.status = status;
-    }
-}
+export { HttpError };
 
 // Error from a third-party API, reported to the client as 502
 export class UpstreamError extends HttpError {

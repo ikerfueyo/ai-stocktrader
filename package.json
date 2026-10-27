@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test lib/orders.test.ts lib/server/account.test.ts lib/server/orderMatching.test.ts lib/server/history.test.ts lib/server/technicals.test.ts lib/server/earnings.test.ts lib/server/trackRecord.test.ts lib/marketHours.test.ts"
+    "test": "node --import tsx --test lib/orders.test.ts lib/server/account.test.ts lib/server/orderMatching.test.ts lib/server/history.test.ts lib/server/technicals.test.ts lib/server/earnings.test.ts lib/server/trackRecord.test.ts lib/marketHours.test.ts lib/server/universe.test.ts lib/server/schedule.test.ts lib/server/broker/conformance.test.ts",
+    "gen:alpaca-types": "npx -y openapi-typescript@7 vendor/alpaca/broker-api.json -o lib/server/broker/generated/brokerApi.ts && npx -y openapi-typescript@7 vendor/alpaca/trading-api.json -o lib/server/marketData/generated/tradingApi.ts && npx -y openapi-typescript@7 vendor/alpaca/market-data-api.json -o lib/server/marketData/generated/marketDataApi.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.19",
@@ -21,7 +22,8 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-plotly.js": "^2.6.0",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "ulid": "^3.0.2"
   },
   "devDependencies": {
     "@types/node": "^22",
@@ -29,6 +31,8 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/react-plotly.js": "^2.6.4",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "autoprefixer": "^10.6.1",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",

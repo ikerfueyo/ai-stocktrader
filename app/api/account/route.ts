@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { withUser } from "@/lib/server/errors";
-import { fetchPrices } from "@/lib/server/alphaVantage";
+import { fetchPrices } from "@/lib/server/marketData";
 import { valueAccount } from "@/lib/server/account";
 import { getAccount, withAccountLock } from "@/lib/server/portfolio";
 import { updateAccount } from "@/lib/server/upkeep";

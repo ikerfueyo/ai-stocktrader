@@ -1,14 +1,15 @@
 import "server-only";
+import { filterTradable } from "./assets";
 import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { UpstreamError } from "./errors";
 import pool from "./db";
-import { fetchCompanyOverview, fetchDailyCloses, fetchEarnings, fetchEarningsEstimates, fetchNews, fetchNextReport, fetchTickerNews, MIN_NEWS_RELEVANCE, type NewsItem } from "./alphaVantage";
+import { fetchCompanyOverview, fetchDailyCloses, fetchEarnings, fetchEarningsEstimates, fetchNews, fetchNextReport, fetchTickerNews, mainTickers, parseNewsTime, type NewsItem } from "./marketData";
 import { adjustForSplits, computeTechnicals, type Technicals } from "./technicals";
 import { loadCorporateActions } from "./corporateActions";
 import { summarizeEarnings, type EarningsSummary } from "./earnings";
-import { easternParts, parseEasternTimestamp } from "../marketHours";
+import { easternParts } from "../marketHours";
 import type { AnalysisDetails, AnalysisSource, CompanyOverview, PositionAnalysis, PositionVerdict, Rankings, TickerAnalysis, TickerVerdict } from "../types";
 
 const MODEL = "gpt-6-luna";
@@ -16,12 +17,6 @@ const MODEL = "gpt-6-luna";
 export const PROMPT_VERSION = 3;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 1 });
 
-// The companies an article is mainly about: its most relevant tickers. Analyst notes also tag the bank that wrote them
-// ("JPMorgan cuts target for Bunge" is BG 1.0, JPM 0.63), which this leaves out.
-const mainTickers = (item: NewsItem) => {
-    const top = Math.max(...item.tickers.map(({ relevance }) => relevance));
-    return item.tickers.filter(({ relevance }) => relevance >= Math.max(MIN_NEWS_RELEVANCE, top - 0.1));
-};
 
 // "20261020T223723" -> "2026-10-20 22:37"
 const formatPublished = (published = "") => published.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2}).*$/, "$1-$2-$3 $4:$5");
@@ -86,10 +81,6 @@ interface CachedTickerAnalysis extends TickerAnalysis {
     inputs: AnalysisInputs;
 }
 
-const publishedIso = (published: string) => {
-    const date = parseEasternTimestamp(formatPublished(published));
-    return Number.isNaN(date.getTime()) ? published : date.toISOString();
-};
 const percent = (fraction: number | null) => fraction === null ? "n/a" : `${fraction >= 0 ? "+" : ""}${(fraction * 100).toFixed(1)}%`;
 const figure = (value: number | null, digits = 2) => value === null ? "n/a" : value.toLocaleString("en-US", { maximumFractionDigits: digits });
 const eps = (value: number | null) => value === null ? "n/a" : `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
@@ -184,9 +175,9 @@ const toDetails = (parsed: Record<string, unknown>, inputs: AnalysisInputs): Ana
     const numbers = [...new Set((Array.isArray(parsed.sources) ? parsed.sources : []).map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= inputs.news.length))];
     const sources: AnalysisSource[] = numbers.slice(0, 6).map(n => {
         const { title, url, published } = inputs.news[n - 1];
-        return { title, url, published: publishedIso(published) };
+        return { title, url, published: parseNewsTime(published) };
     });
-    const dates = [inputs.news[0] && publishedIso(inputs.news[0].published), inputs.technicals && `${inputs.technicals.asOf}T20:00:00.000Z`].filter((date): date is string => Boolean(date)).sort();
+    const dates = [inputs.news[0] && parseNewsTime(inputs.news[0].published), inputs.technicals && `${inputs.technicals.asOf}T20:00:00.000Z`].filter((date): date is string => Boolean(date)).sort();
     return {
         horizon: HORIZON,
         evidence: toList(parsed.evidence), counterarguments: toList(parsed.counterarguments), risks: toList(parsed.risks), catalysts: toList(parsed.catalysts),
@@ -332,6 +323,9 @@ const buildRankings = async (): Promise<Rankings> => {
             newsByTicker.set(ticker, stock);
         }
     }
+    // Only stocks that can be traded here (no ETFs, funds or OTC listings) are ranked
+    const tradable = new Set(await filterTradable([...newsByTicker.keys()]));
+    for (const ticker of newsByTicker.keys()) if (!tradable.has(ticker)) newsByTicker.delete(ticker);
     // Strength grows with the average sentiment and, more slowly, with the number of articles agreeing with it
     const stockStrength = ({ articles, sentimentSum }: StockNews) => sentimentSum / Math.sqrt(articles.length);
     const averageSentiment = ({ articles, sentimentSum }: StockNews) => sentimentSum / articles.length;

@@ -2,7 +2,7 @@ import "server-only";
 import type { Pool, PoolClient } from "pg";
 import pool from "./db";
 import { singleton } from "./cache";
-import { fetchPrices } from "./alphaVantage";
+import { fetchPrices } from "./marketData";
 import { isMarketOpen } from "./market";
 import { loadCorporateActions } from "./corporateActions";
 import { computePositions, formatCurrency, planBuyIn, planDividends, roundCents, valueAccount } from "./account";

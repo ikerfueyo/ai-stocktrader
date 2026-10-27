@@ -1,6 +1,6 @@
 import "server-only";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
-import { fetchUsMarketOpen } from "./alphaVantage";
+import { fetchUsMarketOpen } from "./marketData";
 import { marketStatus, type MarketStatus } from "../marketHours";
 
 // For local testing only: MARKET_HOURS_OVERRIDE=open|closed forces the market status
@@ -15,14 +15,14 @@ export const getMarketStatus = async (): Promise<MarketStatus> => {
     const status = marketStatus();
     if (MARKET_HOURS_OVERRIDE === "open" || MARKET_HOURS_OVERRIDE === "closed") {
         const open = MARKET_HOURS_OVERRIDE === "open";
-        return { ...status, open, session: open ? "regular" : "closed", nextClose: open ? status.nextClose : null };
+        return { ...status, open, session: open ? "regular" : "closed", extendedOpen: false, extendedClose: null, nextClose: open ? status.nextClose : null };
     }
     if (!status.open) return status;
     const reportedOpen = await cachePromise(statusCache, "us", 60000, fetchUsMarketOpen).catch(error => {
         console.error(`Market status: ${error.message}; using the NYSE calendar`);
         return true;
     });
-    return reportedOpen ? status : { ...status, open: false, session: "closed", nextClose: null };
+    return reportedOpen ? status : { ...status, open: false, session: "closed", extendedOpen: false, extendedClose: null, nextClose: null };
 };
 
 export const isMarketOpen = async (): Promise<boolean> => (await getMarketStatus()).open;

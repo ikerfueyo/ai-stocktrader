@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { requireTradableStock } from "@/lib/server/assets";
 import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
-import { fetchQuotes } from "@/lib/server/alphaVantage";
+import { fetchQuotes } from "@/lib/server/marketData";
 import { peekTickerVerdict } from "@/lib/server/analysis";
 import type { WatchlistItem } from "@/lib/types";
 
@@ -34,6 +35,7 @@ export const POST = withUser(async (request, context, userId) => {
     const body = await request.json().catch(() => null) as { ticker?: unknown } | null;
     const ticker = String(body?.ticker ?? "").toUpperCase();
     if (!TICKER.test(ticker)) throw new HttpError("A valid ticker is required", 400);
+    await requireTradableStock(ticker);
     // Inserted only while the list has room; a ticker already on it counts as watched either way
     const { rows: [{ watched }] } = await pool.query<{ watched: boolean }>(
         `WITH added AS (

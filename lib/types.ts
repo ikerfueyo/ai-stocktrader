@@ -69,6 +69,29 @@ export interface Quote {
     // ISO timestamp of the price
     quoteTime: string;
     delay: QuoteDelay;
+    // The regular session so far (null when the quote came from the daily series fallback or an override)
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    volume: number | null;
+    // The latest pre-market or after-hours price, while there's one (Alpha Vantage's extended_hours_quote)
+    extendedHoursPrice: number | null;
+    // Alpaca's top of book with sizes (GET /api/quote/[ticker] only): the IEX exchange's on the free plan (ALPACA_DATA_FEED=iex),
+    // the national best with sip. null without Alpaca keys or a current quote.
+    book?: QuoteBook | null;
+}
+
+export interface QuoteBook {
+    feed: "iex" | "sip";
+    bid: number;
+    bidSize: number;
+    ask: number;
+    askSize: number;
+    // The latest trade on that feed
+    lastPrice: number | null;
+    lastSize: number | null;
+    // ISO timestamp of the quote
+    time: string;
 }
 
 export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT";
@@ -174,6 +197,80 @@ export interface CompanyOverview {
     // Analysts' consensus target price and how many rate the stock each way (null when none are listed)
     analystTargetPrice: number | null;
     analystRatings: { strongBuy: number; buy: number; hold: number; sell: number; strongSell: number } | null;
+}
+
+// A reported quarter (Alpha Vantage EARNINGS), dates as "YYYY-MM-DD"
+export interface QuarterResult {
+    fiscalDateEnding: string;
+    reportedDate: string;
+    reportedEps: number;
+    estimatedEps: number | null;
+    // As a fraction of the estimate
+    surprise: number | null;
+}
+
+// A consensus EPS estimate (Alpha Vantage EARNINGS_ESTIMATES) with the averages it's been revised from
+export interface EpsEstimate {
+    fiscalDateEnding: string;
+    period: "quarter" | "year";
+    average: number;
+    analysts: number | null;
+    average30DaysAgo: number | null;
+    average90DaysAgo: number | null;
+    revisionsUp30Days: number | null;
+    revisionsDown30Days: number | null;
+}
+
+// The next scheduled report (Alpha Vantage EARNINGS_CALENDAR)
+export interface NextReport {
+    reportDate: string;
+    fiscalDateEnding: string | null;
+    // "pre-market" or "post-market"
+    timeOfDay: string | null;
+}
+
+export interface EarningsSummary {
+    // Newest first
+    recent: QuarterResult[];
+    // The quarter being reported next, then the fiscal years from the one it ends in
+    estimates: (EpsEstimate & { change30Days: number | null; change90Days: number | null })[];
+    next: (NextReport & { daysAway: number }) | null;
+    // Days since the newest reported quarter's report
+    daysSinceReport: number | null;
+}
+
+// GET /api/quote/[ticker]/earnings: the latest reported quarters against their estimates, the consensus estimates ahead and the
+// next report date (the same summary the AI analysis gets)
+export type EarningsResponse = EarningsSummary;
+
+// GET /api/news/[ticker]: an article mainly about the ticker, newest first, with Alpha Vantage's sentiment for it (-1 bearish to 1
+// bullish) and its relevance to the ticker (0 to 1)
+export interface TickerNewsItem {
+    title: string;
+    url: string | null;
+    summary: string;
+    // ISO timestamp
+    published: string;
+    sentiment: number;
+    relevance: number;
+}
+
+// GET /api/market/movers: today's biggest gainers and losers and the most traded stocks, tradable stocks only (Alpha Vantage
+// TOP_GAINERS_LOSERS, which also lists warrants and ETFs)
+export interface Mover {
+    ticker: string;
+    price: number;
+    change: number;
+    // As a fraction (0.05 = 5%)
+    changePercent: number;
+    volume: number;
+}
+export interface MarketMovers {
+    gainers: Mover[];
+    losers: Mover[];
+    mostActive: Mover[];
+    // ISO timestamp
+    updatedAt: string | null;
 }
 
 // GET /api/trading/[ticker]/intraday: a 5-minute bar; time is Eastern, "YYYY-MM-DD HH:MM:SS"

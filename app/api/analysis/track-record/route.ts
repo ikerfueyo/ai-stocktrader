@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { withUser } from "@/lib/server/errors";
-import { fetchDailyCloses } from "@/lib/server/alphaVantage";
+import { fetchDailyCloses } from "@/lib/server/marketData";
 import { loadCorporateActions } from "@/lib/server/corporateActions";
 import { cachePromise, singleton, type CacheEntry } from "@/lib/server/cache";
 import { scoreVerdicts, type LoggedVerdict } from "@/lib/server/trackRecord";

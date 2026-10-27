@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { withUser } from "@/lib/server/errors";
-import { fetchQuotes } from "@/lib/server/alphaVantage";
+import { fetchQuotes } from "@/lib/server/marketData";
 import { getPositions, withAccountLock } from "@/lib/server/portfolio";
 import { updateAccount } from "@/lib/server/upkeep";
 import type { PortfolioPosition } from "@/lib/types";

@@ -898,6 +898,11 @@ header a.header-pill.withdraw:hover {
   background-color: #28a745;
 }
 
+/* Pre-market and after-hours: extended-hours trading only */
+.market-status.extended .market-status-dot {
+  background-color: #fd7e14;
+}
+
 .quote-details {
   text-align: center;
   color: gray;
@@ -1185,4 +1190,68 @@ header a.header-pill.withdraw:hover {
 
 .portfolio-analysis-row .analysis-box p.analysis-freshness {
   margin-top: 10px;
+}
+
+.panel-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: #343a40;
+  margin: 20px 0 8px;
+}
+
+.earnings-next {
+  color: #495057;
+  font-size: 14px;
+}
+
+.earnings-details table {
+  font-size: 13px;
+}
+
+.ticker-news ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font-size: 14px;
+}
+
+.ticker-news li {
+  border-top: 1px solid rgba(52, 58, 64, 0.15);
+  padding: 6px 0;
+}
+
+.ticker-news a {
+  color: #00585a;
+}
+
+.ticker-news-meta {
+  color: gray;
+  font-size: 12px;
+}
+
+.sentiment.bullish {
+  color: #28a745;
+}
+
+.sentiment.bearish {
+  color: #dc3545;
+}
+
+.market-movers {
+  max-width: 900px;
+  margin: 30px auto 0;
+}
+
+.movers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0 24px;
+}
+
+.movers-title {
+  font-size: 15px;
+  font-weight: bold;
+  color: #495057;
+  text-align: center;
 }

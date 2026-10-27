@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
+import type { Shape } from "plotly.js";
 import type { DailyBar, IntradayBar } from "@/lib/types";
 
 // Plotly needs the browser's window, so the chart only renders on the client
@@ -51,10 +52,17 @@ const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: Reco
     }
 
     let candles: Candles | null = null;
+    // Each day's pre-market and after-hours stretches, shaded behind the 5-minute candles
+    let extendedShading: Partial<Shape>[] = [];
     if (sessions) {
         const bars = intraday?.ticker === ticker && intraday.range === range ? intraday.bars : null;
         if (bars) {
             candles = { x: bars.map(({ time }) => time), open: bars.map(bar => bar.open), high: bars.map(bar => bar.high), low: bars.map(bar => bar.low), close: bars.map(bar => bar.close) };
+            const days = [...new Set(bars.map(({ time }) => time.slice(0, 10)))];
+            const shade = (x0: string, x1: string): Partial<Shape> => ({
+                type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0, y1: 1, fillcolor: "#6c757d", opacity: 0.08, line: { width: 0 }, layer: "below"
+            });
+            extendedShading = days.flatMap(day => [shade(`${day} 04:00:00`, `${day} 09:30:00`), shade(`${day} 16:00:00`, `${day} 20:00:00`)]);
         }
     } else {
         const dates = Object.keys(data).sort();
@@ -90,9 +98,10 @@ const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: Reco
                         margin: { t: 10, r: 10, b: 40, l: 50 },
                         xaxis: {
                             rangeslider: { visible: false },
-                            // Skip weekends, and nights for 5-minute bars, so the candles don't have gaps
-                            rangebreaks: sessions ? [{ bounds: ["sat", "mon"] }, { bounds: [16, 9.5], pattern: "hour" }] : [{ bounds: ["sat", "mon"] }]
+                            // Skip weekends, and nights (8:00 p.m. to 4:00 a.m.) for 5-minute bars, so the candles don't have gaps
+                            rangebreaks: sessions ? [{ bounds: ["sat", "mon"] }, { bounds: [20, 4], pattern: "hour" }] : [{ bounds: ["sat", "mon"] }]
                         },
+                        shapes: extendedShading,
                         yaxis: { title: { text: "Price (USD)" } }
                     }}
                     config={{ displayModeBar: false, responsive: true }}

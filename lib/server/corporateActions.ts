@@ -1,7 +1,7 @@
 import "server-only";
 import pool from "./db";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
-import { fetchCorporateActions } from "./alphaVantage";
+import { fetchCorporateActions } from "./marketData";
 import type { Dividend, Split } from "./account";
 
 // Splits and dividends are stored in Postgres (corporate_actions, shared by all users), fetched from Alpha Vantage once per ticker and

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { withUser } from "@/lib/server/errors";
-import { fetchDailyCloses } from "@/lib/server/alphaVantage";
+import { fetchDailyCloses } from "@/lib/server/marketData";
 import { loadCorporateActions } from "@/lib/server/corporateActions";
 import { cumulativeReturns, equityHistory, rebase } from "@/lib/server/history";
 import { CASH_ACTIVITY_COLUMNS } from "@/lib/server/portfolio";

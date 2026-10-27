@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { logError } from "@/lib/apiError";
 import { formatPrice } from "@/lib/orders";
-import type { CompanyOverview, DailyBar } from "@/lib/types";
+import type { CompanyOverview, DailyBar, Quote } from "@/lib/types";
 
 // 4954723975000 -> "$4.95T"
 const formatLarge = (value: number) => {
@@ -14,9 +14,9 @@ const formatLarge = (value: number) => {
 };
 const titleCase = (text: string) => text.toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
 
-// Day range and volume (the newest daily bar), the 52-week range (the last 252 bars), and, from the company overview (funds have
-// none), the company's name, listing, sector and key figures
-const QuoteDetails = ({ ticker, data }: { ticker: string; data: Record<string, DailyBar> | null }) => {
+// Day range and volume (the live quote's, else the newest daily bar's), the 52-week range (the last 252 bars), and, from the company
+// overview, the company's name, listing, sector, key figures and analysts' consensus
+const QuoteDetails = ({ ticker, data, quote = null }: { ticker: string; data: Record<string, DailyBar> | null; quote?: Quote | null }) => {
     const [overview, setOverview] = useState<CompanyOverview | null>(null);
 
     useEffect(() => {
@@ -39,16 +39,26 @@ const QuoteDetails = ({ ticker, data }: { ticker: string; data: Record<string, D
     const yearHigh = year.length > 0 ? Math.max(...year.map(bar => parseFloat(bar["2. high"]))) : null;
     const yearLow = year.length > 0 ? Math.min(...year.map(bar => parseFloat(bar["3. low"]))) : null;
 
+    const ratings = overview?.analystRatings;
+    const ratingCount = ratings ? ratings.strongBuy + ratings.buy + ratings.hold + ratings.sell + ratings.strongSell : 0;
+    const dayLow = quote?.low ?? (latest ? parseFloat(latest["3. low"]) : null);
+    const dayHigh = quote?.high ?? (latest ? parseFloat(latest["2. high"]) : null);
+    const volume = quote?.volume ?? (latest ? parseFloat(latest["5. volume"]) : null);
     const stats: [string, string | null][] = [
-        ["Day range", latest ? `${formatPrice(latest["3. low"])} – ${formatPrice(latest["2. high"])}` : null],
+        ["Open", quote?.open ? formatPrice(quote.open) : null],
+        ["Day range", dayLow !== null && dayHigh !== null ? `${formatPrice(dayLow)} – ${formatPrice(dayHigh)}` : null],
         ["52-week range", yearLow !== null && yearHigh !== null ? `${formatPrice(yearLow)} – ${formatPrice(yearHigh)}` : null],
-        ["Volume", latest ? formatLarge(parseFloat(latest["5. volume"])) : null],
+        ["Volume", volume !== null ? formatLarge(volume) : null],
         ["Market cap", overview?.marketCap ? `$${formatLarge(overview.marketCap)}` : null],
         ["P/E", overview?.peRatio ? overview.peRatio.toFixed(2) : null],
         ["Forward P/E", overview?.forwardPe ? overview.forwardPe.toFixed(2) : null],
         ["Dividend yield", overview?.dividendYield ? `${(overview.dividendYield * 100).toFixed(2)}%` : null],
         ["Ex-dividend", overview?.exDividendDate ?? null],
-        ["Beta", overview?.beta ? overview.beta.toFixed(2) : null]
+        ["Beta", overview?.beta ? overview.beta.toFixed(2) : null],
+        ["Analyst target", overview?.analystTargetPrice ? formatPrice(overview.analystTargetPrice) : null],
+        ["Analyst ratings", ratings && ratingCount > 0
+            ? `${ratings.strongBuy + ratings.buy} buy · ${ratings.hold} hold · ${ratings.sell + ratings.strongSell} sell`
+            : null]
     ];
 
     return (

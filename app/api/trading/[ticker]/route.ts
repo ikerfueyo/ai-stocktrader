@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { requireTradableStock } from "@/lib/server/assets";
 import { HttpError, UpstreamError, withUser, type TickerContext } from "@/lib/server/errors";
-import { fetchDailySeries, fetchPrices, fetchQuote, isForeignListing, isStaleQuote } from "@/lib/server/alphaVantage";
+import { fetchDailySeries, fetchPrices, fetchQuote, isForeignListing, isStaleQuote } from "@/lib/server/marketData";
 import { assessTrade, computePositions, fillPrice, reducesPosition } from "@/lib/server/account";
 import { getMarketStatus } from "@/lib/server/market";
 import { enforceCollateral, getAccount, insertTrade, shortTickers, withAccountLock } from "@/lib/server/portfolio";
@@ -8,9 +9,10 @@ import { dayOrderExpiry, getOpenOrders, reservedCashFor } from "@/lib/server/ord
 import { toOrder } from "@/lib/orders";
 import type { OrderRow, TradeRequest, TradeResponse } from "@/lib/types";
 
-// Get stock data (Alpha Vantage API)
+// Get a tradable stock's daily series (Alpha Vantage API); 404 for a ticker outside the universe, such as an ETF
 export const GET = withUser(async (request, { params }: TickerContext) => {
     const ticker = (await params).ticker.toUpperCase();
+    await requireTradableStock(ticker);
     return NextResponse.json(await fetchDailySeries(ticker, "full"));
 });
 
@@ -37,6 +39,7 @@ export const POST = withUser(async (request, { params }: TickerContext, userId) 
     if (isForeignListing(ticker)) {
         throw new HttpError("Only U.S. listings can be traded", 400);
     }
+    await requireTradableStock(ticker);
     if (isPositive(requestedShares) === isPositive(amount)) {
         throw new HttpError("An order needs either a positive number of shares or a positive dollar amount", 400);
     }

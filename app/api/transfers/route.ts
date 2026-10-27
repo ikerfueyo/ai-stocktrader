@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
-import { fetchPrices } from "@/lib/server/alphaVantage";
+import { fetchPrices } from "@/lib/server/marketData";
 import { assessWithdrawal, roundCents } from "@/lib/server/account";
 import { CASH_ACTIVITY_COLUMNS, getAccount, shortTickers, withAccountLock, type Db } from "@/lib/server/portfolio";
 import { getOpenOrders, reservedCashFor } from "@/lib/server/orders";
