@@ -146,7 +146,7 @@ export interface SimActivityRow {
     description: string; status: string; transfer_id: string | null; symbol: string | null; qty: string | null; per_share_amount: string | null;
     // A FILL's fields
     side?: "buy" | "sell" | null; price?: string | null; leaves_qty?: string | null; cum_qty?: string | null; realized_pl?: string | null;
-    settle_date?: string | null; reason?: string | null; quote_time?: Date | null; fill_policy?: string | null; legacy_order_id?: number | null;
+    settle_date?: string | null; reason?: string | null; quote_time?: Date | null; fill_policy?: string | null;
     order_id?: string | null;
 }
 

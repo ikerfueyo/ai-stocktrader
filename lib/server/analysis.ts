@@ -14,12 +14,17 @@ import type { AnalysisDetails, AnalysisSource, CompanyOverview, PositionAnalysis
 
 const MODEL = "gpt-6-luna";
 // Logged with each verdict (verdict_log), so the track record compares prompts and inputs. Bump it when either changes.
-export const PROMPT_VERSION = 3;
+export const PROMPT_VERSION = 4;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 1 });
 
 
-// "20261020T223723" -> "2026-10-20 22:37"
-const formatPublished = (published = "") => published.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2}).*$/, "$1-$2-$3 $4:$5");
+// Alpha Vantage's UTC "20261020T223723" -> "2026-10-20 18:37 ET", the time zone of the daily closes the prompt compares it with
+const formatPublished = (published = "") => {
+    const date = new Date(parseNewsTime(published));
+    if (Number.isNaN(date.getTime())) return published;
+    const { dateKey, time } = easternParts(date);
+    return `${dateKey} ${time} ET`;
+};
 
 const formatNews = (news: NewsItem[]) => news.map(item => `Published: ${formatPublished(item.published)}\nTitle: ${item.title}\nSummary: ${item.summary}`).join("\n\n");
 

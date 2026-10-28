@@ -228,7 +228,6 @@ export interface FillRequest {
     lotPrice?: number;
     quoteTime?: string | null;
     fillPolicy?: string;
-    legacyOrderId?: number;
     // The order it fills, with its shares filled so far and still to fill after this fill (the order engine emits its trade event)
     orderId?: string;
     cumQty?: number;
@@ -263,12 +262,12 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     const description = `${verb} ${what} at $${fill.price}${why}`;
     const { rows: [row] } = await db.query<SimActivityRow>(
         `INSERT INTO sim_activities (id, account_id, activity_type, "date", created_at, net_amount, description, symbol, qty, side, price, leaves_qty, cum_qty,
-                                     realized_pl, settle_date, reason, quote_time, fill_policy, legacy_order_id, order_id)
-         VALUES ($1, $2, 'FILL', $3, $4, $5, $6, $7, $8, $9, $10, $17, $18, $11, $12, $13, $14, $15, $16, $19)
+                                     realized_pl, settle_date, reason, quote_time, fill_policy, order_id)
+         VALUES ($1, $2, 'FILL', $3, $4, $5, $6, $7, $8, $9, $10, $16, $17, $11, $12, $13, $14, $15, $18)
          RETURNING *, "date"::text AS "date", settle_date::text AS settle_date`,
         [activityId(at), accountId, day, at, (fill.side === "sell" ? fill.total : -fill.total).toFixed(2), description, symbol, fill.qty, fill.side, fill.price,
             closings.length > 0 ? roundCents(realized).toFixed(2) : null, settlementDate(day), fill.reason ?? null, fill.quoteTime ?? null, fill.fillPolicy ?? null,
-            fill.legacyOrderId ?? null, fill.leavesQty ?? 0, fill.cumQty ?? fill.qty, fill.orderId ?? null]
+            fill.leavesQty ?? 0, fill.cumQty ?? fill.qty, fill.orderId ?? null]
     );
     for (const closing of closings) {
         const lot = lots.find(({ id }) => id === closing.lotId)!;

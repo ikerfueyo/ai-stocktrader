@@ -29,10 +29,8 @@ export interface TransactionRow {
     // The time of the quote the trade filled against, and which side of it (NULL for trades from before fills were server-set)
     quote_time: string | null;
     fill_policy: FillPolicy | null;
-    // The order this trade filled (the broker's order ID), or NULL for a buy-in or a fill from before Phase 4 (legacy_order_id: the
-    // app's mock order it filled)
+    // The order this trade filled (the broker's order ID), or NULL for a buy-in
     order_id: string | null;
-    legacy_order_id?: number | null;
 }
 
 // Which price a trade filled at: the quoted ask (buys) or bid (sells), a simulated spread around the last price when there's no
@@ -85,7 +83,7 @@ export interface QuoteBook {
 export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE" | "INTEREST" | "CORPORATE_ACTION_IN" | "CORPORATE_ACTION_OUT" | "WITHHOLDING";
 
 // An entry of the account's cash ledger as GET /api/transfers returns it: a deposit, withdrawal or fee from the broker's activities
-// (method is its description; id is the activity's), or a dividend received on a long or paid on a short from the mock ledger
+// (method is its description; id is the activity's), or a dividend received on a long or paid on a short from the broker's ledger
 // (method describes it; ticker and reference, the ex-dividend date, identify it). amount is positive; the type gives the direction.
 export interface CashActivityRow {
     id: number | string;

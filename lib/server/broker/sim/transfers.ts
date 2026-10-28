@@ -374,7 +374,7 @@ export const listActivities = async (accountId: string, query: ListActivitiesQue
     return rows.map(row => row.activity_type === "FILL" ? toFillActivity(row) : toActivity(row)) as Activity[];
 };
 
-// For the mock ledger until Phase 3: the accounts' ledger cash, what their queued withdrawals hold back before they're debited, and
+// For ledgerState (positions.ts): the accounts' ledger cash, what their queued withdrawals hold back before they're debited, and
 // the instant deposit credit not yet settled (it can be traded with but not withdrawn)
 export const ledgerCash = async (accountIds: string[]): Promise<{ cash: number; pendingOut: number; unsettledInstant: number }> => {
     if (accountIds.length === 0) return { cash: 0, pendingOut: 0, unsettledInstant: 0 };

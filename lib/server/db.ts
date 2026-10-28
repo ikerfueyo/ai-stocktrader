@@ -11,7 +11,8 @@ const pool = singleton("pool", () => new Pool({
     database: process.env.DB_NAME,
     // Each request holding an account lock (withAccountLock) keeps a connection for its duration, Alpha Vantage calls included
     max: 20,
-    connectionTimeoutMillis: 5000
+    // In development, the first webpack compile of a route blocks the event loop for 30-40s, which would fire a 5s connect timeout
+    connectionTimeoutMillis: process.env.NODE_ENV === "production" ? 5000 : 60000
 }));
 
 export default pool;

@@ -123,7 +123,7 @@ export const toTransactionRow = (row: SimActivityRow, userId: string): TradeHist
     id: row.id, user_id: userId, date: row.created_at.toISOString(), type: row.side === "buy" ? "BUY" : "SELL", ticker: row.symbol ?? "",
     price: String(Number(row.price)), quantity: String(Number(row.qty)), total: Math.abs(Number(row.net_amount)).toFixed(2),
     reason: row.reason === "LIQUIDATION" ? "LIQUIDATION" : null, quote_time: row.quote_time ? row.quote_time.toISOString() : null,
-    fill_policy: (row.fill_policy ?? null) as TradeHistoryRow["fill_policy"], order_id: row.order_id ?? null, legacy_order_id: row.legacy_order_id ?? null,
+    fill_policy: (row.fill_policy ?? null) as TradeHistoryRow["fill_policy"], order_id: row.order_id ?? null,
     realized_pnl: row.realized_pl === null || row.realized_pl === undefined ? null : Number(row.realized_pl), settle_date: row.settle_date ?? null
 });
 

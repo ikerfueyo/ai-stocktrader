@@ -145,7 +145,7 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                                             {formatPrice(trade.price)}
                                             {trade.fill_policy && (
                                                 <span className="fill-detail" title={trade.quote_time ? `Quote as of ${formatDate(trade.quote_time)}` : undefined}>
-                                                    {FILL_LABELS[trade.fill_policy]}{trade.order_id ? ` · order ${trade.order_id.slice(0, 8)}` : trade.legacy_order_id ? ` · order #${trade.legacy_order_id}` : ""}
+                                                    {FILL_LABELS[trade.fill_policy]}{trade.order_id ? ` · order ${trade.order_id.slice(0, 8)}` : ""}
                                                 </span>
                                             )}
                                         </td>
