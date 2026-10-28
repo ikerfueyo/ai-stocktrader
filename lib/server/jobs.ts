@@ -12,13 +12,16 @@ import { isSlotDue } from "./schedule";
 import { advanceAccounts } from "./broker/sim/accounts";
 import { advanceTransfers, fastForwardTransfers } from "./broker/sim/transfers";
 import { endOfDay } from "./broker/sim/positions";
+import { matchOrders } from "./broker/sim/orders";
 import { postDividends } from "./portfolio";
 
-// The background jobs, checked every ORDER_MATCH_INTERVAL_MS (default 30s). Each job is due on every check, or at daily Eastern
-// times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
+// The background jobs, checked every SIM_ORDER_MATCH_MS (default 5s). Each job is due every ORDER_MATCH_INTERVAL_MS (default 30s),
+// every everyMs of its own, or at daily Eastern times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
 // leader process, the one holding a Postgres advisory lock (JOB_LOCK_KEY) on a client it keeps; jobs that fill in-process state
 // (the market calendar) run in every process. BACKGROUND_JOBS=off turns them all off (instrumentation.ts).
 const INTERVAL_MS = Number(process.env.ORDER_MATCH_INTERVAL_MS ?? 30000);
+const ORDER_MATCH_MS = Number(process.env.SIM_ORDER_MATCH_MS ?? 5000);
+const CHECK_MS = Math.min(INTERVAL_MS, ORDER_MATCH_MS > 0 ? ORDER_MATCH_MS : INTERVAL_MS);
 const JOB_LOCK_KEY = 735061;
 const LABEL = "Background job";
 
@@ -26,6 +29,8 @@ export interface Job {
     name: string;
     // Daily Eastern times ("HH:MM") it runs at; without them it runs on every check, unless it's manual (POST /api/dev/jobs only)
     slots?: string[];
+    // How often it runs without slots (default INTERVAL_MS)
+    everyMs?: number;
     manual?: boolean;
     leaderOnly: boolean;
     run: () => Promise<unknown>;
@@ -51,23 +56,20 @@ const isLeader = async (): Promise<boolean> => {
     return true;
 };
 
-// Users with open orders, and, while the market is open, users with a short (an open short lot) for the buy-in check
-const usersToCheck = async (marketOpen: boolean): Promise<{ users: string[]; tickers: string[] }> => {
+// While the market is open, users with a short (an open short lot) for the buy-in check
+const usersToCheck = async (): Promise<{ users: string[]; tickers: string[] }> => {
     const { rows } = await pool.query<{ user_id: string; ticker: string }>(
-        `SELECT user_id, ticker FROM orders WHERE status = 'OPEN'
-         UNION
-         SELECT b.user_id, l.symbol AS ticker FROM sim_lots l JOIN broker_accounts b ON b.account_id = l.account_id
-         WHERE $1 AND l.side = 'short' AND l.qty > 0`,
-        [marketOpen]
+        `SELECT b.user_id, l.symbol AS ticker FROM sim_lots l JOIN broker_accounts b ON b.account_id = l.account_id WHERE l.side = 'short' AND l.qty > 0`
     );
     return { users: [...new Set(rows.map(({ user_id }) => user_id))], tickers: [...new Set(rows.map(({ ticker }) => ticker.toUpperCase()))] };
 };
 
-// Dividends, buy-ins and order matching (updateAccount) for every user with open orders or a short, so limit and stop orders fill
-// and buy-ins happen without anyone loading a page. While the market is closed it only expires DAY orders.
+// Dividends and buy-ins (updateAccount) for every user with a short while the market is open, so buy-ins happen without anyone
+// loading a page (orders are the sim-orders job's)
 const updateAccounts = async () => {
     const market = await getMarketStatus();
-    const { users, tickers } = await usersToCheck(market.open);
+    if (!market.open) return;
+    const { users, tickers } = await usersToCheck();
     if (users.length === 0) return;
     // Warm the quote cache with every ticker at once (one bulk call when the plan has it), so each user's checks reuse it
     if (market.open && tickers.length > 0) await Promise.allSettled(fetchQuotes(tickers));
@@ -88,6 +90,8 @@ const postAllDividends = async () => {
 
 export const JOBS: Job[] = [
     { name: "accounts", leaderOnly: true, run: updateAccounts },
+    // The simulator's order engine: fills, triggers, expiries and leg activations for every working order
+    { name: "sim-orders", leaderOnly: true, everyMs: ORDER_MATCH_MS > 0 ? ORDER_MATCH_MS : INTERVAL_MS, run: () => matchOrders() },
     // The simulator's account reviews and options approvals that are due (reading an account advances it too)
     { name: "sim-accounts", leaderOnly: true, run: () => advanceAccounts() },
     // The simulator's transfers that are due to clear, complete or come back (reading an account's transfers advances them too)
@@ -127,7 +131,12 @@ const tick = async () => {
     state.running = true;
     try {
         const now = new Date();
-        const due = JOBS.filter(job => !job.manual).filter(job => !job.slots || isSlotDue(job.slots, state.lastRuns.get(job.name) ?? null, now));
+        const due = JOBS.filter(job => !job.manual).filter(job => {
+            const last = state.lastRuns.get(job.name) ?? null;
+            if (job.slots) return isSlotDue(job.slots, last, now);
+            // A little slack, so a job due every check doesn't skip one when the checks drift
+            return !last || now.getTime() - last.getTime() >= (job.everyMs ?? INTERVAL_MS) - 250;
+        });
         const leader = due.some(job => job.leaderOnly) && await isLeader().catch(error => {
             console.error(`${LABEL}: ${error.message}`);
             return false;
@@ -144,8 +153,8 @@ const tick = async () => {
 export const startBackgroundJobs = () => {
     if (state.started || !(INTERVAL_MS > 0)) return;
     state.started = true;
-    setInterval(tick, INTERVAL_MS).unref();
+    setInterval(tick, CHECK_MS).unref();
     // The calendar and the universe load right away rather than after the first interval
     setTimeout(tick, 1000).unref();
-    console.log(`${LABEL}: account upkeep every ${INTERVAL_MS / 1000}s; ${JOBS.filter(job => job.slots).map(job => `${job.name} at ${job.slots!.join(", ")} ET`).join("; ")}`);
+    console.log(`${LABEL}: account upkeep every ${INTERVAL_MS / 1000}s; orders every ${CHECK_MS / 1000}s; ${JOBS.filter(job => job.slots).map(job => `${job.name} at ${job.slots!.join(", ")} ET`).join("; ")}`);
 };

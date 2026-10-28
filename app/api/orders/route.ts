@@ -1,88 +1,52 @@
 import { NextResponse } from "next/server";
 import { requireTradableStock } from "@/lib/server/assets";
 import { requireAccount } from "@/lib/server/brokerAccounts";
-import pool from "@/lib/server/db";
+import { getBroker } from "@/lib/server/broker";
 import { HttpError, withUser } from "@/lib/server/errors";
-import { fetchPrices, fetchQuote, isForeignListing } from "@/lib/server/marketData";
-import { addTrade, assessTrade, reducesPosition, roundCents, roundPrice } from "@/lib/server/account";
-import { stopReached } from "@/lib/server/orderMatching";
-import { getMarketStatus } from "@/lib/server/market";
-import { dayOrderExpiry, getOpenOrders, matchOrders, reservedCashFor } from "@/lib/server/orders";
-import { getAccount, shortTickers, withAccountLock } from "@/lib/server/portfolio";
-import { roundShares } from "@/lib/orders";
-import type { OrderRequest, OrderRow } from "@/lib/types";
+import { isForeignListing } from "@/lib/server/marketData";
+import { enforceCollateral, ledgerAccountId, withAccountLock, withReasons } from "@/lib/server/portfolio";
+import type { AppOrder, BrokerOrderRequest } from "@/lib/types";
 
-const ORDER_TYPES = ["LIMIT", "STOP", "STOP_LIMIT"];
-const TICKER = /^[A-Z0-9.\-]{1,15}$/;
-const isPositive = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
-
-// Place a limit, stop or stop-limit order for a number of shares, good for the day (DAY: until the close of the current session, or
-// the next one while the market is closed) or until cancelled (GTC). Accepted at any time; it can only fill while the market is
-// open. A stop must be on the right side of the current price (above it for a buy, below for a sell), or it would trigger at
-// once. An order that opens or adds to a position is checked as if it filled at its limit (or stop) price, with the cash reserved
-// for the other open orders unavailable, and then reserves its own. If it's marketable and the market is open, it fills right away.
+// Place an order on the active account: Alpaca's CreateOrderRequest (symbol, side, type, time_in_force, qty or notional, prices,
+// extended_hours, order_class with take_profit and stop_loss, position_intent, client_order_id). The broker checks it against its
+// rules and buying power (403 or 422 with its reason), stores it and matches it at once, so a marketable order during its session
+// comes back filled; one placed outside its session is accepted for the open. A fill runs the buy-in check after it.
 export const POST = withUser(async (request, context, userId) => {
-    const body = await request.json().catch(() => null) as Partial<OrderRequest> | null;
-    const { ticker: rawTicker, side, orderType, quantity: rawQuantity, limitPrice: rawLimit, stopPrice: rawStop, timeInForce } = body?.order ?? {};
-    const ticker = String(rawTicker ?? "").toUpperCase();
-    if (!TICKER.test(ticker)) throw new HttpError("A valid ticker is required", 400);
-    if (isForeignListing(ticker)) throw new HttpError("Only U.S. listings can be traded", 400);
-    await requireTradableStock(ticker);
-    await requireAccount(request, userId, "trade");
-    if (side !== "BUY" && side !== "SELL") throw new HttpError("Side must be BUY or SELL", 400);
-    if (!orderType || !ORDER_TYPES.includes(orderType)) throw new HttpError("Order type must be LIMIT, STOP or STOP_LIMIT (market orders go to /api/trading)", 400);
-    if (timeInForce !== "DAY" && timeInForce !== "GTC") throw new HttpError("Time in force must be DAY or GTC", 400);
-    if (!isPositive(rawQuantity)) throw new HttpError("Quantity must be a positive number of shares", 400);
-    const needsLimit = orderType !== "STOP";
-    const needsStop = orderType !== "LIMIT";
-    if (needsLimit && !isPositive(rawLimit)) throw new HttpError("A limit price is required", 400);
-    if (needsStop && !isPositive(rawStop)) throw new HttpError("A stop price is required", 400);
-    const quantity = roundShares(rawQuantity);
-    const limitPrice = needsLimit ? roundPrice(rawLimit!) : null;
-    const stopPrice = needsStop ? roundPrice(rawStop!) : null;
-    if (!(quantity > 0)) throw new HttpError("Quantity must be at least 0.000001 shares", 400);
-    const label = `POST /api/orders ${ticker}`;
-    const market = await getMarketStatus();
-
+    const body = await request.json().catch(() => null) as Partial<BrokerOrderRequest> | null;
+    if (!body || typeof body !== "object") throw new HttpError("An order is required", 400);
+    const symbol = String(body.symbol ?? "").trim().toUpperCase();
+    if (isForeignListing(symbol)) throw new HttpError("Only U.S. listings can be traded", 400);
+    if (symbol) await requireTradableStock(symbol);
+    const { accountId } = await requireAccount(request, userId, "trade");
+    const label = `POST /api/orders ${symbol}`;
     const order = await withAccountLock(userId, async db => {
-        const quote = await fetchQuote(ticker);
-        if (stopPrice !== null && stopReached(side, stopPrice, quote.price)) {
-            throw new HttpError(`A ${side === "BUY" ? "buy" : "sell"} stop must be ${side === "BUY" ? "above" : "below"} the current price (${quote.price})`, 400);
-        }
-        const { positions, totalCash } = await getAccount(userId, db);
-        const price = limitPrice ?? stopPrice!;
-        const trade = { type: side, ticker, price, quantity, total: roundCents(quantity * price) };
-        if (!reducesPosition({ positions, trade })) {
-            const after = addTrade(positions, trade);
-            const { prices, staleTickers } = await fetchPrices(shortTickers(after).filter(symbol => symbol !== ticker), label);
-            const reservedCash = await reservedCashFor(await getOpenOrders(userId, db), positions, label);
-            const assessment = assessTrade({ positions, totalCash, prices, staleTickers, trade, reservedCash });
-            if (!assessment.allowed) throw new HttpError(assessment.message, assessment.status);
-        }
-        const { rows: [inserted] } = await db.query<OrderRow>(
-            `INSERT INTO orders (user_id, ticker, side, order_type, quantity, limit_price, stop_price, time_in_force, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-            [userId, ticker, side, orderType, quantity, limitPrice, stopPrice, timeInForce, timeInForce === "DAY" ? dayOrderExpiry(market) : null]
-        );
-        if (market.open) await matchOrders(userId, label, db);
-        return (await db.query<OrderRow>("SELECT * FROM orders WHERE id = $1", [inserted.id])).rows[0];
+        const placed = await getBroker().createOrder(accountId, { ...body, symbol } as BrokerOrderRequest);
+        // The fill is already saved, so a failed buy-in check is only logged; the next GET /api/account runs it again
+        if (Number(placed.filled_qty) > 0) await enforceCollateral(userId, label, db).catch(error => console.error(`${label}: buy-in check: ${error.message}`));
+        return placed;
     });
-    return NextResponse.json<{ order: OrderRow }>({ order });
+    return NextResponse.json<AppOrder>((await withReasons([order]))[0], { status: 201 });
 });
 
-// Get the user's orders, newest first: ?status=open for the open ones (checked against current prices first, so fills and expiries
-// show up), or all of them. ?ticker= filters to one ticker.
+// The account's orders, newest first, with bracket, OCO and OTO legs nested under their parent: ?status=open (the default), closed
+// or all; ?symbols= (or ?ticker=) to filter; ?limit= up to 500 (default 100)
 export const GET = withUser(async (request, context, userId) => {
-    const status = request.nextUrl.searchParams.get("status") === "open" ? "open" : "all";
-    const ticker = request.nextUrl.searchParams.get("ticker")?.toUpperCase() ?? null;
-    if (status === "open") {
-        await withAccountLock(userId, db => matchOrders(userId, "GET /api/orders", db));
-    }
-    const { rows } = await pool.query<OrderRow>(
-        `SELECT o.*, f.id AS transaction_id FROM orders o LEFT JOIN sim_activities f ON f.legacy_order_id = o.id AND f.activity_type = 'FILL'
-         WHERE o.user_id = $1 AND ($2 = 'all' OR o.status = 'OPEN') AND ($3::text IS NULL OR o.ticker = $3)
-         ORDER BY o.created_at DESC, o.id DESC LIMIT 500`,
-        [userId, status, ticker]
-    );
-    return NextResponse.json(rows);
+    const accountId = await ledgerAccountId(userId);
+    if (!accountId) return NextResponse.json<AppOrder[]>([]);
+    const params = request.nextUrl.searchParams;
+    const status = params.get("status");
+    const orders = await getBroker().listOrders(accountId, {
+        status: status === "all" || status === "closed" ? status : "open",
+        symbols: params.get("symbols") ?? params.get("ticker")?.toUpperCase() ?? undefined,
+        limit: Number(params.get("limit") ?? 100),
+        nested: true
+    });
+    return NextResponse.json<AppOrder[]>(await withReasons(orders));
+});
+
+// Cancel every open order: [{ id, status }] per order, as Alpaca answers
+export const DELETE = withUser(async (request, context, userId) => {
+    const accountId = await ledgerAccountId(userId);
+    if (!accountId) return NextResponse.json([]);
+    return NextResponse.json(await withAccountLock(userId, () => getBroker().cancelAllOrders(accountId)));
 });

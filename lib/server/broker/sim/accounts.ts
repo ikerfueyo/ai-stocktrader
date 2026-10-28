@@ -18,9 +18,9 @@ const nextUlid = monotonicFactory();
 const OPTIONS_REVIEW_SECONDS = Number(process.env.SIM_KYC_SECONDS ?? 5);
 
 // Appends an event to one of the simulator's streams (sim_events), like Alpaca's SSE streams
-export const emitEvent = async (accountId: string, stream: BrokerEventStream, payload: Record<string, unknown>, at = new Date()) => {
+export const emitEvent = async (accountId: string, stream: BrokerEventStream, payload: Record<string, unknown>, at = new Date(), db: Pick<typeof pool, "query"> = pool) => {
     const id = nextUlid(at.getTime());
-    await pool.query("INSERT INTO sim_events (id, account_id, stream, at, payload) VALUES ($1, $2, $3, $4, $5)",
+    await db.query("INSERT INTO sim_events (id, account_id, stream, at, payload) VALUES ($1, $2, $3, $4, $5)",
         [id, accountId, stream, at, JSON.stringify({ ...payload, event_ulid: id, at: at.toISOString() })]);
     return id;
 };

@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { addDays, easternParts, marketStatus, sessionOn, settlementDate } from "../../../marketHours";
 import type { AssetRow } from "../../universe";
-import type { ACHRelationship, Account, AccountConfigurations, Asset, Bank, CalendarDay, Clock, KYCResults, NonTradeActivity, OptionsApprovalResponse, TradeActivity, Transfer } from "../types";
+import type { ACHRelationship, Account, AccountConfigurations, Asset, Bank, CalendarDay, Clock, KYCResults, NonTradeActivity, OptionsApprovalResponse, Order, TradeActivity, Transfer } from "../types";
 
 // A sim_accounts row as pg returns it (JSONB columns parsed)
 export interface SimAccountRow {
@@ -141,7 +141,50 @@ export interface SimActivityRow {
     // A FILL's fields
     side?: "buy" | "sell" | null; price?: string | null; leaves_qty?: string | null; cum_qty?: string | null; realized_pl?: string | null;
     settle_date?: string | null; reason?: string | null; quote_time?: Date | null; fill_policy?: string | null; legacy_order_id?: number | null;
+    order_id?: string | null;
 }
+
+// A sim_orders row as pg returns it (NUMERIC as strings)
+export interface SimOrderRow {
+    id: string; account_id: string; client_order_id: string; symbol: string; side: "buy" | "sell"; type: Order["type"] & string;
+    time_in_force: Order["time_in_force"] & string; order_class: "simple" | "bracket" | "oco" | "oto"; position_intent: Order["position_intent"] | null;
+    qty: string | null; notional: string | null; limit_price: string | null; stop_price: string | null; trail_price: string | null;
+    trail_percent: string | null; hwm: string | null; extended_hours: boolean; status: string; filled_qty: string; filled_notional: string;
+    filled_avg_price: string | null; parent_id: string | null; group_id: string | null; group_role: "entry" | "take_profit" | "stop_loss" | null;
+    replaces: string | null; replaced_by: string | null; stop_triggered_at: Date | null; expires_at: Date; reason: string | null;
+    created_at: Date; updated_at: Date; submitted_at: Date; filled_at: Date | null; expired_at: Date | null; canceled_at: Date | null;
+    failed_at: Date | null; replaced_at: Date | null; cancel_requested_at: Date | null;
+}
+
+const iso = (date: Date | null) => date === null ? null : date.toISOString();
+
+// An order as the Broker API returns it, with its legs nested when given (GET .../orders?nested=true). A bracket or OTO leg waiting
+// for its entry to fill is "held", as Alpaca reports it, although the spec's OrderStatus enum leaves that status out. qty is the
+// shares ordered (null for a notional order), and a leg's qty follows its entry's fills.
+export const toOrder = (row: SimOrderRow, { legs, assetId: id }: { legs?: SimOrderRow[]; assetId?: string } = {}): Order => ({
+    id: row.id, client_order_id: row.client_order_id, created_at: row.created_at.toISOString(), updated_at: row.updated_at.toISOString(),
+    submitted_at: row.submitted_at.toISOString(), filled_at: iso(row.filled_at), expired_at: iso(row.expired_at), canceled_at: iso(row.canceled_at),
+    failed_at: iso(row.failed_at), replaced_at: iso(row.replaced_at), replaced_by: row.replaced_by, replaces: row.replaces,
+    cancel_requested_at: iso(row.cancel_requested_at),
+    asset_id: id ?? assetId(row.symbol), symbol: row.symbol, asset_class: "us_equity",
+    notional: decimal(row.notional), qty: decimal(row.qty), filled_qty: decimal(row.filled_qty)!, filled_avg_price: decimal(row.filled_avg_price),
+    order_class: row.order_class, order_type: row.type, type: row.type, side: row.side, time_in_force: row.time_in_force,
+    limit_price: decimal(row.limit_price), stop_price: decimal(row.stop_price), status: row.status as Order["status"], extended_hours: row.extended_hours,
+    ...(row.position_intent ? { position_intent: row.position_intent } : {}),
+    ...(row.trail_price !== null ? { trail_price: decimal(row.trail_price) } : {}), ...(row.trail_percent !== null ? { trail_percent: decimal(row.trail_percent) } : {}),
+    hwm: decimal(row.hwm),
+    ...(row.group_id ? { group_id: row.group_id } : {}), ...(row.group_role ? { group_role: row.group_role } : {}),
+    legs: legs && legs.length > 0 ? legs.map(leg => toLeg(leg, id)) : null,
+    commission: "0"
+});
+
+// A leg nested in its parent (Alpaca's OrderLeg: an order without cancel_requested_at or legs of its own)
+const toLeg = (row: SimOrderRow, id?: string): NonNullable<Order["legs"]>[number] => {
+    const leg: Order = toOrder(row, { assetId: id });
+    delete leg.cancel_requested_at;
+    delete leg.legs;
+    return leg as NonNullable<Order["legs"]>[number];
+};
 
 // Account numbers are stored and returned masked (••••6789), like the simulator's tax IDs
 export const toAchRelationship = (row: SimAchRow): ACHRelationship => ({
@@ -164,12 +207,13 @@ export const toTransfer = (row: SimTransferRow): Transfer => ({
     expires_at: row.complete_at.toISOString()
 });
 
-// A fill as GET /v1/accounts/activities returns it (Alpaca's TradeActivity). The mock orders it fills until Phase 4 have no UUID, so
-// order_id is left out for them.
+// A fill as GET /v1/accounts/activities returns it (Alpaca's TradeActivity): a partial_fill while its order has shares left. Fills from
+// before Phase 4 filled the app's mock orders, which have no UUID, so order_id is left out for them.
 export const toFillActivity = (row: SimActivityRow): TradeActivity & { id: string; activity_type: "FILL"; account_id: string } => ({
-    id: row.id, account_id: row.account_id, activity_type: "FILL", type: "fill", transaction_time: row.created_at.toISOString(),
+    id: row.id, account_id: row.account_id, activity_type: "FILL", type: Number(row.leaves_qty ?? 0) > 0 ? "partial_fill" : "fill", transaction_time: row.created_at.toISOString(),
+    ...(row.order_id ? { order_id: row.order_id } : {}),
     symbol: row.symbol ?? "", side: row.side ?? "buy", qty: decimal(row.qty)!, price: decimal(row.price ?? "0")!,
-    cum_qty: decimal(row.cum_qty ?? row.qty)!, leaves_qty: decimal(row.leaves_qty ?? "0")!, order_status: "filled"
+    cum_qty: decimal(row.cum_qty ?? row.qty)!, leaves_qty: decimal(row.leaves_qty ?? "0")!, order_status: Number(row.leaves_qty ?? 0) > 0 ? "partially_filled" : "filled"
 });
 
 // A non-trade activity as GET /v1/accounts/activities returns it

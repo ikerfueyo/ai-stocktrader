@@ -1,3 +1,9 @@
+import { formatEastern } from "./marketHours";
+import type { BrokerOrder, BrokerOrderRequest } from "./types";
+
+type OrderType = NonNullable<BrokerOrderRequest["type"]>;
+type TimeInForce = NonNullable<BrokerOrderRequest["time_in_force"]>;
+
 // Quantities are stored to 6 decimal places (fractional shares), money to cents
 export type TradeMode = "shares" | "dollars";
 
@@ -43,16 +49,52 @@ export const formatSigned = (amount: number): string => `${amount >= 0 ? "+" : "
 export const formatPrice = (price: number | string): string =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(price));
 
-const ORDER_TYPE_LABELS = { MARKET: "Market", LIMIT: "Limit", STOP: "Stop", STOP_LIMIT: "Stop limit" } as const;
+export const ORDER_TYPE_LABELS: Record<OrderType, string> = { market: "Market", limit: "Limit", stop: "Stop", stop_limit: "Stop limit", trailing_stop: "Trailing stop" };
 
-// An order's type and prices, such as "Limit $180.00" or "Stop $95.00, limit $94.00"
-export const describeOrderType = ({ order_type, limit_price, stop_price }: { order_type: keyof typeof ORDER_TYPE_LABELS; limit_price: string | number | null; stop_price: string | number | null }): string => {
-    if (order_type === "STOP_LIMIT") return `Stop ${formatPrice(stop_price!)}, limit ${formatPrice(limit_price!)}`;
-    if (order_type === "STOP") return `Stop ${formatPrice(stop_price!)}`;
-    if (order_type === "LIMIT") return `Limit ${formatPrice(limit_price!)}`;
-    return ORDER_TYPE_LABELS[order_type];
+export const TIME_IN_FORCE_LABELS: Record<TimeInForce, string> = {
+    day: "Day", gtc: "Until cancelled", opg: "At the open", cls: "At the close", ioc: "Immediate or cancel", fok: "Fill or kill"
 };
 
-// An order's size: shares, or a dollar amount for a dollar-amount market order
-export const describeOrderSize = ({ quantity, amount }: { quantity: string | number | null; amount: string | number | null }): string =>
-    quantity !== null ? `${formatShares(quantity)} ${Number(quantity) === 1 ? "share" : "shares"}` : formatCurrency(amount!);
+// An order status as the pages show it
+export const orderStatusLabel = (status: string): string =>
+    ({ canceled: "Cancelled", partially_filled: "Partly filled", held: "Held", pending_cancel: "Cancelling", pending_replace: "Replacing", new: "Working" } as Record<string, string>)[status]
+    ?? status.charAt(0).toUpperCase() + status.slice(1).replaceAll("_", " ");
+
+// An order's type and prices, such as "Limit $180.00", "Stop $95.00, limit $94.00" or "Trailing stop 5% (stop $104.50)"
+export const describeOrderType = ({ type, limit_price, stop_price, trail_price, trail_percent }: Pick<BrokerOrder, "type" | "limit_price" | "stop_price" | "trail_price" | "trail_percent">): string => {
+    if (type === "stop_limit") return `Stop ${formatPrice(stop_price!)}, limit ${formatPrice(limit_price!)}`;
+    if (type === "stop") return `Stop ${formatPrice(stop_price!)}`;
+    if (type === "limit") return `Limit ${formatPrice(limit_price!)}`;
+    if (type === "trailing_stop") {
+        const trail = trail_percent ? `${Number(trail_percent)}%` : formatPrice(trail_price!);
+        return `Trailing stop ${trail}${stop_price ? ` (stop ${formatPrice(stop_price)})` : ""}`;
+    }
+    return "Market";
+};
+
+// An order's size: shares, or a dollar amount for a notional order
+export const describeOrderSize = ({ qty, notional }: Pick<BrokerOrder, "qty" | "notional">): string =>
+    qty !== null && qty !== undefined ? `${formatShares(qty)} ${Number(qty) === 1 ? "share" : "shares"}` : formatCurrency(notional!);
+
+// What happened to an order just placed, for the order forms: filled (at its average price), part filled, working, accepted for
+// the open (outside its session) or held (a bracket's legs wait for the entry)
+export const describePlacedOrder = (order: BrokerOrder, { nextOpen }: { nextOpen?: string | null } = {}): { ok: boolean; message: string } => {
+    const filled = Number(order.filled_qty ?? 0);
+    const verb = order.side === "buy" ? "Bought" : "Sold";
+    const what = `${order.side === "buy" ? "Buy" : "Sell"} ${describeOrderSize(order)} ${order.symbol}`;
+    if (order.status === "filled") {
+        return { ok: true, message: `${verb} ${formatShares(filled)} ${order.symbol} at ${formatPrice(order.filled_avg_price!)} (${formatCurrency(filled * Number(order.filled_avg_price))})` };
+    }
+    if (order.status === "rejected" || order.status === "canceled" || order.status === "expired") {
+        return { ok: false, message: `${what} was ${order.status === "canceled" ? "cancelled" : order.status}${filled > 0 ? ` after filling ${formatShares(filled)}` : ""}` };
+    }
+    if (order.status === "partially_filled") {
+        return { ok: true, message: `${verb} ${formatShares(filled)} of ${formatShares(order.qty!)} ${order.symbol} at ${formatPrice(order.filled_avg_price!)} so far; the rest is working` };
+    }
+    const legs = order.legs?.length ? `, with ${order.legs.map(leg => leg.type === "limit" ? "a take profit" : "a stop loss").join(" and ")}` : "";
+    const terms = `${describeOrderType(order).toLowerCase()}, ${TIME_IN_FORCE_LABELS[order.time_in_force!].toLowerCase()}${order.extended_hours ? ", extended hours" : ""}`;
+    if (order.status === "accepted") {
+        return { ok: true, message: `Accepted for ${order.time_in_force === "cls" ? "the close" : nextOpen ? `the open, ${formatEastern(nextOpen, { withDay: true })}` : "the open"}: ${what}, ${terms}${legs}.` };
+    }
+    return { ok: true, message: `Placed: ${what}, ${terms}${legs}.` };
+};

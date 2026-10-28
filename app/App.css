@@ -1445,3 +1445,30 @@ header a.header-pill.withdraw:hover {
 .activity-toolbar select {
   max-width: 260px;
 }
+
+.open-orders-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.order-leg td {
+  background: #f8f9fa;
+  font-size: 14px;
+}
+
+.order-actions {
+  white-space: nowrap;
+}
+
+.order-actions .btn + .btn {
+  margin-left: 4px;
+}
+
+.order-timeline {
+  margin: 0;
+  padding-left: 20px;
+  text-align: left;
+  font-size: 14px;
+}

@@ -6,12 +6,13 @@ import type { Broker, BrokerEvent, BrokerEventStream } from "../broker";
 import * as accounts from "./accounts";
 import * as transfers from "./transfers";
 import * as positions from "./positions";
+import * as orders from "./orders";
 import { toAsset, toCalendar, toClock } from "./shapes";
 
 // The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), funding
-// (./transfers.ts: bank links, recipient banks, transfers and the cash activities they post), assets, the calendar and clock, and the
-// event streams are implemented; the rest arrives phase by phase (docs/brokerage-roadmap.md) and
-// answers 501 until then, while the app still trades through the original mock ledger.
+// (./transfers.ts: bank links, recipient banks, transfers and the cash activities they post), the trading account, positions and
+// ledger (./positions.ts), orders (./orders.ts), assets, the calendar and clock, and the event streams are implemented; options and
+// documents arrive in later phases (docs/brokerage-roadmap.md) and answer 501 until then.
 const notYet = (what: string, phase: number) => (): never => {
     throw new BrokerError(501, 50100000, `${what} isn't simulated yet (phase ${phase} of the brokerage roadmap)`);
 };
@@ -78,16 +79,16 @@ export class SimBroker implements Broker {
 
     getTradeAccount = positions.getTradeAccount;
     getPortfolioHistory = positions.getPortfolioHistory;
-    createOrder = notYet("Orders", 4);
-    listOrders = notYet("Orders", 4);
-    getOrder = notYet("Orders", 4);
-    getOrderByClientOrderId = notYet("Orders", 4);
-    replaceOrder = notYet("Orders", 4);
-    cancelOrder = notYet("Orders", 4);
-    cancelAllOrders = notYet("Orders", 4);
+    createOrder = orders.createOrder;
+    listOrders = orders.listOrders;
+    getOrder = orders.getOrder;
+    getOrderByClientOrderId = orders.getOrderByClientOrderId;
+    replaceOrder = orders.replaceOrder;
+    cancelOrder = orders.cancelOrder;
+    cancelAllOrders = orders.cancelAllOrders;
     listPositions = positions.listPositions;
     getPosition = positions.getPosition;
-    closePosition = notYet("Positions", 4);
+    closePosition = orders.closePosition;
     exerciseOption = notYet("Options", 9);
     listOptionContracts = notYet("Options", 9);
     createAchRelationship = transfers.createAchRelationship;

@@ -197,6 +197,15 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 - **Buying-power reservation** for open orders follows Alpaca, for example a short sell is checked at qty × max(limit, ask × 1.03). This replaces `reservedForOrders`.
 - **UI:** an order ticket with every type and TIF, an extended-hours toggle, bracket/OCO/OTO builders, a fee and buying-power preview, and modify/cancel in `OpenOrders`. Order details show a fill timeline. The Portfolio close button posts a `sell_to_close`/`buy_to_close` market order.
 
+- **As built (done):** the engine is `lib/server/broker/sim/orders.ts`, with the pure rules in `orderRules.ts` and `matching.ts` (CLAUDE.md has the details). Where it differs from the plan above:
+  - Partial fills are sized by a share of the average shares traded per minute so far today (`SIM_LIQUIDITY_SHARE`, at least a round lot), since the displayed size needs Alpaca keys. Fractional and notional orders fill in full.
+  - Replacing a partially filled order isn't simulated (cancel it and submit the rest). Replace and cancel run synchronously, so `pending_replace` and `pending_cancel` only appear as events.
+  - Buys are checked and reserved at their limit, stop or the ask (no buffer); short sales at the higher of the limit and 3% above the ask, under the cash-collateral model until Phase 5.
+  - An order can't go through zero either way (a buy past a short is refused like a sell past a long).
+  - Bracket and OTO legs report `held` until their entry fills, as Alpaca does, though the spec's `OrderStatus` enum leaves it out.
+  - Orders don't carry why they ended; the routes add the simulator's `reason`, which Alpaca sends with the order's trade event.
+  - The order engine runs every 5s (`SIM_ORDER_MATCH_MS`), outside the overnight close.
+
 ### Phase 5: Margin, shorting and calls (Reg T, FINRA 4210, Alpaca house rules)
 - **Pure `margin.ts`:**
   - Below $2,000 equity, the multiplier is 1×.

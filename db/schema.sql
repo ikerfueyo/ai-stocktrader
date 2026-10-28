@@ -256,6 +256,58 @@ CREATE TABLE sim_transfers (
 CREATE INDEX sim_transfers_account_idx ON sim_transfers (account_id, created_at);
 CREATE INDEX sim_transfers_due_idx ON sim_transfers (status, sent_at, complete_at);
 
+-- Orders in Alpaca's shape, matched by the simulator (lib/server/broker/sim/orders.ts). Open orders are new, accepted (outside their
+-- session), partially_filled or held (a bracket or OTO leg waiting for its entry).
+CREATE TABLE sim_orders (
+    id UUID PRIMARY KEY,
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    client_order_id VARCHAR(128) NOT NULL,
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(4) NOT NULL CHECK (side IN ('buy', 'sell')),
+    "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('market', 'limit', 'stop', 'stop_limit', 'trailing_stop')),
+    time_in_force VARCHAR(4) NOT NULL CHECK (time_in_force IN ('day', 'gtc', 'opg', 'cls', 'ioc', 'fok')),
+    order_class VARCHAR(8) NOT NULL DEFAULT 'simple' CHECK (order_class IN ('simple', 'bracket', 'oco', 'oto')),
+    position_intent VARCHAR(16),
+    qty NUMERIC(18, 9),
+    notional NUMERIC(14, 2),
+    limit_price NUMERIC(18, 6),
+    stop_price NUMERIC(18, 6),
+    trail_price NUMERIC(18, 6),
+    trail_percent NUMERIC(8, 4),
+    hwm NUMERIC(18, 6),
+    extended_hours BOOLEAN NOT NULL DEFAULT false,
+    status VARCHAR(20) NOT NULL,
+    filled_qty NUMERIC(18, 9) NOT NULL DEFAULT 0,
+    -- What the fills so far paid or received, for the average price and a notional order's remainder
+    filled_notional NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    filled_avg_price NUMERIC(18, 6),
+    -- Bracket, OCO and OTO orders: the legs' parent, the group they share and each one's role
+    parent_id UUID REFERENCES sim_orders(id),
+    group_id UUID,
+    group_role VARCHAR(12) CHECK (group_role IN ('entry', 'take_profit', 'stop_loss')),
+    replaces UUID REFERENCES sim_orders(id),
+    replaced_by UUID REFERENCES sim_orders(id),
+    stop_triggered_at TIMESTAMPTZ,
+    -- When it stops working unless filled (the session close for a day order, 90 days for GTC)
+    expires_at TIMESTAMPTZ NOT NULL,
+    -- Why it was rejected, cancelled or expired
+    reason VARCHAR(500),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    filled_at TIMESTAMPTZ,
+    expired_at TIMESTAMPTZ,
+    canceled_at TIMESTAMPTZ,
+    failed_at TIMESTAMPTZ,
+    replaced_at TIMESTAMPTZ,
+    cancel_requested_at TIMESTAMPTZ,
+    UNIQUE (account_id, client_order_id)
+);
+
+CREATE INDEX sim_orders_account_idx ON sim_orders (account_id, created_at);
+CREATE INDEX sim_orders_open_idx ON sim_orders (status) WHERE status IN ('new', 'accepted', 'partially_filled', 'held', 'pending_new');
+CREATE INDEX sim_orders_group_idx ON sim_orders (group_id) WHERE group_id IS NOT NULL;
+
 -- The account ledger's activities: FILL trade fills, CSD cash deposits, CSW cash withdrawals, FEE fees, DIV dividends and SPLIT
 -- splits, each with a signed net_amount. id is Alpaca's activity id format ("YYYYMMDDHHMMSSmmm::uuid").
 CREATE TABLE sim_activities (
@@ -273,7 +325,7 @@ CREATE TABLE sim_activities (
     qty NUMERIC(18, 9),
     per_share_amount NUMERIC(18, 6),
     -- A FILL's fields (Alpaca's TradeActivity), the P&L it realized against the lots it closed, its settlement date (T+1), the quote it
-    -- filled against, and, until orders move to the simulator (Phase 4), the mock order it filled
+    -- filled against, the order it filled (order_id), and for fills from before Phase 4 the app's mock order (legacy_order_id)
     side VARCHAR(4) CHECK (side IN ('buy', 'sell')),
     price NUMERIC(18, 6),
     leaves_qty NUMERIC(18, 9),
@@ -283,11 +335,13 @@ CREATE TABLE sim_activities (
     reason VARCHAR(32),
     quote_time TIMESTAMPTZ,
     fill_policy VARCHAR(16),
-    legacy_order_id INTEGER REFERENCES orders(id)
+    legacy_order_id INTEGER REFERENCES orders(id),
+    order_id UUID REFERENCES sim_orders(id)
 );
 CREATE INDEX sim_activities_account_idx ON sim_activities (account_id, created_at);
 
 CREATE INDEX sim_activities_type_idx ON sim_activities (account_id, activity_type, symbol, created_at);
+CREATE INDEX sim_activities_order_idx ON sim_activities (order_id) WHERE order_id IS NOT NULL;
 
 -- Tax lots: shares bought (long) or sold short (short) together. qty is what's still open (0 once closed); original_qty, price and
 -- acquired_at are split-adjusted. wash_sale_adjustment is added to the basis by a disallowed loss (Phase 7).

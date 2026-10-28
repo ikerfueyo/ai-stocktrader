@@ -5,7 +5,7 @@ import { findUserAccount, requireAccount } from "@/lib/server/brokerAccounts";
 import { fetchPrices } from "@/lib/server/marketData";
 import { assessWithdrawal } from "@/lib/server/account";
 import { getAccount, shortTickers, withAccountLock } from "@/lib/server/portfolio";
-import { getOpenOrders, reservedCashFor } from "@/lib/server/orders";
+import { reservedCash as reservedForOrders } from "@/lib/server/broker/sim/orders";
 import { TRANSFER_FEES } from "@/lib/server/broker/sim/funding";
 import type { CreateTransferRequest } from "@/lib/server/broker/types";
 import type { BrokerTransfer, TransferRequest } from "@/lib/types";
@@ -21,8 +21,8 @@ export const GET = withUser(async (request, { params }: AccountContext, userId) 
 // Request a transfer: body { transfer: { type: ach | wire, direction: INCOMING | OUTGOING, amount, relationshipId | bankId } }.
 // Deposits are ACH from the approved bank link; withdrawals go by ACH to it or by wire (with its fee) to a recipient bank. A
 // withdrawal can only come from withdrawable cash: available cash (never short collateral, cash reserved for orders or another
-// queued withdrawal) less deposit credit not yet settled, and not during a margin call. The broker sets the timing, limits and
-// fees. Until the simulator keeps the whole ledger (Phase 3), the check runs on the mock ledger.
+// queued withdrawal) less deposit credit and sale proceeds not yet settled, and not during a margin call. The broker sets the
+// timing, limits and fees; the cash check runs here, on the broker's ledger, until the simulator checks withdrawals itself.
 export const POST = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
     const body = await request.json().catch(() => null) as Partial<TransferRequest> | null;
@@ -42,13 +42,18 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
     }
     const fee = type === "wire" ? TRANSFER_FEES.wireOutDomestic : 0;
     const created = await withAccountLock(userId, async db => {
-        const { positions, totalCash, unsettledInstant } = await getAccount(userId, db);
+        const { positions, totalCash, unsettledInstant, unsettledProceeds } = await getAccount(userId, db);
         const label = `POST /api/accounts/${account_id}/transfers`;
         const { prices, staleTickers } = await fetchPrices(shortTickers(positions), label);
-        const reservedCash = await reservedCashFor(await getOpenOrders(userId, db), positions, label);
-        const assessment = assessWithdrawal({ positions, totalCash: totalCash - unsettledInstant, prices, staleTickers, amount: amount + fee, reservedCash });
+        const reservedCash = await reservedForOrders(db, account_id, positions);
+        // Neither instant deposit credit nor sale proceeds can leave before they settle
+        const assessment = assessWithdrawal({ positions, totalCash: totalCash - unsettledInstant - unsettledProceeds, prices, staleTickers, amount: amount + fee, reservedCash });
         if (!assessment.allowed) {
-            const note = unsettledInstant > 0 ? ` ($${unsettledInstant.toFixed(2)} of instant deposit credit can't be withdrawn until it settles)` : "";
+            const unsettled = [
+                unsettledInstant > 0 ? `$${unsettledInstant.toFixed(2)} of instant deposit credit` : null,
+                unsettledProceeds > 0 ? `$${unsettledProceeds.toFixed(2)} of sale proceeds` : null
+            ].filter(Boolean);
+            const note = unsettled.length > 0 ? ` (${unsettled.join(" and ")} can't be withdrawn until settled)` : "";
             throw new HttpError(`${assessment.message}${fee > 0 ? `, including the $${fee} wire fee` : ""}${note}`, assessment.status);
         }
         return getBroker().createTransfer(account_id, transfer);

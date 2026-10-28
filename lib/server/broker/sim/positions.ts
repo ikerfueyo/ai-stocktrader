@@ -64,6 +64,10 @@ export const applySplits = async (db: Db, accountId: string, symbols: string[], 
     }
 };
 
+// The signed position in a symbol now, from its open lots
+export const positionQty = async (db: Db, accountId: string, symbol: string): Promise<number> =>
+    positionsFromLots(await openLots(db, accountId, symbol)).find(({ ticker }) => ticker === symbol)?.quantity ?? 0;
+
 // The account's fills as trades to replay (oldest first, quantities as filled), for dividends and the equity history
 export const fillsAsTrades = async (db: Db, accountId: string): Promise<Trade[]> =>
     (await db.query<{ symbol: string; side: string; price: string; qty: string; net_amount: string; created_at: Date }>(
@@ -104,16 +108,25 @@ export interface FillRequest {
     quoteTime?: string | null;
     fillPolicy?: string;
     legacyOrderId?: number;
+    // The order it fills, with its shares filled so far and still to fill after this fill (the order engine emits its trade event)
+    orderId?: string;
+    cumQty?: number;
+    leavesQty?: number;
     at?: Date;
 }
 
+// Serializes the simulator's changes to one account's ledger and orders (fills, the order engine, buy-ins) across requests, jobs and
+// server processes: a transaction-level advisory lock, released when the caller's transaction ends
+export const lockAccount = (db: PoolClient, accountId: string) => db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`sim-account:${accountId}`]);
+
 // Records a fill: the FILL activity (cash ± total, the P&L it realizes, settling the next trading day), the lots it closes FIFO and
-// the one it opens, what it closed of each, and its regulatory fee accruals. Call it inside a transaction, holding the account lock.
+// the one it opens, what it closed of each, and its regulatory fee accruals. Call it inside a transaction; it takes the account lock.
 // The last guard against a bad fill: the price and quantity must be positive and the total not negative.
 export const recordFill = async (db: PoolClient, accountId: string, fill: FillRequest): Promise<SimActivityRow> => {
     if (!(fill.price > 0) || !(fill.qty > 0) || !(fill.total >= 0)) {
         throw new Error(`Refusing an invalid ${fill.side} ${fill.symbol} fill: ${fill.qty} @ ${fill.price}, total ${fill.total}`);
     }
+    await lockAccount(db, accountId);
     const at = fill.at ?? new Date();
     const symbol = fill.symbol.toUpperCase();
     await applySplits(db, accountId, [symbol], at);
@@ -125,10 +138,12 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     const description = `${verb} ${parseFloat(fill.qty.toFixed(9))} ${symbol} at $${fill.price}${fill.reason === "LIQUIDATION" ? " (collateral buy-in)" : ""}`;
     const { rows: [row] } = await db.query<SimActivityRow>(
         `INSERT INTO sim_activities (id, account_id, activity_type, "date", created_at, net_amount, description, symbol, qty, side, price, leaves_qty, cum_qty,
-                                     realized_pl, settle_date, reason, quote_time, fill_policy, legacy_order_id)
-         VALUES ($1, $2, 'FILL', $3, $4, $5, $6, $7, $8, $9, $10, 0, $8, $11, $12, $13, $14, $15, $16) RETURNING *, "date"::text AS "date", settle_date::text AS settle_date`,
+                                     realized_pl, settle_date, reason, quote_time, fill_policy, legacy_order_id, order_id)
+         VALUES ($1, $2, 'FILL', $3, $4, $5, $6, $7, $8, $9, $10, $17, $18, $11, $12, $13, $14, $15, $16, $19)
+         RETURNING *, "date"::text AS "date", settle_date::text AS settle_date`,
         [activityId(at), accountId, day, at, (fill.side === "sell" ? fill.total : -fill.total).toFixed(2), description, symbol, fill.qty, fill.side, fill.price,
-            closings.length > 0 ? roundCents(realized).toFixed(2) : null, settlementDate(day), fill.reason ?? null, fill.quoteTime ?? null, fill.fillPolicy ?? null, fill.legacyOrderId ?? null]
+            closings.length > 0 ? roundCents(realized).toFixed(2) : null, settlementDate(day), fill.reason ?? null, fill.quoteTime ?? null, fill.fillPolicy ?? null,
+            fill.legacyOrderId ?? null, fill.leavesQty ?? 0, fill.cumQty ?? fill.qty, fill.orderId ?? null]
     );
     for (const closing of closings) {
         const lot = lots.find(({ id }) => id === closing.lotId)!;
@@ -147,11 +162,13 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     for (const { type, amount } of feesFor({ side: fill.side, qty: fill.qty, price: fill.price, date: day })) {
         await db.query(`INSERT INTO sim_fee_accruals (account_id, "date", fee_type, amount, fill_id) VALUES ($1, $2, $3, $4, $5)`, [accountId, day, type, amount, row.id]);
     }
-    await emitEvent(accountId, "trades", {
-        account_id: accountId, event: "fill", execution_id: row.id, price: String(fill.price), qty: String(fill.qty), timestamp: at.toISOString(),
-        position_qty: String(positionsFromLots(await openLots(db, accountId, symbol)).find(({ ticker }) => ticker === symbol)?.quantity ?? 0),
-        order: { symbol, side: fill.side, qty: String(fill.qty), filled_qty: String(fill.qty), filled_avg_price: String(fill.price), status: "filled" }
-    }, at);
+    if (!fill.orderId) {
+        await emitEvent(accountId, "trades", {
+            account_id: accountId, event: "fill", execution_id: row.id, price: String(fill.price), qty: String(fill.qty), timestamp: at.toISOString(),
+            position_qty: String(await positionQty(db, accountId, symbol)),
+            order: { symbol, side: fill.side, qty: String(fill.qty), filled_qty: String(fill.qty), filled_avg_price: String(fill.price), status: "filled" }
+        }, at, db);
+    }
     return row;
 };
 
@@ -277,11 +294,12 @@ export const listLots = async (accountId: string, symbol?: string) => {
 };
 
 // Fills with their FIFO realized P&L, newest first, as Alpaca's trade activities plus the simulator's extra fields
-export const listFills = async (db: Db, accountId: string, { since }: { since?: Date } = {}) =>
+export const listFills = async (db: Db, accountId: string, { since, orderIds }: { since?: Date; orderIds?: string[] } = {}) =>
     (await db.query<SimActivityRow>(
         `SELECT *, "date"::text AS "date", settle_date::text AS settle_date FROM sim_activities
-         WHERE account_id = $1 AND activity_type = 'FILL' AND ($2::timestamptz IS NULL OR created_at > $2) ORDER BY created_at DESC, id DESC`,
-        [accountId, since ?? null]
+         WHERE account_id = $1 AND activity_type = 'FILL' AND ($2::timestamptz IS NULL OR created_at > $2) AND ($3::uuid[] IS NULL OR order_id = ANY($3))
+         ORDER BY created_at DESC, id DESC`,
+        [accountId, since ?? null, orderIds ?? null]
     )).rows;
 
 // The end of the trading day (the eod job): deducts each account's accrued regulatory fees, per day and type, rounded up to the cent

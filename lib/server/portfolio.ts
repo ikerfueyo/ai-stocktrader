@@ -9,6 +9,8 @@ import { formatCurrency, planBuyIn, roundCents, valueAccount, type Dividend, typ
 import { advanceTransfers } from "./broker/sim/transfers";
 import { applySplits, fillsAsTrades, listFills, ledgerState, openLots, postDividends as postAccountDividends, recordFill } from "./broker/sim/positions";
 import type { SimActivityRow } from "./broker/sim/shapes";
+import { orderReasons } from "./broker/sim/orders";
+import type { Order as BrokerOrder } from "./broker/types";
 import type { CashActivityRow, FillPolicy, Position, TradeHistoryRow, TradeType } from "../types";
 
 // The pool, or the client holding a user's account lock (withAccountLock)
@@ -67,7 +69,7 @@ export const toTransactionRow = (row: SimActivityRow, userId: string): TradeHist
     id: row.id, user_id: userId, date: row.created_at.toISOString(), type: row.side === "buy" ? "BUY" : "SELL", ticker: row.symbol ?? "",
     price: String(Number(row.price)), quantity: String(Number(row.qty)), total: Math.abs(Number(row.net_amount)).toFixed(2),
     reason: row.reason === "LIQUIDATION" ? "LIQUIDATION" : null, quote_time: row.quote_time ? row.quote_time.toISOString() : null,
-    fill_policy: (row.fill_policy ?? null) as TradeHistoryRow["fill_policy"], order_id: row.legacy_order_id ?? null,
+    fill_policy: (row.fill_policy ?? null) as TradeHistoryRow["fill_policy"], order_id: row.order_id ?? null, legacy_order_id: row.legacy_order_id ?? null,
     realized_pnl: row.realized_pl === null || row.realized_pl === undefined ? null : Number(row.realized_pl), settle_date: row.settle_date ?? null
 });
 
@@ -92,6 +94,12 @@ export const loadCashActivity = async (userId: string, db: Db = pool): Promise<C
         id: row.id, user_id: userId, date: row.created_at.toISOString(), type: typeOf(row.activity_type, Number(row.net_amount)), method: row.description,
         amount: Math.abs(Number(row.net_amount)).toFixed(2), ticker: row.symbol, reference: null
     }));
+};
+
+// Orders with the reason each one ended, from the broker (the simulator keeps it; Alpaca sends it with the order's trade event)
+export const withReasons = async <T extends BrokerOrder>(orders: T[]): Promise<(T & { reason: string | null })[]> => {
+    const reasons = await orderReasons(orders.map(({ id }) => id));
+    return orders.map(order => ({ ...order, reason: reasons.get(order.id) ?? null }));
 };
 
 // Runs fn in a database transaction on db, which must be a client (such as withAccountLock's)

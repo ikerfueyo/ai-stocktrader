@@ -1,5 +1,6 @@
 // Shapes shared by the API route handlers (app/api) and the pages that call them
 import type { AccountApplication } from "./kyc";
+import type { Order as BrokerOrder } from "./server/broker/types";
 
 export type { AccountApplication };
 
@@ -23,40 +24,15 @@ export interface TransactionRow {
     // The time of the quote the trade filled against, and which side of it (NULL for trades from before fills were server-set)
     quote_time: string | null;
     fill_policy: FillPolicy | null;
-    // The order this trade filled (limit, stop and queued orders), or NULL for an immediate market order or a buy-in
-    order_id: number | null;
-}
-
-export type OrderType = "MARKET" | "LIMIT" | "STOP" | "STOP_LIMIT";
-export type TimeInForce = "DAY" | "GTC";
-export type OrderStatus = "OPEN" | "FILLED" | "CANCELLED" | "EXPIRED" | "REJECTED";
-
-// An orders row as the API returns it (NUMERIC columns as strings). quantity is null for a dollar-amount market order (amount).
-export interface OrderRow {
-    id: number;
-    user_id: string;
-    created_at: string;
-    updated_at: string;
-    ticker: string;
-    side: TradeType;
-    order_type: OrderType;
-    quantity: string | null;
-    amount: string | null;
-    limit_price: string | null;
-    stop_price: string | null;
-    time_in_force: TimeInForce;
-    expires_at: string | null;
-    status: OrderStatus;
-    triggered_at: string | null;
-    status_reason: string | null;
-    close_only: boolean;
-    // The fill, for a FILLED order
-    transaction_id?: number | null;
+    // The order this trade filled (the broker's order ID), or NULL for a buy-in or a fill from before Phase 4 (legacy_order_id: the
+    // app's mock order it filled)
+    order_id: string | null;
+    legacy_order_id?: number | null;
 }
 
 // Which price a trade filled at: the quoted ask (buys) or bid (sells), a simulated spread around the last price when there's no
-// bid/ask data, or the last price itself
-export type FillPolicy = "ASK" | "BID" | "SIM_ASK" | "SIM_BID" | "LAST";
+// bid/ask data, the last price itself, or the opening or closing auction price (OPG and CLS orders)
+export type FillPolicy = "ASK" | "BID" | "SIM_ASK" | "SIM_BID" | "LAST" | "OPEN" | "CLOSE";
 
 // How current a quote is: realtime, or the last session's close
 export type QuoteDelay = "realtime" | "end-of-day";
@@ -397,33 +373,13 @@ export interface DailySeries {
     "Time Series (Daily)": Record<string, DailyBar>;
 }
 
-// POST /api/trading/[ticker]: a market order for a number of shares or a dollar amount (one of the two). The server sets the
-// fill price (the ask for buys, the bid for sells), the total and the time. While the market is closed it's queued as an order
-// for the open instead (TradeResponse).
-export interface TradeRequest {
-    order: {
-        type: TradeType;
-        quantity?: number;
-        amount?: number;
-    };
-    // From the Portfolio page: refuse (409) rather than flip a position that's smaller than the trade
-    close?: boolean;
-}
+// An order as the order routes return it: the broker's, with why it ended (the reason its trade event gave), when it did
+export type AppOrder = BrokerOrder & { reason?: string | null };
 
-// POST /api/trading/[ticker]: the fill, or the queued order while the market is closed
-export type TradeResponse = { fill: TransactionRow; order?: undefined } | { order: OrderRow; fill?: undefined };
-
-// POST /api/orders: a limit, stop or stop-limit order for a number of shares
-export interface OrderRequest {
-    order: {
-        ticker: string;
-        side: TradeType;
-        orderType: Exclude<OrderType, "MARKET">;
-        quantity: number;
-        limitPrice?: number;
-        stopPrice?: number;
-        timeInForce: TimeInForce;
-    };
+// GET /api/orders/[id]: the order with its legs, and its fills (and those of the orders it replaced), newest first
+export interface OrderDetails {
+    order: AppOrder;
+    fills: TradeHistoryRow[];
 }
 
 // GET /api/funding: transfer limits and fees, in dollars (minimum and dailyAch per transfer and banking day, instant the deposit
@@ -450,7 +406,8 @@ export interface TransferRequest {
 // Brokerage accounts. Account objects are Alpaca's (the broker's shape), re-exported for the pages.
 export type {
     Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse, ACHRelationship as AchRelationship, Bank as RecipientBank,
-    Transfer as BrokerTransfer, TradeAccount as BrokerTradeAccount, Activity as BrokerActivity, Position as BrokerPosition
+    Transfer as BrokerTransfer, TradeAccount as BrokerTradeAccount, Activity as BrokerActivity, Position as BrokerPosition,
+    Order as BrokerOrder, CreateOrderRequest as BrokerOrderRequest, UpdateOrderRequest as BrokerOrderUpdate
 } from "./server/broker/types";
 
 // GET /api/accounts/[id]/lots: an open tax lot (FIFO), with whether selling it now would be a long-term gain or loss

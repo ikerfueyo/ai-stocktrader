@@ -9,8 +9,8 @@ import AnalysisDetailsView from "./AnalysisDetailsView";
 import PositionLots from "./PositionLots";
 import { useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
-import { convertValue, formatCurrency, formatPrice, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
-import type { PortfolioPosition, PositionAnalysis, PositionVerdict, TradeRequest, TradeResponse } from "@/lib/types";
+import { convertValue, describePlacedOrder, formatCurrency, formatPrice, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
+import type { AppOrder, BrokerOrderRequest, PortfolioPosition, PositionAnalysis, PositionVerdict } from "@/lib/types";
 
 const VERDICT_LABELS: Record<PositionVerdict, string> = { HOLD: "Hold", SELL: "Sell", COVER: "Cover" };
 
@@ -69,28 +69,34 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
     };
 
     const onClosePosition = async () => {
-        // Longs close with a sell, shorts with a buy (cover)
-        const type = isLong ? "SELL" : "BUY";
+        // Longs close with a sell, shorts with a buy (cover): a day market order with a closing position intent, which the broker caps
+        // at the position when it fills, so it can't flip it (even if a buy-in has shrunk it since this page loaded)
+        const side = isLong ? "sell" : "buy";
         const action = isLong ? "sell" : "cover";
         setSubmitting(true);
         setStatus(null);
         try {
-            // A dollar amount that covers the whole position closes it exactly on the server, at whatever the fill price is
-            const order: TradeRequest["order"] = mode === "dollars" && stepperValue < maxValue
-                ? { type, amount: stepperValue }
-                : { type, quantity: closeQuantity };
-            // close: the server refuses (rather than flipping the position) if a buy-in has shrunk it since this page loaded
-            const { data } = await axios.post<TradeResponse>(`/api/trading/${ticker}`, { order, close: true } satisfies TradeRequest);
+            // A dollar amount that covers the whole position is sent as the whole position, so it closes it exactly
+            const size = mode === "dollars" && stepperValue < maxValue ? { notional: stepperValue.toFixed(2) } : { qty: String(closeQuantity) };
+            const request: BrokerOrderRequest = {
+                symbol: ticker, side, type: "market", time_in_force: "day", ...size, position_intent: isLong ? "sell_to_close" : "buy_to_close",
+                client_order_id: crypto.randomUUID()
+            };
+            const { data: order } = await axios.post<AppOrder>("/api/orders", request);
             setMode("shares");
             setTradeValue(1);
-            if (data.order) {
-                const size = data.order.quantity !== null ? `${formatShares(data.order.quantity)} ${ticker}` : `${formatCurrency(data.order.amount!)} of ${ticker}`;
-                setStatus({ ok: true, message: `The market is closed: ${action === "sell" ? "selling" : "covering"} ${size} is queued as a market order for the open.` });
+            const filled = Number(order.filled_qty ?? 0);
+            if (order.status === "accepted") {
+                setStatus({ ok: true, message: `The market is closed: ${action === "sell" ? "selling" : "covering"} ${size.qty ? `${formatShares(size.qty)} ${ticker}` : `${formatCurrency(size.notional!)} of ${ticker}`} is queued as a market order for the open.` });
                 onQueued();
-            } else {
-                const filled = parseFloat(data.fill.quantity);
-                setStatus({ ok: true, message: `${isLong ? "Sold" : "Covered"} ${formatShares(filled)} ${ticker} at ${formatPrice(data.fill.price)} (${formatCurrency(data.fill.total)})` });
+            } else if (order.status === "filled") {
+                setStatus({ ok: true, message: `${isLong ? "Sold" : "Covered"} ${formatShares(filled)} ${ticker} at ${formatPrice(order.filled_avg_price!)} (${formatCurrency(filled * Number(order.filled_avg_price))})` });
                 onTrade(ticker, isLong ? -filled : filled);
+            } else {
+                const placed = describePlacedOrder(order);
+                setStatus({ ok: placed.ok, message: order.reason && !placed.ok ? `${placed.message}: ${order.reason}` : placed.message });
+                if (filled > 0) onTrade(ticker, isLong ? -filled : filled);
+                onQueued();
             }
             refreshAccount();
         } catch (error) {

@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { conformanceErrors } from "../conformance";
-import { assetId, toAccount, toAchRelationship, toActivity, toAsset, toBank, toCalendar, toClock, toOptionsApproval, toTransfer, type SimAccountRow } from "./shapes";
+import { assetId, toAccount, toAchRelationship, toActivity, toAsset, toBank, toCalendar, toClock, toFillActivity, toOptionsApproval, toOrder, toTransfer, type SimAccountRow, type SimActivityRow, type SimOrderRow } from "./shapes";
 import { defaultConfigurations } from "./kyc";
 import { toAlpacaPosition, toTradeAccount } from "./tradeAccount";
 
@@ -136,5 +136,57 @@ describe("The trading account and positions conform to Alpaca's spec", () => {
         const short = toAlpacaPosition({ ticker: "AAPL", quantity: -10, avgCost: 100 }, asset, { price: 90, previousClose: 95 });
         assert.deepEqual(conformanceErrors(short, "Position"), []);
         assert.deepEqual([short.side, short.qty, short.market_value, short.unrealized_pl], ["short", "-10", "-900.00", "100.00"], "a short gains as the price falls");
+    });
+});
+
+describe("Orders and their fills conform to Alpaca's spec", () => {
+    const at = new Date("2026-10-28T14:00:00Z");
+    const row = (overrides: Partial<SimOrderRow> = {}): SimOrderRow => ({
+        id: "2f1d7c64-8f3e-4b9a-9d0e-7b1c2a3d4e5f", account_id: "6c1b2f0e-6a77-4d5e-9a3a-1f4b7f6d0a11", client_order_id: "my-order-1", symbol: "AAPL",
+        side: "buy", type: "limit", time_in_force: "gtc", order_class: "simple", position_intent: null, qty: "10.000000000", notional: null,
+        limit_price: "180.000000", stop_price: null, trail_price: null, trail_percent: null, hwm: null, extended_hours: false, status: "new",
+        filled_qty: "0.000000000", filled_notional: "0.00", filled_avg_price: null, parent_id: null, group_id: null, group_role: null, replaces: null,
+        replaced_by: null, stop_triggered_at: null, expires_at: at, reason: null, created_at: at, updated_at: at, submitted_at: at, filled_at: null,
+        expired_at: null, canceled_at: null, failed_at: null, replaced_at: null, cancel_requested_at: null, ...overrides
+    });
+
+    test("a simple limit order", () => {
+        const order = toOrder(row());
+        assert.deepEqual(conformanceErrors(order, "Order"), []);
+        assert.deepEqual([order.qty, order.limit_price, order.filled_qty, order.filled_avg_price, order.legs], ["10", "180", "0", null, null]);
+        assert.equal(order.asset_id, assetId("AAPL"));
+    });
+
+    test("a filled notional market order", () => {
+        const order = toOrder(row({ type: "market", time_in_force: "day", qty: null, notional: "250.00", limit_price: null, status: "filled", filled_qty: "1.385041551", filled_notional: "250.00", filled_avg_price: "180.500000", filled_at: at }));
+        assert.deepEqual(conformanceErrors(order, "Order"), []);
+        assert.deepEqual([order.qty, order.notional, order.filled_qty, order.filled_avg_price], [null, "250", "1.385041551", "180.5"]);
+    });
+
+    test("a bracket with its legs nested, and a trailing stop", () => {
+        const group = { group_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", order_class: "bracket" as const };
+        const legs = [
+            row({ ...group, id: "3b2a1c0d-9e8f-4a7b-8c6d-5e4f3a2b1c0d", side: "sell", limit_price: "200.000000", group_role: "take_profit", parent_id: "2f1d7c64-8f3e-4b9a-9d0e-7b1c2a3d4e5f", client_order_id: "leg-1" }),
+            row({ ...group, id: "4c3b2a1d-0e9f-4b8a-9d7c-6e5f4a3b2c1d", side: "sell", type: "stop", limit_price: null, stop_price: "170.000000", group_role: "stop_loss", parent_id: "2f1d7c64-8f3e-4b9a-9d0e-7b1c2a3d4e5f", client_order_id: "leg-2" })
+        ];
+        // Legs only go live when the entry fills: activated, so the statuses are in the spec's enum
+        const order = toOrder(row({ ...group, group_role: "entry", status: "filled", filled_qty: "10.000000000", filled_avg_price: "180.000000" }), { legs });
+        assert.deepEqual(conformanceErrors(order, "Order"), []);
+        assert.equal(order.legs?.length, 2);
+        assert.equal("legs" in order.legs![0], false, "a nested leg has no legs of its own");
+        const trailing = toOrder(row({ type: "trailing_stop", side: "sell", limit_price: null, trail_percent: "5.0000", hwm: "190.000000", stop_price: "180.500000" }));
+        assert.deepEqual(conformanceErrors(trailing, "Order"), []);
+        assert.deepEqual([trailing.trail_percent, trailing.hwm, trailing.stop_price], ["5", "190", "180.5"]);
+    });
+
+    test("a partial fill links its order", () => {
+        const fill = toFillActivity({
+            id: "20261028140000000::5d4c3b2a-1e0f-4a9b-8c7d-6e5f4a3b2c1d", account_id: "6c1b2f0e-6a77-4d5e-9a3a-1f4b7f6d0a11", activity_type: "FILL", activity_sub_type: null,
+            date: "2026-10-28", created_at: at, net_amount: "-1800.00", description: "Bought 10 AAPL", status: "executed", transfer_id: null, symbol: "AAPL",
+            qty: "10.000000000", per_share_amount: null, side: "buy", price: "180.000000", leaves_qty: "90.000000000", cum_qty: "10.000000000",
+            order_id: "2f1d7c64-8f3e-4b9a-9d0e-7b1c2a3d4e5f"
+        } satisfies SimActivityRow);
+        assert.deepEqual(conformanceErrors(fill, "TradeActivity"), []);
+        assert.deepEqual([fill.type, fill.order_status, fill.order_id], ["partial_fill", "partially_filled", "2f1d7c64-8f3e-4b9a-9d0e-7b1c2a3d4e5f"]);
     });
 });
