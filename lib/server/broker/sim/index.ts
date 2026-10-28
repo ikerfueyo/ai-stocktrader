@@ -9,11 +9,12 @@ import * as positions from "./positions";
 import * as orders from "./orders";
 import * as margin from "./marginAccount";
 import * as locates from "./locates";
+import * as documents from "./documents";
 import { toAsset, toCalendar, toClock } from "./shapes";
 
 // The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), funding
 // (./transfers.ts: bank links, recipient banks, transfers and the cash activities they post), the trading account, positions and
-// ledger (./positions.ts), margin (./marginAccount.ts, ./calls.ts), orders (./orders.ts), locates (./locates.ts), assets, the calendar and clock, and the event streams are implemented; options and
+// ledger (./positions.ts), margin (./marginAccount.ts, ./calls.ts), orders (./orders.ts), locates (./locates.ts), documents (./documents.ts), assets, the calendar and clock, and the event streams are implemented; options and
 // documents arrive in later phases (docs/brokerage-roadmap.md) and answer 501 until then.
 const notYet = (what: string, phase: number) => (): never => {
     throw new BrokerError(501, 50100000, `${what} isn't simulated yet (phase ${phase} of the brokerage roadmap)`);
@@ -107,6 +108,6 @@ export class SimBroker implements Broker {
     listTransfers = transfers.listTransfers;
     cancelTransfer = transfers.cancelTransfer;
     listActivities = transfers.listActivities;
-    listDocuments = notYet("Documents", 7);
-    downloadDocument = notYet("Documents", 7);
+    listDocuments = documents.listDocuments;
+    downloadDocument = documents.downloadDocument;
 }

@@ -8,6 +8,7 @@ import { findAsset } from "../../assets";
 import { planDividends, roundCents, type Dividend, type Split, type Trade } from "../../account";
 import { easternParts, easternTime, settlementDate } from "../../../marketHours";
 import { emitEvent } from "./accounts";
+import { withhold } from "./withholding";
 import { activityId, ledgerCash, postActivity } from "./transfers";
 import { applyFill, isLongTerm, positionsFromLots, type Lot } from "./ledger";
 import { applyActionToLots, type CorporateAction, type CorporateActionType, type LotEffect } from "./corporateActions";
@@ -202,6 +203,7 @@ export const postDividends = async (db: Db, accountId: string, corporate: { spli
         const payment = corporate.dividends.find(dividend => dividend.ticker === ticker && dividend.exDate === exDate)?.paymentDate ?? exDate;
         const at = new Date(Math.min(easternTime(payment, "16:00").getTime(), now.getTime()));
         const credit = type === "DIVIDEND_IN";
+        if (credit) await withhold(db, accountId, { amount: total, on: "dividends", symbol: ticker, at });
         posted.push(await postActivity(db, {
             accountId, type: "DIV", subType: "CDIV", netAmount: credit ? total : -total, symbol: ticker, qty: shares, perShareAmount: perShare, at,
             description: `${ticker} cash dividend: ${parseFloat(shares.toFixed(6))} ${credit ? "shares" : "shares short (charged)"} × $${perShare}`
@@ -272,6 +274,11 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
             `INSERT INTO sim_lots (id, account_id, symbol, side, qty, original_qty, price, acquired_at, fill_id) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`,
             [opened.id, accountId, symbol, opened.side, opened.qty, opened.price, at, row.id]
         );
+    }
+    // Backup withholding on the gross proceeds of the shares it closed (a long's sale price, a short's original sale price)
+    if (closings.length > 0) {
+        const proceeds = closings.reduce((sum, closing) => sum + closing.qty * (fill.side === "sell" ? fill.price : lots.find(({ id }) => id === closing.lotId)!.price), 0);
+        await withhold(db, accountId, { amount: roundCents(proceeds), on: "proceeds", symbol, at });
     }
     for (const { type, amount } of feesFor({ side: fill.side, qty: fill.qty, price: fill.price, date: day })) {
         await db.query(`INSERT INTO sim_fee_accruals (account_id, "date", fee_type, amount, fill_id) VALUES ($1, $2, $3, $4, $5)`, [accountId, day, type, amount, row.id]);

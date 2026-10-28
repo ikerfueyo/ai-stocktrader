@@ -1,8 +1,10 @@
 // Shapes shared by the API route handlers (app/api) and the pages that call them
 import type { AccountApplication } from "./kyc";
 import type { Order as BrokerOrder } from "./server/broker/types";
+import type { TaxYear as TaxYearFigures } from "./server/broker/sim/tax";
 
 export type { AccountApplication };
+export type { TaxYearFigures };
 
 export type TradeType = "BUY" | "SELL";
 export type TransferType = "DEPOSIT" | "WITHDRAW";
@@ -76,7 +78,8 @@ export interface QuoteBook {
 
 // INTEREST is margin interest charged (posted monthly); CORPORATE_ACTION_IN cash received from a merger or in lieu of a fractional
 // share, CORPORATE_ACTION_OUT cash a short pays for one
-export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE" | "INTEREST" | "CORPORATE_ACTION_IN" | "CORPORATE_ACTION_OUT";
+// WITHHOLDING is backup withholding (24%, while the W-9 calls for it)
+export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE" | "INTEREST" | "CORPORATE_ACTION_IN" | "CORPORATE_ACTION_OUT" | "WITHHOLDING";
 
 // An entry of the account's cash ledger as GET /api/transfers returns it: a deposit, withdrawal or fee from the broker's activities
 // (method is its description; id is the activity's), or a dividend received on a long or paid on a short from the mock ledger
@@ -404,6 +407,22 @@ export interface DailySeries {
 // An order as the order routes return it: the broker's, with why it ended (the reason its trade event gave), when it did
 export type AppOrder = BrokerOrder & { reason?: string | null };
 
+// GET /api/tax/[year]: the year's 1099 figures (the realized gains and losses, each sale with its wash sale adjustment and term) and
+// the open lots' unrealized gains with their tax basis
+export type TaxReport = TaxYearFigures & {
+    unrealized: {
+        id: string; symbol: string; side: "long" | "short"; qty: number; acquiredAt: string; dateAcquired: string; price: number; costBasis: number;
+        washAdjustment: number; marketValue: number | null; unrealized: number | null; term: "short" | "long";
+    }[];
+};
+
+// GET/POST /api/accounts/[id]/w9: the account's W-9 certification
+export interface W9Certification {
+    onFile: boolean;
+    backupWithholding: boolean;
+    signedAt: string | null;
+}
+
 // GET /api/quote/[ticker]/corporate-actions: a split, dividend, stock dividend, merger, spinoff, symbol change or removal
 export interface CorporateActionEntry {
     type: "SPLIT" | "DIVIDEND" | "STOCK_DIVIDEND" | "CASH_MERGER" | "STOCK_MERGER" | "MIXED_MERGER" | "SPINOFF" | "NAME_CHANGE" | "WORTHLESS";
@@ -447,7 +466,7 @@ export type {
     Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse, ACHRelationship as AchRelationship, Bank as RecipientBank,
     Transfer as BrokerTransfer, TradeAccount as BrokerTradeAccount, Activity as BrokerActivity, Position as BrokerPosition,
     Order as BrokerOrder, CreateOrderRequest as BrokerOrderRequest, UpdateOrderRequest as BrokerOrderUpdate, Asset as BrokerAsset, Locate, LocateQuote,
-    ListLocateQuotesResponse, CreateLocateRequest as BrokerLocateRequest
+    ListLocateQuotesResponse, CreateLocateRequest as BrokerLocateRequest, AccountDocument as BrokerDocument
 } from "./server/broker/types";
 
 // GET /api/accounts/[id]/lots: an open tax lot (FIFO), with whether selling it now would be a long-term gain or loss

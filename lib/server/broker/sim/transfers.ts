@@ -39,14 +39,16 @@ export const activityId = (at: Date) => `${at.toISOString().replace(/\D/g, "").s
 // Posts an activity to the ledger, with its nta event
 export const postActivity = async (db: PoolClient | typeof pool, activity: {
     accountId: string; type: string; subType?: string; netAmount: number; description: string; transferId?: string; at?: Date;
-    symbol?: string; qty?: number; perShareAmount?: number
+    symbol?: string; qty?: number; perShareAmount?: number;
+    // What it's for, where a type covers several (backup withholding on dividends or on proceeds)
+    reason?: string;
 }): Promise<SimActivityRow> => {
     const at = activity.at ?? new Date();
     const { rows: [row] } = await db.query<SimActivityRow>(
-        `INSERT INTO sim_activities (id, account_id, activity_type, activity_sub_type, "date", created_at, net_amount, description, transfer_id, symbol, qty, per_share_amount)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *, "date"::text AS "date"`,
+        `INSERT INTO sim_activities (id, account_id, activity_type, activity_sub_type, "date", created_at, net_amount, description, transfer_id, symbol, qty, per_share_amount, reason)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *, "date"::text AS "date"`,
         [activityId(at), activity.accountId, activity.type, activity.subType ?? null, easternParts(at).dateKey, at, activity.netAmount.toFixed(2), activity.description.slice(0, 255),
-            activity.transferId ?? null, activity.symbol ?? null, activity.qty ?? null, activity.perShareAmount ?? null]
+            activity.transferId ?? null, activity.symbol ?? null, activity.qty ?? null, activity.perShareAmount ?? null, activity.reason ?? null]
     );
     await emitEvent(activity.accountId, "nta", toActivity(row), at);
     return row;

@@ -14,6 +14,7 @@ import { advanceAccounts } from "./broker/sim/accounts";
 import { advanceTransfers, fastForwardTransfers } from "./broker/sim/transfers";
 import { applyDueCorporateActions, endOfDay } from "./broker/sim/positions";
 import { matchOrders, processCorporateActionOrders } from "./broker/sim/orders";
+import { generateAllDocuments } from "./broker/sim/documents";
 import { accountsOnMargin, endOfDayMargin } from "./broker/sim/calls";
 import { postDividends } from "./portfolio";
 
@@ -118,6 +119,8 @@ export const JOBS: Job[] = [
     { name: "eod", slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
     // Corporate actions apply before the pre-market opens (reading an account, and every order match, apply them too)
     { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
+    // Documents that are due: the previous trading day's confirmations, statements after a month's first weekend, 1099s from Feb 15
+    { name: "documents", slots: ["06:30"], leaderOnly: true, run: () => generateAllDocuments() },
     // Dividends paid overnight post before the open, for every account with fills (reading an account posts them too)
     { name: "dividends", slots: ["06:00"], leaderOnly: true, run: postAllDividends },
     // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar

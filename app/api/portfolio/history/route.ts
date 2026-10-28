@@ -53,8 +53,8 @@ export const GET = withUser(async (request, context, userId) => {
         cash: cash.map(({ date, type, amount }) => ({
             date,
             amount: (type === "DEPOSIT" || type === "DIVIDEND_IN" || type === "CORPORATE_ACTION_IN" ? 1 : -1) * parseFloat(amount),
-            // Fees, interest and corporate action cash count in the return; deposits and withdrawals don't
-            external: type === "DEPOSIT" || type === "WITHDRAW"
+            // Fees, interest and corporate action cash count in the return; deposits, withdrawals and tax withheld (credited at filing) don't
+            external: type === "DEPOSIT" || type === "WITHDRAW" || type === "WITHHOLDING"
         })),
         splits, closes, dates
     });

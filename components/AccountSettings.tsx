@@ -5,6 +5,7 @@ import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
+import W9Certification from "./W9Certification";
 import { EXPERIENCE_LEVELS, US_STATES, type ExperienceLevel } from "@/lib/kyc";
 import type { AccountConfigurations, BrokerAccount, OptionsApprovalResponse } from "@/lib/types";
 
@@ -19,7 +20,7 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 );
 
 // Account settings: the account's details, contact and employment (an edited address, name or employer is reviewed), the trusted
-// contact, trading configurations, upgrades to margin and options, and closing the account
+// contact, trading configurations, upgrades to margin and options, the W-9 certification, and closing the account
 const AccountSettings = () => {
     const { active, refreshAccounts } = useBrokerAccount();
     const [account, setAccount] = useState<BrokerAccount | null>(null);
@@ -288,6 +289,10 @@ const AccountSettings = () => {
                     </div>
                 )}
                 <p className="text-muted">Options trading itself arrives in a later version; approval can be requested now.</p>
+            </Section>
+
+            <Section title="Tax certification (W-9)">
+                <W9Certification accountId={account.id} />
             </Section>
 
             <Section title="Close account">

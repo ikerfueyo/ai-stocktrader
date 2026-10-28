@@ -30,6 +30,7 @@ const Header = () => {
                 <nav className="header-nav">
                     <Link href="/portfolio" className="text-lg font-semibold mr-4">Portfolio</Link>
                     <Link href="/transactions" className="text-lg font-semibold mr-4">Transactions</Link>
+                    <Link href="/documents" className="text-lg font-semibold mr-4">Documents</Link>
                     <Link href="/deposit" className="header-pill deposit mr-2">Deposit</Link>
                     <Link href="/withdraw" className="header-pill withdraw mr-4">Withdraw</Link>
                     <AccountSwitcher />

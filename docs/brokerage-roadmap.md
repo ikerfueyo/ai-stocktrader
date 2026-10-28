@@ -272,6 +272,13 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 - **Backup withholding:** 24% on dividends and proceeds while the W-9 certification is missing.
 - **UI:** a Documents page (filters by type and year), a realized gains/losses report by tax year, and the unrealized lots view.
 
+- **As built (done):** the rules are `lib/server/broker/sim/tax.ts`, the pages `documentRender.ts` and the documents `documents.ts`, with backup withholding in `withholding.ts` (CLAUDE.md has the details). Where it differs from the plan above:
+  - Documents are HTML pages to print or save as PDF, marked simulated and not for filing; `trade_confirmation_json` downloads as JSON. Alpaca mode will proxy Alpaca's PDFs.
+  - Wash sales: long sales only, within the account by symbol (not CUSIP), each replacement share absorbing one share's loss; a replacement lot sold before the loss sale isn't revisited. Short sales are reported short term without wash adjustments.
+  - The W-9 certification is the app's (account_attestations), which the simulator reads for backup withholding; Settings can certify again. Withholding posts as WH (FWH), Alpaca's type for it, which the spec's ActivityType enum omits.
+  - 1099-INT is always zero: the simulator charges margin interest but pays no credit interest.
+  - Monthly statements list positions at the month's end from the replayed fills (quantities and cost), with the closing market values from the daily balances.
+
 ### Phase 8: Recurring buys, DRIP, alerts and notifications (app-level, work on either broker)
 - **Recurring investments:** a ticker, an amount (notional), a schedule (daily, weekly, every two weeks or monthly), and a funding check. They place a day notional market order at the open through `broker.createOrder` with a `client_order_id` derived from the schedule and date, so each runs at most once. They pause when an order is rejected for buying power, and the user is notified.
 - **DRIP:** set per account and per position. On each `DIV` event, place a notional buy for the net amount (fractionable assets only; at least $1, or accumulate).

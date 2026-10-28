@@ -490,3 +490,20 @@ CREATE TABLE sim_locates (
     expires_at TIMESTAMPTZ
 );
 CREATE INDEX sim_locates_account_idx ON sim_locates (account_id, symbol, created_at);
+
+-- The simulator's account documents (Alpaca's AccountDocument), each kept with the data it shows; preliminary ones are regenerated
+CREATE TABLE sim_documents (
+    id UUID PRIMARY KEY,
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    "type" VARCHAR(32) NOT NULL CHECK ("type" IN ('account_application', 'account_statement', 'tax_statement', 'trade_confirmation', 'trade_confirmation_json')),
+    sub_type VARCHAR(64),
+    name VARCHAR(255) NOT NULL,
+    "date" DATE NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    preliminary BOOLEAN NOT NULL DEFAULT false,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (account_id, "type", period_start, period_end, preliminary)
+);
+CREATE INDEX sim_documents_account_idx ON sim_documents (account_id, "date");

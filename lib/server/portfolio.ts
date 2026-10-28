@@ -79,16 +79,16 @@ export const getFills = async (userId: string, { since }: { since?: Date } = {},
 };
 
 // The user's cash ledger, oldest first, as CashActivityRows: the broker's cash activities (CSD deposits, CSW withdrawals, FEE fees,
-// DIV dividends received or charged on shorts, INT margin interest, MA and CIL cash from corporate actions; fills are on the Trades tab)
+// DIV dividends received or charged on shorts, INT margin interest, WH backup withholding, MA and CIL cash from corporate actions; fills are on the Trades tab)
 export const loadCashActivity = async (userId: string, db: Db = pool): Promise<CashActivityRow[]> => {
     const accountId = await ledgerAccountId(userId, db);
     if (!accountId) return [];
     const { rows } = await db.query<{ id: string; activity_type: string; created_at: Date; net_amount: string; description: string; symbol: string | null }>(
-        "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND (activity_type IN ('CSD', 'CSW', 'FEE', 'DIV', 'INT') OR (activity_type IN ('MA', 'CIL') AND net_amount <> 0)) ORDER BY created_at, id",
+        "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND (activity_type IN ('CSD', 'CSW', 'FEE', 'DIV', 'INT', 'WH') OR (activity_type IN ('MA', 'CIL') AND net_amount <> 0)) ORDER BY created_at, id",
         [accountId]
     );
     const typeOf = (activity: string, amount: number): CashActivityRow["type"] =>
-        activity === "DIV" ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : activity === "CSD" ? "DEPOSIT" : activity === "CSW" ? "WITHDRAW" : activity === "INT" ? "INTEREST"
+        activity === "DIV" ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : activity === "CSD" ? "DEPOSIT" : activity === "CSW" ? "WITHDRAW" : activity === "INT" ? "INTEREST" : activity === "WH" ? "WITHHOLDING"
             : activity === "MA" || activity === "CIL" ? (amount >= 0 ? "CORPORATE_ACTION_IN" : "CORPORATE_ACTION_OUT") : "FEE";
     return rows.map(row => ({
         id: row.id, user_id: userId, date: row.created_at.toISOString(), type: typeOf(row.activity_type, Number(row.net_amount)), method: row.description,
