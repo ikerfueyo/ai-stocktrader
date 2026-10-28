@@ -3,8 +3,7 @@
 import { useAccount } from "@/context/AccountContext";
 import { formatCurrency, formatSigned } from "@/lib/orders";
 
-// Available cash (with any short collateral and open-order reservations held back from it), equity and unrealized P&L, shown in the
-// center of the header
+// Buying power (with the margin in use and what open orders hold back), equity and unrealized P&L, shown in the center of the header
 const AccountSummary = () => {
     const { account, error } = useAccount();
 
@@ -26,17 +25,16 @@ const AccountSummary = () => {
     return (
         <div className="header-center">
             <div className="account-stat">
-                <span className="account-label">Available</span>
-                <span className="account-value">{account ? formatCurrency(account.availableCash) : "…"}</span>
-                {account && account.restrictedCash > 0 && (
-                    <span className="account-restricted"
-                        title={`Held as short collateral: 150% of your ${formatCurrency(account.shortLiability)} short liability. Total cash: ${formatCurrency(account.totalCash)}.`}>
-                        +{formatCurrency(account.restrictedCash)} restricted
+                <span className="account-label" title="What new positions can use: cash at 1x; on margin, (equity - initial margin) × the multiplier">Buying power</span>
+                <span className="account-value">{account ? formatCurrency(account.buyingPower) : "…"}</span>
+                {account && account.multiplier > 1 && (
+                    <span className="account-restricted" title={`Margin at ${account.multiplier}x${account.maxMultiplier === 4 && account.multiplier === 4 ? " intraday (2x overnight)" : ""}. Cash: ${formatCurrency(account.totalCash)}.`}>
+                        {account.multiplier}x margin{account.debitBalance > 0 ? ` · ${formatCurrency(account.debitBalance)} borrowed` : ""}
                     </span>
                 )}
                 {account && account.reservedCash > 0 && (
                     <span className="account-restricted" title="Held back for open orders that would open or add to a position, until they fill or are cancelled">
-                        +{formatCurrency(account.reservedCash)} reserved for orders
+                        {formatCurrency(account.reservedCash)} held for orders
                     </span>
                 )}
                 {account && account.unsettledProceeds > 0 && (

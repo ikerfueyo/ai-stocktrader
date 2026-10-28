@@ -238,6 +238,12 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - While a call is open, new opening trades are blocked. Liquidation trades are marked in the activity's description.
 - **UI:** a margin panel (buying power types, maintenance, SMA, call status with deadline and amount due), a `MarginBanner` rewrite, a short ticket showing borrow status and the locate flow, and margin and short eligibility messages.
 
+- **As built (done):** the rules are `lib/server/broker/sim/margin.ts`; the simulator runs them in `marginAccount.ts` (snapshot, buying power, withdrawals, the trading account), `calls.ts` (calls, liquidation, interest, borrow fees) and `locates.ts` (CLAUDE.md has the details). Where it differs from the plan above:
+  - HTB shorts follow Alpaca's locate API (`/v1/locates`, in the Trading API): locates in round lots of 100, single use, with a non-refundable fee charged when granted, good until 8:00 p.m. ET. Fees, inventory and the borrow rate are simulated (`SIM_LOCATE_FEE_RATE`, `SIM_LOCATE_AVAILABLE`, `SIM_HTB_BORROW_RATE`). Without Alpaca's flags every stock is easy to borrow, so `SIM_HTB_SYMBOLS` marks some for testing.
+  - Calls: maintenance and Reg T (the latter only after a day that opened positions, since a fall in prices doesn't call for initial margin), issued the morning after the close and due `SIM_MARGIN_CALL_DAYS` trading days later (default 2; Alpaca doesn't publish a deadline). Immediate liquidation below `SIM_LIQUIDATION_RATIO` of the maintenance requirement (default 0.75), Alpaca's "materially below". A call is met when the deficiency is gone or deposits since it was issued cover it.
+  - Not modeled yet: the intraday margin deficit of FINRA Rule 4210(d)(2) (the 4x intraday buying power with the overnight Reg T call covers its effect), the 90-day restriction for repeated misses, and a running SMA (reported as the excess over Reg T initial margin).
+  - Margin interest is 6.50% (the non-elite rate), on the settlement-date debit, and posts after the month's last trading day.
+
 ### Phase 6: Corporate actions
 - Splits and dividends keep coming from Alpha Vantage `SPLITS`/`DIVIDENDS` (`lib/server/corporateActions.ts`). Mergers, spinoffs and symbol changes come from Alpaca's corporate-actions endpoint, all stored in `corporate_actions` (add the types).
 - **Effects:**

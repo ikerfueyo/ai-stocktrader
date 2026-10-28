@@ -12,10 +12,11 @@ const FILTERS = [
     { label: "Trades", types: "FILL" },
     { label: "Deposits & withdrawals", types: "CSD,CSW" },
     { label: "Fees", types: "FEE" },
+    { label: "Interest", types: "INT" },
     { label: "Dividends", types: "DIV" },
     { label: "Splits", types: "SPLIT" }
 ];
-const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split" };
+const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split", INT: "Interest" };
 
 // The fields the feed shows, from either a trade activity or a non-trade one
 const describe = (activity: BrokerActivity) => {

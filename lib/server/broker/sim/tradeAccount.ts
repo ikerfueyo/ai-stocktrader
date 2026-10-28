@@ -1,8 +1,8 @@
 // The simulator's trading account and positions in Alpaca's shapes (GET /v1/trading/accounts/{id}/account and /positions). Pure,
-// so the tests can check them against the spec. Until margin arrives (Phase 5), buying power and the margin figures come from the
-// app's cash-collateral model (lib/server/account.ts's valueAccount): no borrowing, 150% of the shorts held as collateral.
+// so the tests can check them against the spec. The margin figures come from ./margin.ts's computeMargin.
 import type { AccountConfigurations, Position as AlpacaPosition, TradeAccount } from "../types";
 import type { Position } from "../../../types";
+import type { MarginState } from "./margin";
 
 const money = (value: number) => (Math.round(value * 100) / 100).toFixed(2);
 const decimal = (value: number) => String(Math.round(value * 1e6) / 1e6);
@@ -12,27 +12,25 @@ export interface TradeAccountInput {
         id: string; account_number: string; status: string; created_at: Date; trading_blocked: boolean; transfers_blocked: boolean;
         account_blocked: boolean; configurations: AccountConfigurations; options_approved_level: number; hasMarginAgreement: boolean;
     };
-    // The ledger's cash (every activity's net amount), before queued withdrawals leave it
-    cash: number;
-    longMarketValue: number;
-    // Positive: what it would cost to buy back the shorts
-    shortMarketValue: number;
-    // From valueAccount: what's available for new positions, and the shorts' collateral requirement and buy-in level
-    buyingPower: number;
-    initialMargin: number;
-    maintenanceMargin: number;
+    // The margin figures, with cash as the ledger's (every activity's net amount), before queued withdrawals leave it
+    state: Pick<MarginState, "cash" | "longMarketValue" | "shortMarketValue" | "buyingPower" | "regtBuyingPower" | "nonMarginableBuyingPower" | "initialMargin" | "maintenanceMargin" | "sma">;
+    multiplier: number;
+    shortingEnabled: boolean;
     withdrawable: number;
     accruedFees: { REG: number; TAF: number; CAT: number };
     pendingTransferOut: number;
-    // The last end-of-day snapshot (null before the first)
-    last: { date: string; equity: number; cash: number; longMarketValue: number; shortMarketValue: number; maintenanceMargin: number } | null;
+    // The last end-of-day snapshot (null before the first; its margin figures null before Phase 5's)
+    last: {
+        date: string; equity: number; cash: number; longMarketValue: number; shortMarketValue: number; maintenanceMargin: number;
+        initialMargin?: number | null; buyingPower?: number | null; regtBuyingPower?: number | null;
+    } | null;
 }
 
 export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
-    const { account, cash, longMarketValue, shortMarketValue } = input;
+    const { account, state } = input;
+    const { cash, longMarketValue, shortMarketValue } = state;
     const equity = cash + longMarketValue - shortMarketValue;
     const accrued = input.accruedFees.REG + input.accruedFees.TAF + input.accruedFees.CAT;
-    const shortingEnabled = account.hasMarginAgreement && !account.configurations.no_shorting;
     return {
         id: account.id,
         account_number: account.account_number,
@@ -44,11 +42,11 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
         cash_withdrawable: money(input.withdrawable),
         cash_transferable: money(input.withdrawable),
         pending_transfer_out: money(input.pendingTransferOut),
-        buying_power: money(input.buyingPower),
-        regt_buying_power: money(input.buyingPower),
-        effective_buying_power: money(input.buyingPower),
-        non_marginable_buying_power: money(input.buyingPower),
-        options_buying_power: money(input.buyingPower),
+        buying_power: money(state.buyingPower),
+        regt_buying_power: money(state.regtBuyingPower),
+        effective_buying_power: money(state.buyingPower),
+        non_marginable_buying_power: money(state.nonMarginableBuyingPower),
+        options_buying_power: money(state.nonMarginableBuyingPower),
         accrued_fees: money(accrued),
         pending_reg_taf_fees: money(input.accruedFees.REG + input.accruedFees.TAF),
         equity: money(equity),
@@ -57,12 +55,11 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
         // Alpaca reports the shorts' market value as negative
         short_market_value: money(-shortMarketValue),
         position_market_value: money(longMarketValue - shortMarketValue),
-        initial_margin: money(input.initialMargin),
-        maintenance_margin: money(input.maintenanceMargin),
-        sma: "0",
-        // Margin is Phase 5; every account is 1x until then, whatever its configuration allows
-        multiplier: "1",
-        shorting_enabled: shortingEnabled,
+        initial_margin: money(state.initialMargin),
+        maintenance_margin: money(state.maintenanceMargin),
+        sma: money(state.sma),
+        multiplier: String(input.multiplier),
+        shorting_enabled: input.shortingEnabled,
         options_approved_level: account.options_approved_level as TradeAccount["options_approved_level"],
         options_trading_level: (account.configurations.max_options_trading_level ?? 0) as TradeAccount["options_trading_level"],
         trading_blocked: account.trading_blocked,
@@ -75,9 +72,10 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
         last_cash: money(input.last?.cash ?? cash),
         last_long_market_value: money(input.last?.longMarketValue ?? longMarketValue),
         last_short_market_value: money(-(input.last?.shortMarketValue ?? shortMarketValue)),
-        last_maintenance_margin: money(input.last?.maintenanceMargin ?? input.maintenanceMargin),
-        last_buying_power: money(input.buyingPower),
-        last_regt_buying_power: money(input.buyingPower)
+        last_maintenance_margin: money(input.last?.maintenanceMargin ?? state.maintenanceMargin),
+        last_initial_margin: money(input.last?.initialMargin ?? state.initialMargin),
+        last_buying_power: money(input.last?.buyingPower ?? state.buyingPower),
+        last_regt_buying_power: money(input.last?.regtBuyingPower ?? state.regtBuyingPower)
     } as TradeAccount;
 };
 

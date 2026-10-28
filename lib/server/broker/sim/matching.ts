@@ -188,13 +188,14 @@ export const reservationPrice = (order: Pick<LiveOrder, "side" | "limitPrice" | 
     return order.stopPrice ?? buffered;
 };
 
-// What open orders that open or add to a position hold back from buying power, under the cash-collateral model until Phase 5: a buy
-// its remaining cost, a short half its remaining value (its proceeds cover the other 100% of the 150% collateral). Orders that close
-// the position (an order can't go through zero) and legs waiting for their entry hold nothing.
+// What open orders that open or add to a position hold back from buying power: a buy its remaining cost, a short sale its remaining
+// value (both at their reservation price), a non-marginable stock's on margin that × the multiplier (it needs 100% initial margin).
+// Orders that close the position (an order can't go through zero) and legs waiting for their entry hold nothing.
 export const reservedForOrders = (
     orders: (Pick<LiveOrder, "side" | "limitPrice" | "stopPrice" | "qty" | "notional" | "filledQty" | "filledNotional"> & { symbol: string; held?: boolean })[],
     positions: Record<string, number>,
-    quotes: Record<string, Pick<Quote, "price" | "ask" | "bid"> | undefined>
+    quotes: Record<string, Pick<Quote, "price" | "ask" | "bid"> | undefined>,
+    { marginable = {}, multiplier = 1 }: { marginable?: Record<string, boolean | null>; multiplier?: number } = {}
 ): number => {
     let reserved = 0;
     for (const order of orders) {
@@ -203,7 +204,7 @@ export const reservedForOrders = (
         const price = reservationPrice(order, quotes[order.symbol] ?? null);
         const value = order.notional !== null ? order.notional - order.filledNotional : price === null ? null : (order.qty! - order.filledQty) * price;
         if (value === null || !(value > 0)) continue;
-        reserved += order.side === "buy" ? value : value / 2;
+        reserved += marginable[order.symbol] === false && multiplier > 1 ? value * multiplier : value;
     }
     return roundCents(reserved);
 };

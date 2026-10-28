@@ -74,7 +74,8 @@ export interface QuoteBook {
     time: string;
 }
 
-export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE";
+// INTEREST is margin interest charged (posted monthly)
+export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE" | "INTEREST";
 
 // An entry of the account's cash ledger as GET /api/transfers returns it: a deposit, withdrawal or fee from the broker's activities
 // (method is its description; id is the activity's), or a dividend received on a long or paid on a short from the mock ledger
@@ -106,35 +107,61 @@ export interface PortfolioPosition extends Position {
     error: string | null;
 }
 
-export type MarginStatus = "ok" | "margin_call" | "buy_in";
+// ok, a margin call open (only closing orders and deposits until it's met), or equity so far below the maintenance requirement that
+// positions are being liquidated
+export type MarginStatus = "ok" | "margin_call" | "liquidation";
 
-// The account's value at current prices (valueAccount in lib/server/account.ts)
-export interface AccountValuation {
-    totalCash: number;
-    // Held back from available cash for open orders that would open or add to a position
-    reservedCash: number;
-    equity: number;
-    unrealizedPnl: number;
-    shortLiability: number;
-    collateralRequirement: number;
-    restrictedCash: number;
-    availableCash: number;
-    collateralShortfall: number;
-    collateralRatio: number | null;
-    marginStatus: MarginStatus;
-    missingPrices: string[];
+// A margin call (the simulator's sim_margin_calls): the deficiency found at a close, issued the next morning, due by dueAt
+export interface MarginCall {
+    id: string;
+    type: "maintenance" | "regt";
+    amount: number;
+    date: string;
+    issuedAt: string;
+    dueAt: string;
 }
 
-// GET /api/account
-export interface Account extends AccountValuation {
-    // Gains and losses booked on closed shares (average cost), and dividends received less dividends paid on shorts
+// GET /api/account: the account's margin as the broker computes it (lib/server/broker/sim/margin.ts), with the ledger's figures
+export interface Account {
+    // Cash less queued withdrawals (negative when borrowing on margin)
+    totalCash: number;
+    // What new positions can use: cash at 1x, (equity - initial margin) × the multiplier on margin, less what open orders hold back
+    buyingPower: number;
+    regtBuyingPower: number;
+    nonMarginableBuyingPower: number;
+    // Buying power held back for open orders that would open or add to a position
+    reservedCash: number;
+    // The multiplier in effect now (1 below $2,000 of equity, 4 only intraday) and the one the account allows
+    multiplier: number;
+    maxMultiplier: number;
+    equity: number;
+    longMarketValue: number;
+    // Positive: what it would cost to buy back the shorts
+    shortMarketValue: number;
+    initialMargin: number;
+    maintenanceMargin: number;
+    // Equity above the maintenance requirement (negative when below it)
+    excessLiquidity: number;
+    sma: number;
+    // Borrowed cash, the annual rate it's charged and the interest accrued this month (posted at month end)
+    debitBalance: number;
+    marginRate: number;
+    accruedInterest: number;
+    marginStatus: MarginStatus;
+    marginCalls: MarginCall[];
+    // Whether new shorts are allowed, and if not, why
+    shortingEnabled: boolean;
+    shortingBlockedReason: string | null;
+    unrealizedPnl: number;
+    missingPrices: string[];
+    // Gains and losses booked on closed shares (FIFO), and dividends received less dividends paid on shorts
     realizedPnl: number;
     netDividends: number;
     positions: { ticker: string; quantity: number }[];
-    // The past week's automatic buy-in trades
+    // The past week's liquidation trades (to meet margin calls)
     liquidations: TransactionRow[];
-    // Withdrawals requested and not yet sent, already held from cash; and what can be withdrawn now: available cash less deposit
-    // credit given before its ACH settled
+    // Withdrawals requested and not yet sent, already held from cash; and what can be withdrawn now (settled cash, no more than the
+    // excess over Reg T initial margin, nothing during a margin call)
     pendingTransferOut: number;
     withdrawableCash: number;
     // Sale proceeds that haven't settled (T+1), which can be traded with but not withdrawn yet, and regulatory fees accrued today,
@@ -407,7 +434,8 @@ export interface TransferRequest {
 export type {
     Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse, ACHRelationship as AchRelationship, Bank as RecipientBank,
     Transfer as BrokerTransfer, TradeAccount as BrokerTradeAccount, Activity as BrokerActivity, Position as BrokerPosition,
-    Order as BrokerOrder, CreateOrderRequest as BrokerOrderRequest, UpdateOrderRequest as BrokerOrderUpdate
+    Order as BrokerOrder, CreateOrderRequest as BrokerOrderRequest, UpdateOrderRequest as BrokerOrderUpdate, Asset as BrokerAsset, Locate, LocateQuote,
+    ListLocateQuotesResponse, CreateLocateRequest as BrokerLocateRequest
 } from "./server/broker/types";
 
 // GET /api/accounts/[id]/lots: an open tax lot (FIFO), with whether selling it now would be a long-term gain or loss

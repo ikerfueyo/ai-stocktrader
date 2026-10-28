@@ -4,9 +4,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { useAccount } from "@/context/AccountContext";
+import { formatEastern } from "@/lib/marketHours";
 import { formatCurrency, formatShares } from "@/lib/orders";
 
-// The newest buy-in trade each user has dismissed, by its time (fill IDs start with it). Browser storage can be unavailable (private
+// The newest liquidation trade each user has dismissed, by its time (fill IDs start with it). Browser storage can be unavailable (private
 // windows, or the server render), so failures are ignored.
 const dismissedKey = (userId: string | null | undefined) => `dismissedLiquidationAt:${userId}`;
 const readDismissed = (userId: string | null | undefined) => {
@@ -17,7 +18,8 @@ const readDismissed = (userId: string | null | undefined) => {
     }
 };
 
-// Under the header: a margin call warning while there's a collateral shortfall, and a notice of automatic buy-ins from the past week
+// Under the header: open margin calls (what's due and by when), liquidation while equity is far below the maintenance requirement,
+// and a notice of the past week's liquidations
 const MarginBanner = () => {
     const { account } = useAccount();
     const { userId } = useAuth();
@@ -37,23 +39,30 @@ const MarginBanner = () => {
 
     return (
         <>
-            {account.collateralShortfall > 0 && (
+            {account.marginCalls.map(call => (
+                <div key={call.id} className="margin-banner danger" role="alert">
+                    <span>
+                        <strong>{call.type === "regt" ? "Reg T" : "Maintenance"} margin call: {formatCurrency(call.amount)}, due {formatEastern(call.dueAt, { withDay: true })}.</strong>{" "}
+                        {call.type === "regt"
+                            ? <>At the {call.date} close your equity was below the 50% initial margin for the positions you opened. </>
+                            : <>At the {call.date} close your equity was below the maintenance requirement. </>}
+                        Until it&apos;s met, only closing orders and deposits are allowed. <Link href="/deposit">Deposit</Link> or close positions on
+                        the <Link href="/portfolio">Portfolio</Link>; otherwise positions are liquidated at the deadline.
+                    </span>
+                </div>
+            ))}
+            {account.marginStatus === "liquidation" && (
                 <div className="margin-banner danger" role="alert">
                     <span>
-                        <strong>Margin call: {formatCurrency(account.collateralShortfall)} collateral shortfall.</strong>{" "}
-                        {account.shortLiability > 0
-                            ? <>Shorts need 150% of their value ({formatCurrency(account.collateralRequirement)}) in cash, and you have {formatCurrency(account.totalCash)}. </>
-                            : <>Your cash balance is {formatCurrency(account.totalCash)}. </>}
-                        Until it&apos;s fixed, only covers, sales and deposits are allowed. <Link href="/deposit">Deposit</Link> or close positions on
-                        the <Link href="/portfolio">Portfolio</Link>.
-                        {account.shortLiability > 0 && " Below 130%, shorts are bought in automatically."}
+                        <strong>Equity is far below the maintenance requirement</strong> ({formatCurrency(account.equity)} against {formatCurrency(account.maintenanceMargin)}): positions
+                        are being liquidated during the regular session to protect the account.
                     </span>
                 </div>
             )}
             {liquidations.length > 0 && (
                 <div className="margin-banner warning" role="status">
                     <span>
-                        <strong>Automatic buy-in to restore short collateral:</strong>{" "}
+                        <strong>Liquidated to meet margin requirements:</strong>{" "}
                         {liquidations.map(({ type, ticker, quantity, price }) => (
                             `${type === "BUY" ? "covered" : "sold"} ${formatShares(quantity)} ${ticker} at ${formatCurrency(price)}`
                         )).join(", ")}.

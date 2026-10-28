@@ -2,16 +2,15 @@ import "server-only";
 import type { Pool, PoolClient } from "pg";
 import pool from "./db";
 import { singleton } from "./cache";
-import { fetchPrices } from "./marketData";
-import { isMarketOpen } from "./market";
 import { loadCorporateActions } from "./corporateActions";
-import { formatCurrency, planBuyIn, roundCents, valueAccount, type Dividend, type Split, type Trade } from "./account";
+import { roundCents, type Dividend, type Split, type Trade } from "./account";
 import { advanceTransfers } from "./broker/sim/transfers";
-import { applySplits, fillsAsTrades, listFills, ledgerState, openLots, postDividends as postAccountDividends, recordFill } from "./broker/sim/positions";
+import { enforceMargin as enforceAccountMargin } from "./broker/sim/calls";
+import { applySplits, fillsAsTrades, listFills, ledgerState, openLots, postDividends as postAccountDividends } from "./broker/sim/positions";
 import type { SimActivityRow } from "./broker/sim/shapes";
 import { orderReasons } from "./broker/sim/orders";
 import type { Order as BrokerOrder } from "./broker/types";
-import type { CashActivityRow, FillPolicy, Position, TradeHistoryRow, TradeType } from "../types";
+import type { CashActivityRow, Position, TradeHistoryRow } from "../types";
 
 // The pool, or the client holding a user's account lock (withAccountLock)
 export type Db = Pool | PoolClient;
@@ -80,16 +79,16 @@ export const getFills = async (userId: string, { since }: { since?: Date } = {},
 };
 
 // The user's cash ledger, oldest first, as CashActivityRows: the broker's cash activities (CSD deposits, CSW withdrawals, FEE fees,
-// DIV dividends received or charged on shorts; fills are on the Trades tab)
+// DIV dividends received or charged on shorts, INT margin interest; fills are on the Trades tab)
 export const loadCashActivity = async (userId: string, db: Db = pool): Promise<CashActivityRow[]> => {
     const accountId = await ledgerAccountId(userId, db);
     if (!accountId) return [];
     const { rows } = await db.query<{ id: string; activity_type: string; created_at: Date; net_amount: string; description: string; symbol: string | null }>(
-        "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND activity_type IN ('CSD', 'CSW', 'FEE', 'DIV') ORDER BY created_at, id",
+        "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND activity_type IN ('CSD', 'CSW', 'FEE', 'DIV', 'INT') ORDER BY created_at, id",
         [accountId]
     );
     const typeOf = (activity: string, amount: number): CashActivityRow["type"] =>
-        activity === "DIV" ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : activity === "CSD" ? "DEPOSIT" : activity === "CSW" ? "WITHDRAW" : "FEE";
+        activity === "DIV" ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : activity === "CSD" ? "DEPOSIT" : activity === "CSW" ? "WITHDRAW" : activity === "INT" ? "INTEREST" : "FEE";
     return rows.map(row => ({
         id: row.id, user_id: userId, date: row.created_at.toISOString(), type: typeOf(row.activity_type, Number(row.net_amount)), method: row.description,
         amount: Math.abs(Number(row.net_amount)).toFixed(2), ticker: row.symbol, reference: null
@@ -149,21 +148,6 @@ export const withAccountLock = <T>(userId: string, fn: (db: PoolClient) => Promi
     return run;
 };
 
-// Records an executed fill in the user's account ledger (recordFill: lots, realized P&L, settlement, fee accruals), stamped now.
-// orderId links the fill of a stored order (limit, stop or queued). Call it inside a transaction on withAccountLock's client.
-export const insertTrade = async (db: PoolClient, userId: string, trade: {
-    type: TradeType; ticker: string; price: number; quantity: number; total: number;
-    fillPolicy: FillPolicy; quoteTime: string | null; reason?: "LIQUIDATION"; orderId?: number;
-}): Promise<TradeHistoryRow> => {
-    const accountId = await ledgerAccountId(userId, db);
-    if (!accountId) throw new Error(`No brokerage account to record a ${trade.type} ${trade.ticker} fill for ${userId}`);
-    const row = await recordFill(db, accountId, {
-        symbol: trade.ticker, side: trade.type === "BUY" ? "buy" : "sell", qty: trade.quantity, price: trade.price, total: trade.total,
-        reason: trade.reason, quoteTime: trade.quoteTime, fillPolicy: trade.fillPolicy, legacyOrderId: trade.orderId
-    });
-    return toTransactionRow(row, userId);
-};
-
 // Posts the dividends paid since they were last checked to the user's ledger (DIV activities; the broker's postDividends). Call it
 // inside withAccountLock with its client.
 export const postDividends = async (userId: string, label: string, db: PoolClient) => {
@@ -176,43 +160,16 @@ export const postDividends = async (userId: string, label: string, db: PoolClien
     return posted;
 };
 
-export const shortTickers = (positions: Position[]) => positions.filter(({ quantity }) => quantity < 0).map(({ ticker }) => ticker);
-
-// Automatic buy-in (see planBuyIn): when total cash is below 130% of the shorts' value, cover just enough of every short to get back
-// to 150%, and sell longs only if covering every short leaves negative cash. The trades are marked reason = 'LIQUIDATION'.
-// Prices only arrive with requests, so this runs lazily, from GET /api/account, GET /api/portfolio and after each trade, and only
-// while the market is open (prices don't move while it's closed, and there's no market to buy in on). Call it inside
-// withAccountLock with its client. It's recalculated from the database each time, so running it again right away does nothing.
-// It waits while any position's splits couldn't be fetched, since a missed split would misstate the shares owed and the cash needed.
-export const enforceCollateral = async (userId: string, label: string, db: PoolClient): Promise<TradeHistoryRow[]> => {
-    const { positions, totalCash, unsynced } = await getAccount(userId, db);
-    const shorts = shortTickers(positions);
-    if (shorts.length === 0 || !(await isMarketOpen())) return [];
+// The broker's margin upkeep (lib/server/broker/sim/calls.ts's enforceMargin): meets the calls that are covered and liquidates for a
+// call past its deadline, or for equity far below the maintenance requirement, during the regular session. It waits while any
+// position's splits couldn't be fetched, since a missed split would misstate the positions. Returns the liquidation orders placed.
+export const enforceMargin = async (userId: string, label: string, db: Db = pool) => {
+    const { accountId, positions, unsynced } = await getAccount(userId, db);
+    if (!accountId) return [];
     const unsure = positions.filter(({ ticker }) => unsynced.includes(ticker)).map(({ ticker }) => ticker);
     if (unsure.length > 0) {
-        console.warn(`${label}: buy-in check for ${userId} skipped until ${unsure.join(", ")} corporate actions can be fetched`);
+        console.warn(`${label}: margin check for ${userId} skipped until ${unsure.join(", ")} corporate actions can be fetched`);
         return [];
     }
-    const shortPrices = await fetchPrices(shorts, label);
-    if (valueAccount({ positions, totalCash, ...shortPrices }).marginStatus !== "buy_in") return [];
-    // Longs are only priced when a buy-in is due, in case covering every short isn't enough
-    const longPrices = await fetchPrices(positions.filter(({ quantity }) => quantity > 0).map(({ ticker }) => ticker), label);
-    const quotes = { ...longPrices.quotes, ...shortPrices.quotes };
-    const { trades, remainingDeficit } = planBuyIn({
-        positions, totalCash,
-        prices: { ...longPrices.prices, ...shortPrices.prices },
-        staleTickers: [...longPrices.staleTickers, ...shortPrices.staleTickers],
-        quotes
-    });
-    if (trades.length === 0) return [];
-    const inserted = await inTransaction(db, async () => {
-        const rows: TradeHistoryRow[] = [];
-        for (const { type, ticker, price, quantity, total, fillPolicy } of trades) {
-            rows.push(await insertTrade(db, userId, { type, ticker, price, quantity, total, fillPolicy, quoteTime: quotes[ticker]?.quoteTime ?? null, reason: "LIQUIDATION" }));
-        }
-        return rows;
-    });
-    const summary = inserted.map(({ type, ticker, quantity, price }) => `${type} ${parseFloat(quantity)} ${ticker} @ ${price}`).join(", ");
-    console.log(`${label}: collateral buy-in for ${userId}: ${summary}${remainingDeficit > 0 ? `; ${formatCurrency(remainingDeficit)} still negative` : ""}`);
-    return inserted;
+    return enforceAccountMargin(accountId);
 };

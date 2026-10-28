@@ -87,7 +87,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
                 <p className="transfer-available">
                     Withdrawable: <strong>{formatCurrency(withdrawable)}</strong>
                     {account.pendingTransferOut > 0 && <span className="transfer-restricted"><br />{formatCurrency(account.pendingTransferOut)} already requested</span>}
-                    {account.restrictedCash > 0 && <span className="transfer-restricted"><br />{formatCurrency(account.restrictedCash)} is held as short collateral</span>}
+                    {(account.initialMargin > 0 || account.debitBalance > 0) && <span className="transfer-restricted"><br />Margin positions hold back {formatCurrency(account.initialMargin)} (Reg T initial margin){account.debitBalance > 0 ? `, and ${formatCurrency(account.debitBalance)} is borrowed` : ""}</span>}
                 </p>
             )}
             {loadError && <p className="text-danger">Couldn&apos;t load your bank details: {loadError}</p>}
@@ -139,10 +139,10 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
                         {!isDeposit && <button type="button" className="amount-chip" disabled={maxAmount <= 0} onClick={() => setValue(maxAmount)}>Max</button>}
                     </div>
                     {!isDeposit && account && maxAmount <= 0 && (
-                        <small className="text-danger">{marginCall ? "Withdrawals are blocked during a margin call (collateral shortfall)." : "Nothing available to withdraw."}</small>
+                        <small className="text-danger">{marginCall ? "Withdrawals wait until the margin call is met." : "Nothing available to withdraw."}</small>
                     )}
                     {isDeposit && marginCall && account && (
-                        <small className="text-danger">Depositing {formatCurrency(account.collateralShortfall)} or more fixes your collateral shortfall.</small>
+                        <small className="text-danger">Depositing {formatCurrency(account.marginCalls.reduce((sum, call) => sum + call.amount, 0))} or more meets your margin call.</small>
                     )}
                     {isDeposit && terms && terms.instant > 0 && (
                         <small className="text-muted">Up to {formatCurrency(terms.instant)} is available to trade at once; the rest when the deposit settles, usually the next banking day.</small>

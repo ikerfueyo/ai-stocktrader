@@ -1472,3 +1472,36 @@ header a.header-pill.withdraw:hover {
   text-align: left;
   font-size: 14px;
 }
+
+.margin-panel {
+  max-width: 900px;
+  margin: 30px auto 0;
+  text-align: left;
+}
+
+.margin-panel-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: #343a40;
+  margin-bottom: 8px;
+}
+
+.margin-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px 20px;
+  margin: 0;
+}
+
+.margin-panel-grid dt {
+  color: gray;
+  font-size: 12px;
+  font-weight: normal;
+  text-transform: uppercase;
+}
+
+.margin-panel-grid dd {
+  margin: 0;
+  font-weight: bold;
+  color: #343a40;
+}

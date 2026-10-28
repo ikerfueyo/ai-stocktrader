@@ -5,15 +5,15 @@ import pool from "../../db";
 import { BrokerError } from "../errors";
 import { fetchQuotes } from "../../marketData";
 import { findAsset } from "../../assets";
-import { planDividends, roundCents, valueAccount, type Dividend, type Split, type Trade } from "../../account";
-import { easternParts, easternTime, isTradingDay, marketStatus, settlementDate } from "../../../marketHours";
+import { planDividends, roundCents, type Dividend, type Split, type Trade } from "../../account";
+import { easternParts, easternTime, settlementDate } from "../../../marketHours";
 import { emitEvent } from "./accounts";
 import { activityId, ledgerCash, postActivity } from "./transfers";
 import { applyFill, applySplit, isLongTerm, positionsFromLots, type Lot } from "./ledger";
 import { FEE_DESCRIPTIONS, feesFor, roundFeeUp, type FeeAccrual } from "./feeSchedule";
 import { assetId, type SimAccountRow, type SimActivityRow } from "./shapes";
-import { toAlpacaPosition, toTradeAccount } from "./tradeAccount";
-import type { Position as AlpacaPosition, TradeAccount } from "../types";
+import { toAlpacaPosition } from "./tradeAccount";
+import type { Position as AlpacaPosition } from "../types";
 import type { Position, Quote } from "../../../types";
 
 // The simulator's trade ledger: fills post FILL activities that close and open FIFO tax lots (sim_lots, the positions' only source),
@@ -173,16 +173,17 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
 };
 
 // The account's ledger now: positions from the open lots, cash (every activity's net amount), realized P&L, net dividends, sale
-// proceeds that haven't settled, regulatory fees accrued but not yet deducted, and from the transfers what queued withdrawals hold and
-// the instant deposit credit not yet settled
+// proceeds and purchase costs that haven't settled, regulatory fees accrued but not yet deducted, and from the transfers what queued
+// withdrawals hold and the instant deposit credit not yet settled
 export const ledgerState = async (db: Db, accountId: string, now = new Date()) => {
     const today = dayOf(now);
     const [lots, { rows: [sums] }, { rows: accruals }, transfers] = await Promise.all([
         openLots(db, accountId),
-        db.query<{ realized: string; dividends: string; unsettled: string }>(
+        db.query<{ realized: string; dividends: string; unsettled: string; unsettled_purchases: string }>(
             `SELECT COALESCE(SUM(realized_pl), 0) AS realized,
                     COALESCE(SUM(CASE WHEN activity_type = 'DIV' THEN net_amount ELSE 0 END), 0) AS dividends,
-                    COALESCE(SUM(CASE WHEN activity_type = 'FILL' AND net_amount > 0 AND settle_date > $2 THEN net_amount ELSE 0 END), 0) AS unsettled
+                    COALESCE(SUM(CASE WHEN activity_type = 'FILL' AND net_amount > 0 AND settle_date > $2 THEN net_amount ELSE 0 END), 0) AS unsettled,
+                    COALESCE(SUM(CASE WHEN activity_type = 'FILL' AND net_amount < 0 AND settle_date > $2 THEN -net_amount ELSE 0 END), 0) AS unsettled_purchases
              FROM sim_activities WHERE account_id = $1`,
             [accountId, today]
         ),
@@ -201,6 +202,7 @@ export const ledgerState = async (db: Db, accountId: string, now = new Date()) =
         realizedPnl: Number(sums.realized),
         netDividends: Number(sums.dividends),
         unsettledProceeds: Number(sums.unsettled),
+        unsettledPurchases: Number(sums.unsettled_purchases),
         accruedFees,
         pendingTransferOut: transfers.pendingOut,
         unsettledInstant: transfers.unsettledInstant
@@ -240,47 +242,6 @@ export const getPosition = async (accountId: string, symbol: string): Promise<Al
     return position;
 };
 
-// The account's cash split for withdrawal: available cash (valueAccount: less short collateral) less unsettled instant credit and
-// unsettled sale proceeds
-const withdrawableOf = (available: number, ledger: { unsettledInstant: number; unsettledProceeds: number }) =>
-    Math.max(0, roundCents(available - ledger.unsettledInstant - ledger.unsettledProceeds));
-
-// GET /v1/trading/accounts/{id}/account. Open orders are still the app's (mock orders until Phase 4), so buying power here doesn't
-// hold back what they reserve.
-export const getTradeAccount = async (accountId: string): Promise<TradeAccount> => {
-    const row = await accountRow(accountId);
-    const ledger = await ledgerState(pool, accountId);
-    const quotes = await quotesFor(ledger.positions);
-    const prices = Object.fromEntries(Object.entries(quotes).map(([symbol, quote]) => [symbol, quote.price]));
-    const totalCash = ledger.cash - ledger.pendingTransferOut;
-    const valuation = valueAccount({ positions: ledger.positions, totalCash, prices });
-    let longMarketValue = 0;
-    let shortMarketValue = 0;
-    for (const { ticker, quantity, avgCost } of ledger.positions) {
-        const value = Math.abs(quantity) * (prices[ticker] ?? avgCost);
-        if (quantity > 0) longMarketValue += value;
-        else shortMarketValue += value;
-    }
-    const { rows: [last] } = await pool.query<{ date: string; equity: string; cash: string; long_market_value: string; short_market_value: string; maintenance_margin: string }>(
-        `SELECT "date"::text, equity, cash, long_market_value, short_market_value, maintenance_margin FROM sim_daily_balances
-         WHERE account_id = $1 AND "date" < $2 ORDER BY "date" DESC LIMIT 1`, [accountId, dayOf(new Date())]
-    );
-    return toTradeAccount({
-        account: { ...row, hasMarginAgreement: row.agreements.some(({ agreement }) => agreement === "margin_agreement") },
-        cash: ledger.cash, longMarketValue, shortMarketValue,
-        buyingPower: valuation.availableCash,
-        initialMargin: valuation.collateralRequirement,
-        maintenanceMargin: roundCents(1.3 * valuation.shortLiability),
-        withdrawable: withdrawableOf(valuation.availableCash, ledger),
-        accruedFees: ledger.accruedFees,
-        pendingTransferOut: ledger.pendingTransferOut,
-        last: last ? {
-            date: last.date, equity: Number(last.equity), cash: Number(last.cash), longMarketValue: Number(last.long_market_value),
-            shortMarketValue: Number(last.short_market_value), maintenanceMargin: Number(last.maintenance_margin)
-        } : null
-    });
-};
-
 // The account's tax lots: open ones (with their holding period today) and, with closed, the closings too
 export const listLots = async (accountId: string, symbol?: string) => {
     const now = new Date().toISOString();
@@ -303,8 +264,8 @@ export const listFills = async (db: Db, accountId: string, { since, orderIds }: 
     )).rows;
 
 // The end of the trading day (the eod job): deducts each account's accrued regulatory fees, per day and type, rounded up to the cent
-// (FEE activities with sub-types REG, TAF and CAT), then keeps every open account's closing balances
-export const endOfDay = async (now = new Date()): Promise<{ fees: number; balances: number }> => {
+// (FEE activities with sub-types REG, TAF and CAT); ./calls.ts then keeps the closing balances and runs the margin checks
+export const endOfDay = async (now = new Date()): Promise<{ fees: number }> => {
     const today = dayOf(now);
     const { rows: due } = await pool.query<{ account_id: string; date: string; fee_type: FeeAccrual["type"]; amount: string }>(
         `SELECT account_id, "date"::text, fee_type, SUM(amount) AS amount FROM sim_fee_accruals WHERE deducted_by IS NULL AND "date" <= $1
@@ -333,22 +294,7 @@ export const endOfDay = async (now = new Date()): Promise<{ fees: number; balanc
             client.release();
         }
     }
-    let balances = 0;
-    if (isTradingDay(today) && !marketStatus(now).open) {
-        const { rows: accounts } = await pool.query<{ id: string }>("SELECT id FROM sim_accounts WHERE status IN ('ACTIVE', 'ACCOUNT_UPDATED')");
-        for (const { id } of accounts) {
-            const account = await getTradeAccount(id);
-            await pool.query(
-                `INSERT INTO sim_daily_balances (account_id, "date", equity, cash, long_market_value, short_market_value, maintenance_margin)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT (account_id, "date") DO UPDATE SET equity = EXCLUDED.equity, cash = EXCLUDED.cash, long_market_value = EXCLUDED.long_market_value,
-                     short_market_value = EXCLUDED.short_market_value, maintenance_margin = EXCLUDED.maintenance_margin`,
-                [id, today, account.equity, account.cash, account.long_market_value, Math.abs(Number(account.short_market_value)), account.maintenance_margin]
-            );
-            balances++;
-        }
-    }
-    return { fees, balances };
+    return { fees };
 };
 
 // GET /v1/trading/accounts/{id}/account/portfolio/history, daily only (timeframe 1D), from the end-of-day balances: equity, its

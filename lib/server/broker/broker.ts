@@ -6,7 +6,8 @@ import type {
     ACHRelationship, Bank, CreateBankRequest, Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, Activity,
     Asset, CalendarDay, Clock, CreateACHRelationshipRequest, CreateOrderRequest, CreateTransferRequest, ListActivitiesQuery,
     ListAssetsQuery, ListDocumentsQuery, ListOrdersQuery, ListTransfersQuery, OptionContract, OptionsApprovalRequest, OptionsApprovalResponse, Order, OwnerDocumentUploadRequest,
-    PortfolioHistory, PortfolioHistoryQuery, Position, TradeAccount, Transfer, UpdateOrderRequest
+    PortfolioHistory, PortfolioHistoryQuery, Position, TradeAccount, Transfer, UpdateOrderRequest, CreateLocateRequest, ListLocateQuotesResponse,
+    ListLocatesResponse, Locate
 } from "./types";
 
 // An event from one of the broker's streams, in the stream's own shape. Events are ordered per account by their ULID id; a
@@ -55,6 +56,13 @@ export interface Broker {
     listPositions(accountId: string): Promise<Position[]>;
     getPosition(accountId: string, symbol: string): Promise<Position>;
     closePosition(accountId: string, symbol: string, size?: { qty?: string; percentage?: string }): Promise<Order>;
+
+    // Locates for hard-to-borrow short sales: GET /v1/locates/quotes, POST and GET /v1/locates, GET /v1/locates/{locate_id} (Alpaca
+    // offers them in the Trading API; the account they act on is the one given)
+    listLocateQuotes(accountId: string, symbols: string[]): Promise<ListLocateQuotesResponse>;
+    createLocate(accountId: string, request: CreateLocateRequest): Promise<Locate>;
+    listLocates(accountId: string, query?: { status?: string; symbol?: string; limit?: number }): Promise<ListLocatesResponse>;
+    getLocate(accountId: string, locateId: string): Promise<Locate>;
 
     // Options: exercise (POST /positions/{symbol}/exercise), approval (POST /v1/accounts/{id}/options/approval), contracts
     exerciseOption(accountId: string, symbol: string): Promise<void>;

@@ -261,9 +261,14 @@ describe("buying power held for open orders", () => {
         assert.equal(reservedForOrders([order({ qty: null, notional: 250, filledNotional: 50 })], {}, {}), 200);
     });
 
-    test("shorts hold half their value at the higher of the limit and 3% above the ask", () => {
-        assert.equal(reservedForOrders([order({ side: "sell" })], {}, { AAA: { price: 100, ask: 100, bid: 99.9 } }), 515);
-        assert.equal(reservedForOrders([order({ side: "sell", limitPrice: 110 })], {}, { AAA: { price: 100, ask: 100, bid: 99.9 } }), 550);
+    test("shorts hold their value at the higher of the limit and 3% above the ask", () => {
+        assert.equal(reservedForOrders([order({ side: "sell" })], {}, { AAA: { price: 100, ask: 100, bid: 99.9 } }), 1030);
+        assert.equal(reservedForOrders([order({ side: "sell", limitPrice: 110 })], {}, { AAA: { price: 100, ask: 100, bid: 99.9 } }), 1100);
+    });
+
+    test("a non-marginable stock on margin holds its cost × the multiplier", () => {
+        assert.equal(reservedForOrders([order({ limitPrice: 50 })], {}, {}, { marginable: { AAA: false }, multiplier: 2 }), 1000);
+        assert.equal(reservedForOrders([order({ limitPrice: 50 })], {}, {}, { marginable: { AAA: false }, multiplier: 1 }), 500);
     });
 
     test("closing orders and held legs hold nothing", () => {

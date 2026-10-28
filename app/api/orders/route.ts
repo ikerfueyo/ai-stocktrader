@@ -4,13 +4,13 @@ import { requireAccount } from "@/lib/server/brokerAccounts";
 import { getBroker } from "@/lib/server/broker";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { isForeignListing } from "@/lib/server/marketData";
-import { enforceCollateral, ledgerAccountId, withAccountLock, withReasons } from "@/lib/server/portfolio";
+import { enforceMargin, ledgerAccountId, withAccountLock, withReasons } from "@/lib/server/portfolio";
 import type { AppOrder, BrokerOrderRequest } from "@/lib/types";
 
 // Place an order on the active account: Alpaca's CreateOrderRequest (symbol, side, type, time_in_force, qty or notional, prices,
 // extended_hours, order_class with take_profit and stop_loss, position_intent, client_order_id). The broker checks it against its
 // rules and buying power (403 or 422 with its reason), stores it and matches it at once, so a marketable order during its session
-// comes back filled; one placed outside its session is accepted for the open. A fill runs the buy-in check after it.
+// comes back filled; one placed outside its session is accepted for the open. A fill runs the margin check after it.
 export const POST = withUser(async (request, context, userId) => {
     const body = await request.json().catch(() => null) as Partial<BrokerOrderRequest> | null;
     if (!body || typeof body !== "object") throw new HttpError("An order is required", 400);
@@ -21,8 +21,8 @@ export const POST = withUser(async (request, context, userId) => {
     const label = `POST /api/orders ${symbol}`;
     const order = await withAccountLock(userId, async db => {
         const placed = await getBroker().createOrder(accountId, { ...body, symbol } as BrokerOrderRequest);
-        // The fill is already saved, so a failed buy-in check is only logged; the next GET /api/account runs it again
-        if (Number(placed.filled_qty) > 0) await enforceCollateral(userId, label, db).catch(error => console.error(`${label}: buy-in check: ${error.message}`));
+        // The fill is already saved, so a failed margin check is only logged; the next GET /api/account runs it again
+        if (Number(placed.filled_qty) > 0) await enforceMargin(userId, label, db).catch(error => console.error(`${label}: margin check: ${error.message}`));
         return placed;
     });
     return NextResponse.json<AppOrder>((await withReasons([order]))[0], { status: 201 });

@@ -13,6 +13,7 @@ import { advanceAccounts } from "./broker/sim/accounts";
 import { advanceTransfers, fastForwardTransfers } from "./broker/sim/transfers";
 import { endOfDay } from "./broker/sim/positions";
 import { matchOrders } from "./broker/sim/orders";
+import { accountsOnMargin, endOfDayMargin } from "./broker/sim/calls";
 import { postDividends } from "./portfolio";
 
 // The background jobs, checked every SIM_ORDER_MATCH_MS (default 5s). Each job is due every ORDER_MATCH_INTERVAL_MS (default 30s),
@@ -56,23 +57,24 @@ const isLeader = async (): Promise<boolean> => {
     return true;
 };
 
-// While the market is open, users with a short (an open short lot) for the buy-in check
+// The users whose accounts are on margin (borrowing, short or with an open call), with the symbols they hold
 const usersToCheck = async (): Promise<{ users: string[]; tickers: string[] }> => {
-    const { rows } = await pool.query<{ user_id: string; ticker: string }>(
-        `SELECT b.user_id, l.symbol AS ticker FROM sim_lots l JOIN broker_accounts b ON b.account_id = l.account_id WHERE l.side = 'short' AND l.qty > 0`
+    const accounts = await accountsOnMargin();
+    if (accounts.length === 0) return { users: [], tickers: [] };
+    const { rows } = await pool.query<{ user_id: string; ticker: string | null }>(
+        `SELECT b.user_id, l.symbol AS ticker FROM broker_accounts b LEFT JOIN sim_lots l ON l.account_id = b.account_id AND l.qty > 0 WHERE b.account_id = ANY($1)`, [accounts]
     );
-    return { users: [...new Set(rows.map(({ user_id }) => user_id))], tickers: [...new Set(rows.map(({ ticker }) => ticker.toUpperCase()))] };
+    return { users: [...new Set(rows.map(({ user_id }) => user_id))], tickers: [...new Set(rows.flatMap(({ ticker }) => ticker ? [ticker.toUpperCase()] : []))] };
 };
 
-// Dividends and buy-ins (updateAccount) for every user with a short while the market is open, so buy-ins happen without anyone
-// loading a page (orders are the sim-orders job's)
+// Dividends and the margin check (updateAccount) for every user on margin, so calls are met and liquidations happen without anyone
+// loading a page (orders are the sim-orders job's). The broker only liquidates during the regular session.
 const updateAccounts = async () => {
     const market = await getMarketStatus();
-    if (!market.open) return;
     const { users, tickers } = await usersToCheck();
     if (users.length === 0) return;
     // Warm the quote cache with every ticker at once (one bulk call when the plan has it), so each user's checks reuse it
-    if (market.open && tickers.length > 0) await Promise.allSettled(fetchQuotes(tickers));
+    if (market.session !== "closed" && tickers.length > 0) await Promise.allSettled(fetchQuotes(tickers));
     for (const userId of users) {
         await withAccountLock(userId, db => updateAccount(userId, LABEL, db)).catch(error => console.error(`${LABEL}: ${userId}: ${error.message}`));
     }
@@ -96,8 +98,9 @@ export const JOBS: Job[] = [
     { name: "sim-accounts", leaderOnly: true, run: () => advanceAccounts() },
     // The simulator's transfers that are due to clear, complete or come back (reading an account's transfers advances them too)
     { name: "sim-transfers", leaderOnly: true, run: () => advanceTransfers() },
-    // The end of the trading day: deduct the day's regulatory fees and keep each account's closing balances (last_equity)
-    { name: "eod", slots: ["20:15"], leaderOnly: true, run: () => endOfDay() },
+    // The end of the trading day: deduct the day's regulatory fees, then keep each account's closing balances (last_equity), issue
+    // margin calls, accrue margin interest (posted at month end) and charge hard-to-borrow fees
+    { name: "eod", slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
     // Dividends paid overnight post before the open, for every account with fills (reading an account posts them too)
     { name: "dividends", slots: ["06:00"], leaderOnly: true, run: postAllDividends },
     // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar

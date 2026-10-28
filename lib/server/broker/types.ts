@@ -2,8 +2,10 @@
 // `npm run gen:alpaca-types`. Fields are snake_case and decimal amounts are strings, exactly as Alpaca returns them, so the
 // simulator (SimBroker) and the real API (AlpacaBroker) can share them.
 import type { components, operations } from "./generated/brokerApi";
+import type { components as TradingComponents } from "../marketData/generated/tradingApi";
 
 type Schemas = components["schemas"];
+type TradingSchemas = TradingComponents["schemas"];
 
 // Accounts and onboarding
 export type Account = Schemas["Account"];
@@ -71,6 +73,14 @@ export type OwnerDocumentUploadRequest = Schemas["OwnerDocumentUploadRequest"];
 export type OptionContract = Schemas["OptionContract"];
 export type OptionsApprovalRequest = Schemas["OptionsApprovalRequest"];
 export type OptionsApprovalResponse = Schemas["OptionsApprovalResponse"];
+
+// Locates for hard-to-borrow short sales. Alpaca offers them in the Trading API (/v1/locates; vendor/alpaca/trading-api.json),
+// not yet in the Broker API, so their shapes come from that spec.
+export type Locate = TradingSchemas["Locate"];
+export type CreateLocateRequest = TradingSchemas["CreateLocateRequest"];
+export type LocateQuote = TradingSchemas["LocateQuote"];
+export type ListLocateQuotesResponse = TradingSchemas["ListLocateQuotesResponse"];
+export type ListLocatesResponse = TradingSchemas["ListLocatesResponse"];
 
 // Every error reply
 export type BrokerErrorBody = Schemas["Error"];

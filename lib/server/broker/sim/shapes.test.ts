@@ -39,7 +39,10 @@ describe("The simulator's replies conform to Alpaca's spec", () => {
         const unflagged = toAsset({ ...base, alpacaId: null, tradable: null, marginable: null, shortable: null, fractionable: null });
         assert.deepEqual(conformanceErrors(unflagged, "Asset"), []);
         assert.equal(unflagged.id, assetId("AAPL"), "a stable ID");
-        assert.equal(unflagged.shortable, false, "not shortable without Alpaca's flag");
+        assert.deepEqual([unflagged.shortable, unflagged.borrow_status], [true, "easy_to_borrow"], "shortable and easy to borrow without Alpaca's flags, as the order rules treat it");
+        const hard = toAsset({ ...base, alpacaId: null, tradable: null, marginable: null, shortable: null, fractionable: null }, { hardToBorrow: true });
+        assert.deepEqual(conformanceErrors(hard, "Asset"), []);
+        assert.equal(hard.borrow_status, "hard_to_borrow");
         const flagged = toAsset({ ...base, exchange: "NYSE MKT", alpacaId: "b0b6dd9d-8b9b-48a9-ba46-b9d54906e415", tradable: true, marginable: true, shortable: true, fractionable: true, borrowStatus: "easy_to_borrow", marginRequirementLong: 30, marginRequirementShort: 100 });
         assert.deepEqual(conformanceErrors(flagged, "Asset"), []);
         assert.equal(flagged.exchange, "AMEX");
@@ -113,7 +116,8 @@ describe("The trading account and positions conform to Alpaca's spec", () => {
             trading_blocked: false, transfers_blocked: false, account_blocked: false,
             configurations: { max_margin_multiplier: "2", no_shorting: false, max_options_trading_level: 1 as const, suspend_trade: false }, options_approved_level: 1, hasMarginAgreement: true
         },
-        cash: 1500, longMarketValue: 1000, shortMarketValue: 400, buyingPower: 900, initialMargin: 600, maintenanceMargin: 520, withdrawable: 800,
+        state: { cash: 1500, longMarketValue: 1000, shortMarketValue: 400, buyingPower: 2800, regtBuyingPower: 2800, nonMarginableBuyingPower: 1400, initialMargin: 700, maintenanceMargin: 500, sma: 1400 },
+        multiplier: 2, shortingEnabled: true, withdrawable: 800,
         accruedFees: { REG: 0.01, TAF: 0.02, CAT: 0.001 }, pendingTransferOut: 0, last: null
     };
 
@@ -124,8 +128,9 @@ describe("The trading account and positions conform to Alpaca's spec", () => {
         assert.equal(account.short_market_value, "-400.00", "Alpaca reports shorts as negative");
         assert.equal(account.accrued_fees, "0.03");
         assert.equal(account.last_equity, "2100.00", "before the first snapshot, the current equity");
+        assert.deepEqual([account.multiplier, account.buying_power, account.regt_buying_power, account.non_marginable_buying_power, account.sma], ["2", "2800.00", "2800.00", "1400.00", "1400.00"]);
         assert.equal(account.shorting_enabled, true);
-        assert.equal(toTradeAccount({ ...base, account: { ...base.account, hasMarginAgreement: false } }).shorting_enabled, false);
+        assert.equal(toTradeAccount({ ...base, shortingEnabled: false }).shorting_enabled, false);
     });
 
     test("long and short positions", () => {

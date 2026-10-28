@@ -6,19 +6,23 @@ import { BrokerError } from "../errors";
 import { UpstreamError } from "../../httpError";
 import { findAsset } from "../../assets";
 import { fetchPrices, fetchQuote } from "../../marketData";
+import type { AssetRow } from "../../universe";
 import { getMarketStatus } from "../../market";
-import { addTrade, assessTrade, reducesPosition, roundCents } from "../../account";
+import { reducesPosition, roundCents } from "../../account";
 import { easternParts, sessionOn } from "../../../marketHours";
 import { emitEvent } from "./accounts";
 import { ledgerState, listFills, lockAccount, positionQty, recordFill } from "./positions";
+import { buyingPowerCost } from "./margin";
+import { hardToBorrow, marginSnapshot, OPEN_ORDER_STATUSES } from "./marginAccount";
+import { locatedShares, consumeLocates } from "./locates";
 import { applyReplace, orderExpiry, parseOrderRequest, validateOrder, type OpenOrderSummary, type OrderSpec } from "./orderRules";
-import { evaluateOrder, reservationPrice, reservedForOrders, trailingStop, tradesIn, type LiveOrder, type MatchContext, type MatchFill, type Session } from "./matching";
+import { evaluateOrder, reservationPrice, trailingStop, tradesIn, type LiveOrder, type MatchContext, type MatchFill, type Session } from "./matching";
 import { toOrder, type SimOrderRow } from "./shapes";
 import type { CreateOrderRequest, ListOrdersQuery, Order, UpdateOrderRequest } from "../types";
-import type { Position, Quote } from "../../../types";
+import type { Quote } from "../../../types";
 
-// The simulator's order engine: Alpaca's order endpoints on sim_orders. Orders are checked (./orderRules.ts) and against buying power
-// under the cash-collateral model (assessTrade) when placed, then matched on every tick of the sim-orders job and right after they're
+// The simulator's order engine: Alpaca's order endpoints on sim_orders. Orders are checked (./orderRules.ts) and against the account's
+// margin (./marginAccount.ts) when placed, then matched on every tick of the sim-orders job and right after they're
 // placed or replaced (./matching.ts): fills post through the ledger (recordFill), bracket and OTO legs go live when their entry fills,
 // OCO legs cancel each other, and every change emits a trades event in Alpaca's trade_updates shape. Each account's changes run in
 // a transaction holding its advisory lock (lockAccount), so the job, the routes and buy-ins don't interleave.
@@ -109,41 +113,42 @@ const tradingAccount = async (db: PoolClient, accountId: string) => {
 const openOrdersIn = async (db: PoolClient, accountId: string, symbol: string) =>
     (await db.query<SimOrderRow>("SELECT * FROM sim_orders WHERE account_id = $1 AND symbol = $2 AND status = ANY($3)", [accountId, symbol, OPEN])).rows;
 
-// What the account's open orders hold back from buying power (reservedForOrders), leaving out exceptIds. Orders priced at the market
-// are valued at their symbol's current quote.
-export const reservedCash = async (db: PoolClient | typeof pool, accountId: string, positions?: Position[], exceptIds: string[] = []): Promise<number> => {
-    const { rows } = await db.query<SimOrderRow>("SELECT * FROM sim_orders WHERE account_id = $1 AND status = ANY($2)", [accountId, OPEN]);
-    const open = rows.filter(({ id }) => !exceptIds.includes(id));
-    if (open.length === 0) return 0;
-    const held = positions ?? (await ledgerState(db, accountId)).positions;
-    const unpriced = [...new Set(open.filter(row => row.limit_price === null && row.stop_price === null && row.notional === null).map(({ symbol }) => symbol))];
-    const { quotes } = unpriced.length > 0 ? await fetchPrices(unpriced, LABEL) : { quotes: {} as Record<string, Quote> };
-    return reservedForOrders(
-        open.map(row => ({
-            symbol: row.symbol, side: row.side, limitPrice: num(row.limit_price), stopPrice: num(row.stop_price), qty: num(row.qty), notional: num(row.notional),
-            filledQty: Number(row.filled_qty), filledNotional: Number(row.filled_notional), held: row.status === "held"
-        })),
-        Object.fromEntries(held.map(({ ticker, quantity }) => [ticker, quantity])),
-        quotes
-    );
-};
-
-// Whether an order that opens or adds to a position fits the buying power left after the other open orders' reservations (the
-// cash-collateral model: a buy needs its cost, a short 50% of its value, nothing during a margin call). Throws 403 like Alpaca's
-// "insufficient buying power", or 502 when a short's price is missing.
-// price is what the order is checked at: its reservation price when placed, the fill price when it fills.
-const checkBuyingPower = async (db: PoolClient, accountId: string, order: { symbol: string; side: "buy" | "sell"; qty: number | null; notional: number | null }, price: number, exceptIds: string[]) => {
-    const ledger = await ledgerState(db, accountId);
+// Whether an order that opens or adds to a position fits the account's margin (./marginAccount.ts), as Alpaca checks it: not during
+// an open margin call, a short only where shorting is allowed, and the order's buying power cost (its value, twice that for a
+// non-marginable stock on margin) within the buying power the other open orders leave. Throws 403 like Alpaca's "insufficient buying
+// power", or 502 when a short's price is missing. price is what the order is checked at: its reservation price when placed, the fill
+// price when it fills. Closing orders always pass.
+const checkBuyingPower = async (db: PoolClient, accountId: string, order: { symbol: string; side: "buy" | "sell"; qty: number | null; notional: number | null }, price: number, exceptIds: string[], asset?: AssetRow | null) => {
+    const snapshot = await marginSnapshot(db, accountId, { exceptOrderIds: exceptIds });
     const quantity = order.qty ?? order.notional! / price;
     const trade = { type: order.side === "buy" ? "BUY" : "SELL", ticker: order.symbol, price, quantity, total: roundCents(order.notional ?? quantity * price) } as const;
-    if (reducesPosition({ positions: ledger.positions, trade })) return;
-    const reserved = await reservedCash(db, accountId, ledger.positions, exceptIds);
-    const after = addTrade(ledger.positions, trade);
-    const { prices, staleTickers } = await fetchPrices(after.filter(({ ticker, quantity: held }) => held < 0 && ticker !== order.symbol).map(({ ticker }) => ticker), LABEL);
-    const assessment = assessTrade({ positions: ledger.positions, totalCash: ledger.cash - ledger.pendingTransferOut, prices, staleTickers, trade, reservedCash: reserved });
-    if (assessment.allowed) return;
-    if (assessment.status === 502) throw new UpstreamError(assessment.message);
-    throw new BrokerError(403, 40310000, assessment.message);
+    if (reducesPosition({ positions: snapshot.ledger.positions, trade })) return;
+    const money = (value: number) => `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (snapshot.calls.length > 0) {
+        const total = snapshot.calls.reduce((sum, call) => sum + Number(call.amount), 0);
+        throw new BrokerError(403, 40310000, `account has an open ${money(total)} margin call: only closing orders are allowed until it's met`);
+    }
+    if (order.side === "sell" && snapshot.shortingBlocked) throw new BrokerError(403, 40310000, snapshot.shortingBlocked);
+    const unpriced = snapshot.positions.filter(({ symbol, qty }) => qty < 0 && symbol !== order.symbol && snapshot.staleTickers.includes(symbol)).map(({ symbol }) => symbol);
+    if (unpriced.length > 0) throw new UpstreamError(`Couldn't get a current price for ${unpriced.join(", ")} to check margin; try again shortly`);
+    const marginable = (snapshot.assets[order.symbol] ?? asset ?? (await findAsset(order.symbol)) ?? null)?.marginable ?? null;
+    const cost = buyingPowerCost(roundCents(order.notional ?? quantity * price), { marginable, multiplier: snapshot.state.multiplier });
+    if (cost > snapshot.state.buyingPower + 0.005) {
+        const what = order.side === "buy" ? `buying ${order.symbol}` : `shorting ${order.symbol}`;
+        throw new BrokerError(403, 40310000, `insufficient buying power: ${what} needs ${money(cost)}, but ${money(snapshot.state.buyingPower)} is available${snapshot.reserved > 0 ? ` (${money(snapshot.reserved)} is held for open orders)` : ""}`);
+    }
+};
+
+// A short sale of a hard-to-borrow stock needs located shares not already spoken for by the account's other open short sales in it
+const requireLocate = async (db: PoolClient, accountId: string, symbol: string, qty: number, exceptId?: string) => {
+    const { rows: [row] } = await db.query<{ qty: string }>(
+        `SELECT COALESCE(SUM(qty - filled_qty), 0) AS qty FROM sim_orders WHERE account_id = $1 AND symbol = $2 AND side = 'sell' AND status = ANY($3) AND id <> COALESCE($4::uuid, '00000000-0000-0000-0000-000000000000')`,
+        [accountId, symbol, OPEN_ORDER_STATUSES, exceptId ?? null]
+    );
+    const available = await locatedShares(db, accountId, symbol) - Number(row.qty);
+    if (qty > available + 1e-9) {
+        throw new BrokerError(403, 40310000, `${symbol} is hard to borrow: locate the shares before shorting it (${Math.max(0, available)} located and unused, ${qty} needed)`);
+    }
 };
 
 interface NewOrder {
@@ -155,16 +160,17 @@ interface NewOrder {
     replaces?: string | null;
     hwm?: number | null;
     expiresAt: Date;
+    liquidation?: boolean;
 }
 
-const insertOrder = async (db: PoolClient, accountId: string, { spec, status, parentId = null, groupId = null, groupRole = null, replaces = null, hwm = null, expiresAt }: NewOrder) => {
+const insertOrder = async (db: PoolClient, accountId: string, { spec, status, parentId = null, groupId = null, groupRole = null, replaces = null, hwm = null, expiresAt, liquidation = false }: NewOrder) => {
     const { rows: [row] } = await db.query<SimOrderRow>(
         `INSERT INTO sim_orders (id, account_id, client_order_id, symbol, side, "type", time_in_force, order_class, position_intent, qty, notional, limit_price,
-                                 stop_price, trail_price, trail_percent, hwm, extended_hours, status, parent_id, group_id, group_role, replaces, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING *`,
+                                 stop_price, trail_price, trail_percent, hwm, extended_hours, status, parent_id, group_id, group_role, replaces, expires_at, liquidation)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) RETURNING *`,
         [randomUUID(), accountId, spec.clientOrderId ?? randomUUID(), spec.symbol, spec.side, spec.type, spec.timeInForce, spec.orderClass, spec.positionIntent,
             spec.qty, spec.notional, spec.limitPrice, spec.stopPrice, spec.trailPrice, spec.trailPercent, hwm, spec.extendedHours, status, parentId, groupId, groupRole,
-            replaces, expiresAt]
+            replaces, expiresAt, liquidation]
     );
     return row;
 };
@@ -176,8 +182,9 @@ const requireUniqueClientId = async (db: PoolClient, accountId: string, clientOr
 };
 
 // POST /v1/trading/accounts/{id}/orders. Checked, stored new (or accepted, outside the session it trades in), with any bracket, OTO or
-// OCO legs, then matched at once, so a marketable order comes back filled.
-export const createOrder = async (accountId: string, request: CreateOrderRequest): Promise<Order> => {
+// OCO legs, then matched at once, so a marketable order comes back filled. liquidation marks the simulator's own orders that meet a
+// margin call (their fills are LIQUIDATION).
+export const createOrder = async (accountId: string, request: CreateOrderRequest, { liquidation = false }: { liquidation?: boolean } = {}): Promise<Order> => {
     const spec = parseOrderRequest(request);
     // An OCO order's own limit is its take profit
     if (spec.orderClass === "oco" && spec.takeProfit) spec.limitPrice = spec.takeProfit.limitPrice;
@@ -194,14 +201,15 @@ export const createOrder = async (accountId: string, request: CreateOrderRequest
             now, price: quote.price, position, openOrders: (await openOrdersIn(db, accountId, spec.symbol)).map(summarize), configurations: account.configurations ?? {},
             asset: asset ? { tradable: asset.tradable, fractionable: asset.fractionable, shortable: asset.shortable, attributes: asset.attributes } : null
         });
-        await checkBuyingPower(db, accountId, spec, reservationPrice(spec, quote) ?? quote.price, []);
+        if (spec.side === "sell" && position <= 0 && hardToBorrow(spec.symbol, asset)) await requireLocate(db, accountId, spec.symbol, spec.qty ?? 0);
+        await checkBuyingPower(db, accountId, spec, reservationPrice(spec, quote) ?? quote.price, [], asset);
         const live = tradesIn(spec, market.session) && spec.timeInForce !== "opg";
         const expiresAt = orderExpiry(spec, now);
         const groupId = spec.orderClass === "simple" ? null : randomUUID();
         const hwm = spec.type === "trailing_stop" ? quote.price : null;
         if (hwm !== null) spec.stopPrice = trailingStop(spec, hwm);
         const parent = await insertOrder(db, accountId, {
-            spec, status: live ? "new" : "accepted", groupId, hwm, expiresAt,
+            spec, status: live ? "new" : "accepted", groupId, hwm, expiresAt, liquidation,
             groupRole: spec.orderClass === "simple" ? null : spec.orderClass === "oco" ? "take_profit" : "entry"
         });
         await orderEvent(db, parent, parent.status);
@@ -362,11 +370,20 @@ const fillOrder = async (db: PoolClient, row: SimOrderRow, fill: MatchFill, quot
             return null;
         }
     }
+    // A short sale of a hard-to-borrow stock uses up its locate
+    if (row.side === "sell" && position <= 0 && hardToBorrow(row.symbol, await findAsset(row.symbol))) {
+        const used = await consumeLocates(db, row.account_id, row.symbol, qty);
+        if (used < qty - 1e-9) {
+            await endOrder(db, row, "canceled", `${row.symbol} is hard to borrow and its locate is used up or expired`);
+            return null;
+        }
+    }
     const cumQty = Number(row.filled_qty) + qty;
     const complete = row.notional !== null || capped || cumQty >= Number(row.qty) - 1e-9;
     const leavesQty = complete ? 0 : Number(row.qty) - cumQty;
     const activity = await recordFill(db, row.account_id, {
-        symbol: row.symbol, side: row.side, qty, price: fill.price, total, quoteTime: quote.quoteTime, fillPolicy: fill.fillPolicy, orderId: row.id, cumQty, leavesQty
+        symbol: row.symbol, side: row.side, qty, price: fill.price, total, quoteTime: quote.quoteTime, fillPolicy: fill.fillPolicy, orderId: row.id, cumQty, leavesQty,
+        reason: row.liquidation ? "LIQUIDATION" : undefined
     });
     const filledNotional = roundCents(Number(row.filled_notional) + total);
     const now = new Date();
@@ -519,7 +536,8 @@ export const replaceOrder = async (accountId: string, orderId: string, update: U
             const available = Math.abs(position) - others.filter(order => order.side === current.side && !order.held && order.groupId !== current.group_id).reduce((sum, order) => sum + (order.remainingQty ?? 0), 0);
             if (spec.qty! > available + 1e-9) throw new BrokerError(403, 40310000, `insufficient qty available for order (requested: ${spec.qty}, available: ${parseFloat(available.toFixed(9))})`);
         }
-        if (current.status !== "held") await checkBuyingPower(db, accountId, spec, reservationPrice(spec, quote) ?? quote.price, [current.id]);
+        if (current.status !== "held") await checkBuyingPower(db, accountId, spec, reservationPrice(spec, quote) ?? quote.price, [current.id], asset);
+        if (spec.side === "sell" && position <= 0 && current.status !== "held" && hardToBorrow(current.symbol, asset)) await requireLocate(db, accountId, current.symbol, spec.qty ?? 0, current.id);
         const hwm = num(current.hwm);
         if (spec.type === "trailing_stop" && hwm !== null) spec.stopPrice = trailingStop(spec, hwm);
         const pending = await updateOrder(db, current.id, { status: "pending_replace" });

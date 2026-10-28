@@ -6,12 +6,11 @@ import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
 import TradeModeToggle from "./TradeModeToggle";
 import { useAccount } from "@/context/AccountContext";
-import { useBrokerAccount } from "@/context/BrokerAccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { formatEastern, type MarketStatus } from "@/lib/marketHours";
 import { feesFor, roundFeeUp } from "@/lib/server/broker/sim/feeSchedule";
 import { convertValue, describePlacedOrder, formatCurrency, formatPrice, formatShares, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS, toOrder, type TradeMode } from "@/lib/orders";
-import type { AccountConfigurations, AppOrder, BrokerOrderRequest, Quote } from "@/lib/types";
+import type { AppOrder, BrokerAsset, BrokerOrderRequest, ListLocateQuotesResponse, Locate, Quote } from "@/lib/types";
 
 type OrderType = BrokerOrderRequest["type"];
 type TimeInForce = BrokerOrderRequest["time_in_force"];
@@ -66,16 +65,28 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
     const [submitting, setSubmitting] = useState(false);
     const [status, setStatus] = useState<Status | null>(null);
     const { account, refreshAccount } = useAccount();
-    const { active } = useBrokerAccount();
-    // Whether the account may short (a cash account can't: no_shorting); unknown until loaded, when the broker decides
-    const [noShorting, setNoShorting] = useState(false);
+    // The stock's margin and borrow flags (marginable, shortable, easy or hard to borrow), and the shares located to short it today
+    const [asset, setAsset] = useState<BrokerAsset | null>(null);
+    const [locates, setLocates] = useState<Locate[]>([]);
+    const [locateQuote, setLocateQuote] = useState<{ price: number | null; available: number } | null>(null);
+    const [locating, setLocating] = useState(false);
+    const [locatesVersion, setLocatesVersion] = useState(0);
+    const hardToBorrow = asset?.borrow_status === "hard_to_borrow";
 
     useEffect(() => {
-        if (!active) return;
-        axios.get<AccountConfigurations>(`/api/accounts/${active.accountId}/configurations`)
-            .then(({ data }) => setNoShorting(data.no_shorting === true))
+        axios.get<BrokerAsset>(`/api/assets/${encodeURIComponent(ticker)}`).then(({ data }) => setAsset(data)).catch(logError);
+    }, [ticker]);
+
+    useEffect(() => {
+        if (!hardToBorrow) return;
+        axios.get<{ locates: Locate[] }>(`/api/locates?symbol=${encodeURIComponent(ticker)}&status=active`).then(({ data }) => setLocates(data.locates)).catch(logError);
+        axios.get<ListLocateQuotesResponse>(`/api/locates/quotes?symbols=${encodeURIComponent(ticker)}`)
+            .then(({ data }) => {
+                const found = data.quotes.find(({ symbol }) => symbol === ticker.toUpperCase());
+                setLocateQuote(found ? { price: found.price ? Number(found.price) : null, available: found.available_qty } : null);
+            })
             .catch(logError);
-    }, [active]);
+    }, [ticker, hardToBorrow, locatesVersion]);
 
     const held = account?.positions.find(position => position.ticker === ticker.toUpperCase())?.quantity ?? 0;
     const usesLimit = orderType === "limit" || orderType === "stop_limit";
@@ -104,12 +115,37 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
     const closingSide: Side | null = held > 0 ? "sell" : held < 0 ? "buy" : null;
     const ocoBlocked = (side: Side) => exits === "oco" && side !== closingSide;
     // Covers and sales of longs never need buying power, but an order can't go past the position (close it first to flip). Otherwise
-    // a buy needs its cost available and a new short 50% of its value, and during a margin call neither is allowed.
-    const marginCall = (account?.collateralShortfall ?? 0) > 0;
-    const available = account?.availableCash ?? 0;
+    // an order uses its value of buying power (twice that for a non-marginable stock on margin), a short needs an account and a stock
+    // that allow it (and a locate when it's hard to borrow), and during a margin call nothing new is allowed.
+    const marginCall = (account?.marginCalls.length ?? 0) > 0;
+    const buyingPower = account?.buyingPower ?? 0;
+    const bpCost = (total: number) => asset?.marginable === false && (account?.multiplier ?? 1) > 1 ? total * account!.multiplier : total;
+    const located = locates.reduce((sum, locate) => sum + (locate.located_qty ?? 0), 0);
+    const shortProblem = !account ? null : !account.shortingEnabled ? account.shortingBlockedReason
+        : asset?.shortable === false ? `${ticker} can't be sold short` : null;
     const pastPosition = (side: Side, shares: number) => side === "sell" ? held > 0 && shares > held + 1e-9 : held < 0 && shares > -held + 1e-9;
-    const buyBlocked = account !== null && (held < 0 ? pastPosition("buy", buyOrder.quantity) : marginCall || buyOrder.total > available);
-    const sellBlocked = account !== null && (held > 0 ? pastPosition("sell", sellOrder.quantity) : noShorting || marginCall || sellOrder.total / 2 > available);
+    const buyBlocked = account !== null && (held < 0 ? pastPosition("buy", buyOrder.quantity) : marginCall || bpCost(buyOrder.total) > buyingPower);
+    const sellBlocked = account !== null && (held > 0 ? pastPosition("sell", sellOrder.quantity) : shortProblem !== null || marginCall || bpCost(sellOrder.total) > buyingPower);
+    const needsLocate = held <= 0 && hardToBorrow && shortProblem === null;
+    const locateShares = Math.max(100, Math.ceil(sellOrder.quantity / 100) * 100);
+
+    const onLocate = async () => {
+        setLocating(true);
+        setStatus(null);
+        try {
+            const { data } = await axios.post<Locate>("/api/locates", { symbol: ticker.toUpperCase(), qty: locateShares });
+            setStatus(data.status === "active"
+                ? { ok: true, message: `Located ${data.located_qty} ${ticker} for ${formatCurrency(data.total_fee!)} (until ${formatEastern(data.expires_at!)})` }
+                : { ok: false, message: `The locate was rejected (${data.rejection_reason?.replaceAll("_", " ")})` });
+            refreshAccount();
+            setLocatesVersion(version => version + 1);
+        } catch (error) {
+            logError(error);
+            setStatus({ ok: false, message: `Couldn't locate ${ticker}: ${apiErrorMessage(error)}` });
+        } finally {
+            setLocating(false);
+        }
+    };
     const pricesValid = (!usesLimit || limitPrice > 0) && (!usesStop || stopPrice > 0) && (!isTrailing || (trail > 0 && (trailKind === "price" || trail < 100)))
         && (exits === "none" || exits === "stop_loss" || takeProfit > 0) && (exits === "none" || exits === "take_profit" || stopLoss > 0);
     const closed = market !== null && !market.open;
@@ -259,7 +295,7 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
                 {(exits === "bracket" || exits === "take_profit" || exits === "stop_loss") && ` Once it fills, ${exits === "bracket" ? `a take profit at ${formatPrice(takeProfit)} and a stop loss at ${formatPrice(stopLoss)} (one cancels the other) close it` : exits === "take_profit" ? `a take profit at ${formatPrice(takeProfit)} closes it` : `a stop loss at ${formatPrice(stopLoss)} closes it`}.`}
             </p>
             <p className="order-preview">
-                Available {formatCurrency(available)} · Commission $0.00 · Est. regulatory fees {formatCurrency(fees("buy"))} on the buy, {formatCurrency(fees("sell"))} on the sell
+                Buying power {formatCurrency(buyingPower)}{asset?.marginable === false ? " (not marginable: 100% initial margin)" : ""} · Commission $0.00 · Est. regulatory fees {formatCurrency(fees("buy"))} on the buy, {formatCurrency(fees("sell"))} on the sell
             </p>
             {closed && market && (
                 <p className="text-muted">
@@ -269,17 +305,22 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
                 </p>
             )}
             {marginCall && (buyBlocked || sellBlocked) ? (
-                <p className="text-danger">Margin call: only covers and sales of long positions are allowed until the collateral shortfall is fixed. <Link href="/deposit">Deposit</Link></p>
+                <p className="text-danger">Margin call: only closing orders are allowed until it&apos;s met. <Link href="/deposit">Deposit</Link></p>
             ) : (
                 <Fragment>
                     {held < 0 && pastPosition("buy", buyOrder.quantity) && <p className="text-danger">You&apos;re short {formatShares(-held)} {ticker}: an order can&apos;t buy past the position. Cover it first, then buy.</p>}
                     {held > 0 && pastPosition("sell", sellOrder.quantity) && <p className="text-danger">You hold {formatShares(held)} {ticker}: an order can&apos;t sell past the position. Sell it first, then short.</p>}
-                    {held >= 0 && buyBlocked && <p className="text-danger">Insufficient buying power to buy. <Link href="/deposit">Deposit</Link></p>}
-                    {held <= 0 && noShorting && <p className="text-muted">Shorting needs a margin account (Settings).</p>}
-                    {held <= 0 && sellBlocked && !noShorting && (
-                        <p className="text-danger">
-                            Insufficient collateral to short: needs {formatCurrency(sellOrder.total / 2)} available (150% of a short is held as collateral; its proceeds cover 100%).{" "}
-                            <Link href="/deposit">Deposit</Link>
+                    {held >= 0 && buyBlocked && <p className="text-danger">Insufficient buying power: this order needs {formatCurrency(bpCost(buyOrder.total))}. <Link href="/deposit">Deposit</Link></p>}
+                    {held <= 0 && shortProblem && <p className="text-muted">Shorting: {shortProblem}{account?.shortingEnabled === false ? " (Settings)" : ""}.</p>}
+                    {held <= 0 && !shortProblem && sellBlocked && <p className="text-danger">Insufficient buying power to short: this order needs {formatCurrency(bpCost(sellOrder.total))}. <Link href="/deposit">Deposit</Link></p>}
+                    {needsLocate && (
+                        <p className={located >= sellOrder.quantity ? "text-muted" : "text-warning"}>
+                            {ticker} is hard to borrow: a short sale needs a locate first, and holding the short costs a daily borrow fee. {located > 0 ? `${located} shares located today. ` : ""}
+                            {locateQuote && (locateQuote.available > 0 && locateQuote.price !== null
+                                ? <button type="button" className="btn btn-sm btn-outline-secondary" onClick={onLocate} disabled={locating}>
+                                    {locating ? "Locating…" : `Locate ${locateShares} for ${formatCurrency(locateShares * locateQuote.price)}`}
+                                </button>
+                                : "No shares are available to locate today.")}
                         </p>
                     )}
                 </Fragment>

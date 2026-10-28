@@ -64,9 +64,9 @@ const EXCHANGES: Record<string, Asset["exchange"]> = {
     NYSE: "NYSE", NASDAQ: "NASDAQ", AMEX: "AMEX", "NYSE MKT": "AMEX", ARCA: "ARCA", "NYSE ARCA": "ARCA", NYSEARCA: "NYSEARCA", BATS: "BATS"
 };
 
-// An asset in the universe as Alpaca's Asset. Without Alpaca's flags it's tradable, fractionable and marginable, isn't shortable,
-// and has the house margin requirements' 30% (refined in Phase 5).
-export const toAsset = (row: AssetRow): Asset => ({
+// An asset in the universe as Alpaca's Asset. Without Alpaca's flags it's tradable, fractionable, marginable, shortable and easy to
+// borrow (unless hardToBorrow says otherwise, such as SIM_HTB_SYMBOLS), with the house maintenance requirement of 30%.
+export const toAsset = (row: AssetRow, { hardToBorrow = row.borrowStatus === "hard_to_borrow" }: { hardToBorrow?: boolean } = {}): Asset => ({
     id: row.alpacaId ?? assetId(row.symbol),
     class: "us_equity",
     exchange: EXCHANGES[row.exchange.toUpperCase()] ?? "NYSE",
@@ -75,11 +75,11 @@ export const toAsset = (row: AssetRow): Asset => ({
     status: "active",
     tradable: row.tradable ?? true,
     marginable: row.marginable ?? true,
-    shortable: row.shortable ?? false,
+    shortable: row.shortable ?? true,
     fractionable: row.fractionable ?? true,
     margin_requirement_long: String(row.marginRequirementLong ?? 30),
     margin_requirement_short: String(row.marginRequirementShort ?? 30),
-    ...(row.borrowStatus ? { borrow_status: row.borrowStatus } : {}),
+    borrow_status: hardToBorrow ? "hard_to_borrow" : row.borrowStatus ?? "easy_to_borrow",
     attributes: row.attributes
 } as Asset);
 
@@ -153,7 +153,7 @@ export interface SimOrderRow {
     filled_avg_price: string | null; parent_id: string | null; group_id: string | null; group_role: "entry" | "take_profit" | "stop_loss" | null;
     replaces: string | null; replaced_by: string | null; stop_triggered_at: Date | null; expires_at: Date; reason: string | null;
     created_at: Date; updated_at: Date; submitted_at: Date; filled_at: Date | null; expired_at: Date | null; canceled_at: Date | null;
-    failed_at: Date | null; replaced_at: Date | null; cancel_requested_at: Date | null;
+    failed_at: Date | null; replaced_at: Date | null; cancel_requested_at: Date | null; liquidation?: boolean;
 }
 
 const iso = (date: Date | null) => date === null ? null : date.toISOString();

@@ -7,6 +7,7 @@ import { apiErrorMessage, logError } from "@/lib/apiError";
 import MarketStatusBadge from "./MarketStatusBadge";
 import OpenOrders from "./OpenOrders";
 import PerformanceChart from "./PerformanceChart";
+import MarginPanel from "./MarginPanel";
 import { useAccount } from "@/context/AccountContext";
 import { formatCurrency, formatSigned, roundShares } from "@/lib/orders";
 import type { MarketStatus } from "@/lib/marketHours";
@@ -75,6 +76,7 @@ const PortfolioList = () => {
         return (
             <Fragment>
                 <PerformanceChart />
+                <MarginPanel />
                 <p className="mt-5">No open positions.</p>
                 <OpenOrders refreshKey={ordersVersion} />
             </Fragment>
@@ -93,6 +95,7 @@ const PortfolioList = () => {
     return (
         <Fragment>
             <PerformanceChart />
+            <MarginPanel />
             <div className="price-container mt-5">
                 <span className="current-price">
                     {isPositive ? "+" : "-"}{formatCurrency(Math.abs(totalGain))}

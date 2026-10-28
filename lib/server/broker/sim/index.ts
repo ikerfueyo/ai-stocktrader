@@ -7,11 +7,13 @@ import * as accounts from "./accounts";
 import * as transfers from "./transfers";
 import * as positions from "./positions";
 import * as orders from "./orders";
+import * as margin from "./marginAccount";
+import * as locates from "./locates";
 import { toAsset, toCalendar, toClock } from "./shapes";
 
 // The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), funding
 // (./transfers.ts: bank links, recipient banks, transfers and the cash activities they post), the trading account, positions and
-// ledger (./positions.ts), orders (./orders.ts), assets, the calendar and clock, and the event streams are implemented; options and
+// ledger (./positions.ts), margin (./marginAccount.ts, ./calls.ts), orders (./orders.ts), locates (./locates.ts), assets, the calendar and clock, and the event streams are implemented; options and
 // documents arrive in later phases (docs/brokerage-roadmap.md) and answer 501 until then.
 const notYet = (what: string, phase: number) => (): never => {
     throw new BrokerError(501, 50100000, `${what} isn't simulated yet (phase ${phase} of the brokerage roadmap)`);
@@ -30,12 +32,12 @@ export class SimBroker implements Broker {
     listOptionsApprovals = accounts.listOptionsApprovals;
     requestOptionsApproval = (accountId: string, { level }: { level?: number }) => accounts.requestOptionsApproval(accountId, level ?? 0);
 
-    listAssets = async () => (await allAssets()).map(toAsset);
+    listAssets = async () => (await allAssets()).map(asset => toAsset(asset, { hardToBorrow: margin.hardToBorrow(asset.symbol, asset) }));
 
     async getAsset(symbol: string) {
         const asset = await findAsset(symbol);
         if (!asset) throw new BrokerError(404, 40410000, `asset not found for ${symbol}`);
-        return toAsset(asset);
+        return toAsset(asset, { hardToBorrow: margin.hardToBorrow(asset.symbol, asset) });
     }
 
     getCalendar = async (start: string, end: string) => toCalendar(start, end);
@@ -77,7 +79,7 @@ export class SimBroker implements Broker {
         };
     }
 
-    getTradeAccount = positions.getTradeAccount;
+    getTradeAccount = margin.getTradeAccount;
     getPortfolioHistory = positions.getPortfolioHistory;
     createOrder = orders.createOrder;
     listOrders = orders.listOrders;
@@ -89,6 +91,10 @@ export class SimBroker implements Broker {
     listPositions = positions.listPositions;
     getPosition = positions.getPosition;
     closePosition = orders.closePosition;
+    listLocateQuotes = locates.listLocateQuotes;
+    createLocate = locates.createLocate;
+    listLocates = locates.listLocates;
+    getLocate = locates.getLocate;
     exerciseOption = notYet("Options", 9);
     listOptionContracts = notYet("Options", 9);
     createAchRelationship = transfers.createAchRelationship;

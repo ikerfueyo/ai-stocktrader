@@ -2,10 +2,9 @@ import { NextResponse } from "next/server";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount, requireAccount } from "@/lib/server/brokerAccounts";
-import { fetchPrices } from "@/lib/server/marketData";
-import { assessWithdrawal } from "@/lib/server/account";
-import { getAccount, shortTickers, withAccountLock } from "@/lib/server/portfolio";
-import { reservedCash as reservedForOrders } from "@/lib/server/broker/sim/orders";
+import { withAccountLock } from "@/lib/server/portfolio";
+import { marginSnapshot, withdrawalError } from "@/lib/server/broker/sim/marginAccount";
+import pool from "@/lib/server/db";
 import { TRANSFER_FEES } from "@/lib/server/broker/sim/funding";
 import type { CreateTransferRequest } from "@/lib/server/broker/types";
 import type { BrokerTransfer, TransferRequest } from "@/lib/types";
@@ -20,9 +19,9 @@ export const GET = withUser(async (request, { params }: AccountContext, userId) 
 
 // Request a transfer: body { transfer: { type: ach | wire, direction: INCOMING | OUTGOING, amount, relationshipId | bankId } }.
 // Deposits are ACH from the approved bank link; withdrawals go by ACH to it or by wire (with its fee) to a recipient bank. A
-// withdrawal can only come from withdrawable cash: available cash (never short collateral, cash reserved for orders or another
-// queued withdrawal) less deposit credit and sale proceeds not yet settled, and not during a margin call. The broker sets the
-// timing, limits and fees; the cash check runs here, on the broker's ledger, until the simulator checks withdrawals itself.
+// withdrawal can only come from withdrawable cash (the broker's margin account: settled cash, less deposit credit and sale proceeds
+// not yet settled and another queued withdrawal, no more than the excess over Reg T initial margin less what open orders hold), and
+// not during a margin call. The broker sets the timing, limits and fees.
 export const POST = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
     const body = await request.json().catch(() => null) as Partial<TransferRequest> | null;
@@ -41,20 +40,18 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         return NextResponse.json<BrokerTransfer>(await getBroker().createTransfer(account_id, transfer), { status: 201 });
     }
     const fee = type === "wire" ? TRANSFER_FEES.wireOutDomestic : 0;
-    const created = await withAccountLock(userId, async db => {
-        const { positions, totalCash, unsettledInstant, unsettledProceeds } = await getAccount(userId, db);
-        const label = `POST /api/accounts/${account_id}/transfers`;
-        const { prices, staleTickers } = await fetchPrices(shortTickers(positions), label);
-        const reservedCash = await reservedForOrders(db, account_id, positions);
-        // Neither instant deposit credit nor sale proceeds can leave before they settle
-        const assessment = assessWithdrawal({ positions, totalCash: totalCash - unsettledInstant - unsettledProceeds, prices, staleTickers, amount: amount + fee, reservedCash });
-        if (!assessment.allowed) {
+    const created = await withAccountLock(userId, async () => {
+        const snapshot = await marginSnapshot(pool, account_id);
+        const problem = withdrawalError(snapshot, amount + fee);
+        if (problem) {
+            // Neither instant deposit credit nor sale proceeds can leave before they settle
+            const { unsettledInstant, unsettledProceeds } = snapshot.ledger;
             const unsettled = [
                 unsettledInstant > 0 ? `$${unsettledInstant.toFixed(2)} of instant deposit credit` : null,
                 unsettledProceeds > 0 ? `$${unsettledProceeds.toFixed(2)} of sale proceeds` : null
             ].filter(Boolean);
-            const note = unsettled.length > 0 ? ` (${unsettled.join(" and ")} can't be withdrawn until settled)` : "";
-            throw new HttpError(`${assessment.message}${fee > 0 ? `, including the $${fee} wire fee` : ""}${note}`, assessment.status);
+            const note = unsettled.length > 0 && problem.status === 400 && snapshot.calls.length === 0 ? ` (${unsettled.join(" and ")} can't be withdrawn until settled)` : "";
+            throw new HttpError(`${problem.message}${fee > 0 ? `, including the $${fee} wire fee` : ""}${note}`, problem.status);
         }
         return getBroker().createTransfer(account_id, transfer);
     });
