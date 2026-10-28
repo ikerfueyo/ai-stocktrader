@@ -9,7 +9,7 @@ import { accountSummary, CASH_ACTIVITY_TYPES, cashRowsOf, ledgerOf, listAllActiv
 // (lib/server/broker/sim/scenarios.sim.ts, npm run test:scenarios) and against Alpaca's Broker API sandbox
 // (lib/server/broker/alpaca/scenarios.sandbox.ts). What only a test broker can do (move a price, age a position, post a corporate
 // action) is the harness's, and a scenario that needs a capability the harness lacks is skipped. Every account is a new one, with
-// fake identities (the 123-45-6789 test SSN) and the 011000015 test routing number.
+// fake identities (made-up SSNs Alpaca accepts: it refuses sequences such as 123-45-6789) and the 011000015 test routing number.
 
 export interface ScenarioHarness {
     broker: Broker;
@@ -59,13 +59,16 @@ export const testApplication = (options: { margin?: boolean; options?: boolean; 
         ...(options.ira ? { account_sub_type: options.ira } : {}),
         contact: { email_address: `scenario+${randomUUID().slice(0, 8)}@example.com`, phone_number: "+15555550100", street_address: ["20 N San Mateo Dr"], city: "San Mateo", state: "CA", postal_code: "94401", country: "USA" },
         identity: {
-            given_name: "Scenario", family_name: "Tester", date_of_birth: "1980-01-15", tax_id: "123-45-6789", tax_id_type: "USA_SSN",
+            given_name: "Scenario", family_name: "Tester", date_of_birth: "1980-01-15", tax_id: "587-42-3816", tax_id_type: "USA_SSN",
             country_of_citizenship: "USA", country_of_birth: "USA", country_of_tax_residence: "USA", funding_source: ["employment_income"],
+            annual_income_min: "50000", annual_income_max: "100000", liquid_net_worth_min: "50000", liquid_net_worth_max: "100000", total_net_worth_min: "100000", total_net_worth_max: "200000",
+            // Alpaca requires the suitability answers for options (in identity, though its spec marks them deprecated there)
+            liquidity_needs: "somewhat_important", risk_tolerance: "moderate", investment_objective: "growth", investment_time_horizon: "3_to_5_years", marital_status: "SINGLE", number_of_dependents: 0,
             investment_experience_with_stocks: "over_5_years", ...(options.options ? { investment_experience_with_options: "1_to_5_years" } : {})
         },
         disclosures: { is_control_person: false, is_affiliated_exchange_or_finra: false, is_politically_exposed: false, immediate_family_exposed: false, employment_status: "retired" },
         agreements: agreements.map(agreement => ({ agreement, ...signed })),
-        ...(options.ira ? { beneficiaries: [{ given_name: "Test", family_name: "Beneficiary", date_of_birth: "2000-02-02", tax_id: "123-45-6780", tax_id_type: "USA_SSN", relationship: "other", type: "primary", share_pct: "100" }] } : {}),
+        ...(options.ira ? { beneficiaries: [{ given_name: "Test", family_name: "Beneficiary", date_of_birth: "2000-02-02", tax_id: "587-42-3825", tax_id_type: "USA_SSN", relationship: "other", type: "primary", share_pct: "100" }] } : {}),
         enabled_assets: options.options ? ["us_equity", "us_option"] : ["us_equity"]
     } as AccountCreationRequest;
 };
@@ -140,8 +143,10 @@ export const SCENARIOS: Scenario[] = [
         async run(h) {
             const account = await onboard(h);
             assert.ok(account.account_number);
-            assert.ok(!JSON.stringify(account).includes("123-45-6789"));
-            assert.match(String(account.identity?.tax_id ?? ""), /6789$/);
+            assert.ok(!JSON.stringify(account).includes("587-42-3816"));
+            // The simulator returns the last 4 digits; Alpaca's sandbox leaves the tax ID out
+            const taxId = account.identity?.tax_id;
+            if (taxId) assert.match(taxId, /3816$/);
         }
     },
     {

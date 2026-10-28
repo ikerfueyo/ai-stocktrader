@@ -64,7 +64,23 @@ describe("validateApplication", () => {
             w9: { certified: false, backup_withholding: false },
             disclosures_delivered: { form_crs: true, privacy_notice: false }
         }), TODAY);
-        assert.deepEqual(Object.keys(errors).sort(), ["agreements", "disclosures_delivered", "identity.investment_experience_with_options", "options_level", "w9"]);
+        assert.deepEqual(Object.keys(errors).sort(), ["agreements", "disclosures_delivered", "identity.annual_income_min", "identity.investment_experience_with_options",
+            "identity.investment_objective", "identity.investment_time_horizon", "identity.liquidity_needs", "identity.marital_status", "identity.number_of_dependents",
+            "identity.risk_tolerance", "options_level", "w9"]);
+    });
+
+    test("options pass with the level, experience, income and suitability answers", () => {
+        const base = application();
+        const errors = validateApplication(application({
+            agreements: [...base.agreements, "options_agreement"],
+            options_level: 2,
+            identity: {
+                ...base.identity, annual_income_min: "50000", annual_income_max: "99999", investment_experience_with_options: "1_to_5_years",
+                liquidity_needs: "somewhat_important", risk_tolerance: "moderate", investment_objective: "growth", investment_time_horizon: "3_to_5_years",
+                marital_status: "SINGLE", number_of_dependents: 0
+            }
+        }), TODAY);
+        assert.deepEqual(errors, {});
     });
 
     test("an employed applicant names the employer and position", () => {

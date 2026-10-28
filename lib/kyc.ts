@@ -12,10 +12,21 @@ export const FUNDING_SOURCES = ["employment_income", "investments", "inheritance
 export const EMPLOYMENT_STATUSES = ["employed", "unemployed", "student", "retired"] as const;
 export const EXPERIENCE_LEVELS = ["none", "1_to_5_years", "over_5_years"] as const;
 export const AGREEMENTS = ["customer_agreement", "account_agreement", "margin_agreement", "options_agreement"] as const;
+// The suitability answers Alpaca requires for an options account, in its values
+export const LIQUIDITY_NEEDS = ["very_important", "important", "somewhat_important", "does_not_matter"] as const;
+export const RISK_TOLERANCES = ["conservative", "moderate", "significant_risk"] as const;
+export const INVESTMENT_OBJECTIVES = ["generate_income", "preserve_wealth", "market_speculation", "growth", "balance_preserve_wealth_with_growth"] as const;
+export const TIME_HORIZONS = ["less_than_1_year", "1_to_2_years", "3_to_5_years", "6_to_10_years", "more_than_10_years"] as const;
+export const MARITAL_STATUSES = ["SINGLE", "MARRIED", "DIVORCED", "WIDOWED"] as const;
 export type FundingSource = typeof FUNDING_SOURCES[number];
 export type EmploymentStatus = typeof EMPLOYMENT_STATUSES[number];
 export type ExperienceLevel = typeof EXPERIENCE_LEVELS[number];
 export type AgreementName = typeof AGREEMENTS[number];
+export type LiquidityNeeds = typeof LIQUIDITY_NEEDS[number];
+export type RiskTolerance = typeof RISK_TOLERANCES[number];
+export type InvestmentObjective = typeof INVESTMENT_OBJECTIVES[number];
+export type TimeHorizon = typeof TIME_HORIZONS[number];
+export type MaritalStatus = typeof MARITAL_STATUSES[number];
 
 // The application as the form builds it, in Alpaca's field names. The server adds each agreement's signed_at and ip_address.
 export interface AccountApplication {
@@ -49,6 +60,13 @@ export interface AccountApplication {
         total_net_worth_max?: string;
         investment_experience_with_stocks?: ExperienceLevel;
         investment_experience_with_options?: ExperienceLevel;
+        // Required for options (optionsSuitabilityErrors); Alpaca asks for them in identity
+        liquidity_needs?: LiquidityNeeds;
+        risk_tolerance?: RiskTolerance;
+        investment_objective?: InvestmentObjective;
+        investment_time_horizon?: TimeHorizon;
+        marital_status?: MaritalStatus;
+        number_of_dependents?: number;
     };
     disclosures: {
         is_control_person: boolean;
@@ -87,6 +105,25 @@ export interface AccountApplication {
     // That Form CRS and the privacy notice were shown
     disclosures_delivered: { form_crs: boolean; privacy_notice: boolean };
 }
+
+// What an options application must also answer: Alpaca refuses an options account without any of these
+export const optionsSuitabilityErrors = (identity: AccountApplication["identity"]): Record<string, string> => {
+    const errors: Record<string, string> = {};
+    const oneOf = (path: keyof AccountApplication["identity"], allowed: readonly string[], message: string) => {
+        const value = identity[path];
+        if (typeof value !== "string" || !allowed.includes(value)) errors[`identity.${path}`] = message;
+    };
+    oneOf("investment_experience_with_options", EXPERIENCE_LEVELS, "Options trading needs your options experience");
+    if (identity.annual_income_min === undefined) errors["identity.annual_income_min"] = "Options trading needs your annual income";
+    oneOf("liquidity_needs", LIQUIDITY_NEEDS, "Choose how important access to this money is");
+    oneOf("risk_tolerance", RISK_TOLERANCES, "Choose your risk tolerance");
+    oneOf("investment_objective", INVESTMENT_OBJECTIVES, "Choose your investment objective");
+    oneOf("investment_time_horizon", TIME_HORIZONS, "Choose your time horizon");
+    oneOf("marital_status", MARITAL_STATUSES, "Choose your marital status");
+    const dependents = identity.number_of_dependents;
+    if (dependents === undefined || !Number.isInteger(dependents) || dependents < 0 || dependents > 99) errors["identity.number_of_dependents"] = "Enter your number of dependents";
+    return errors;
+};
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PO_BOX = /\b(p\.?\s*o\.?\s*box|post\s+office\s+box)\b/i;
@@ -199,7 +236,7 @@ export const validateApplication = (application: AccountApplication, today: stri
     }
     if (agreements.includes("options_agreement")) {
         if (!application.options_level || application.options_level < 1 || application.options_level > 3) errors.options_level = "Choose an options level";
-        if (!identity.investment_experience_with_options) errors["identity.investment_experience_with_options"] = "Options trading needs your options experience";
+        Object.assign(errors, optionsSuitabilityErrors(identity));
     }
     if (!w9.certified) errors.w9 = "Certify your taxpayer information (Form W-9)";
     if (!application.disclosures_delivered.form_crs || !application.disclosures_delivered.privacy_notice) {

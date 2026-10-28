@@ -5,7 +5,11 @@ import Link from "next/link";
 import axios from "axios";
 import { useUser } from "@clerk/nextjs";
 import { apiErrorMessage, logError } from "@/lib/apiError";
-import { EXPERIENCE_LEVELS, FUNDING_SOURCES, US_STATES, validateApplication, type AccountApplication, type AgreementName, type ExperienceLevel, type FundingSource } from "@/lib/kyc";
+import {
+    EXPERIENCE_LEVELS, FUNDING_SOURCES, US_STATES,
+    optionsSuitabilityErrors, validateApplication, type AccountApplication, type AgreementName, type ExperienceLevel, type FundingSource, type InvestmentObjective,
+    type LiquidityNeeds, type MaritalStatus, type RiskTolerance, type TimeHorizon
+} from "@/lib/kyc";
 import { easternParts } from "@/lib/marketHours";
 import type { OpenAccountRequest } from "@/lib/types";
 
@@ -16,7 +20,8 @@ const STEP_FIELDS: string[][] = [
     ["contact."],
     ["identity.given_name", "identity.family_name", "identity.date_of_birth", "identity.tax_id", "identity.country_of"],
     ["disclosures."],
-    ["identity.funding_source", "identity.annual_income", "identity.liquid_net_worth", "identity.total_net_worth", "identity.investment_experience"],
+    ["identity.funding_source", "identity.annual_income", "identity.liquid_net_worth", "identity.total_net_worth", "identity.investment_experience",
+        "identity.liquidity_needs", "identity.risk_tolerance", "identity.investment_objective", "identity.investment_time_horizon", "identity.marital_status", "identity.number_of_dependents"],
     ["trusted_contact."],
     ["agreements", "w9", "disclosures_delivered"]
 ];
@@ -34,6 +39,19 @@ const FUNDING_LABELS: Record<FundingSource, string> = {
     employment_income: "Employment income", investments: "Investments", inheritance: "Inheritance", business_income: "Business income", savings: "Savings", family: "Family"
 };
 const EXPERIENCE_LABELS: Record<ExperienceLevel, string> = { none: "None", "1_to_5_years": "1 to 5 years", over_5_years: "Over 5 years" };
+// The suitability questions an options application answers
+const LIQUIDITY_LABELS: Record<LiquidityNeeds, string> = {
+    very_important: "Very important", important: "Important", somewhat_important: "Somewhat important", does_not_matter: "Doesn't matter"
+};
+const RISK_LABELS: Record<RiskTolerance, string> = { conservative: "Conservative", moderate: "Moderate", significant_risk: "Significant risk" };
+const OBJECTIVE_LABELS: Record<InvestmentObjective, string> = {
+    generate_income: "Generate income", preserve_wealth: "Preserve wealth", balance_preserve_wealth_with_growth: "Balance preserving wealth with growth",
+    growth: "Growth", market_speculation: "Market speculation"
+};
+const HORIZON_LABELS: Record<TimeHorizon, string> = {
+    less_than_1_year: "Less than 1 year", "1_to_2_years": "1 to 2 years", "3_to_5_years": "3 to 5 years", "6_to_10_years": "6 to 10 years", more_than_10_years: "More than 10 years"
+};
+const MARITAL_LABELS: Record<MaritalStatus, string> = { SINGLE: "Single", MARRIED: "Married", DIVORCED: "Divorced", WIDOWED: "Widowed" };
 const OPTIONS_LEVELS = [
     { level: 1, label: "Level 1: covered calls and cash-secured puts" },
     { level: 2, label: "Level 2: also buying calls and puts" },
@@ -87,7 +105,7 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
     const allErrors = validateApplication(withAccountType(application), easternParts(new Date()).dateKey);
     const accountTypeErrors: Record<string, string> = {};
     if (options && !application.options_level) accountTypeErrors.options_level = "Choose an options level";
-    if (options && !application.identity.investment_experience_with_options) accountTypeErrors["identity.investment_experience_with_options"] = "Options trading needs your options experience";
+    if (options) Object.assign(accountTypeErrors, optionsSuitabilityErrors(application.identity));
     if (step === 6 && margin && !application.agreements.includes("margin_agreement")) accountTypeErrors.agreements = "Accept the margin agreement, or go back and choose a cash account";
     if (step === 6 && options && !application.agreements.includes("options_agreement")) accountTypeErrors.agreements = "Accept the options agreement, or go back and drop options";
     const errors = { ...allErrors, ...accountTypeErrors };
@@ -109,6 +127,16 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
         set("identity", { [`${prefix}_min`]: range?.min, [`${prefix}_max`]: range?.max } as Partial<AccountApplication["identity"]>);
     };
     const rangeIndex = (prefix: "annual_income" | "liquid_net_worth" | "total_net_worth") => String(RANGES.findIndex(({ min }) => min === application.identity[`${prefix}_min`]));
+    const suitability = <K extends "liquidity_needs" | "risk_tolerance" | "investment_objective" | "investment_time_horizon" | "marital_status">(
+        field: K, label: string, labels: Record<NonNullable<AccountApplication["identity"][K]>, string>
+    ) => (
+        <Field label={label} error={error(`identity.${field}`)}>
+            <select className="form-control" value={application.identity[field] ?? ""} onChange={event => set("identity", { [field]: event.target.value || undefined } as Partial<AccountApplication["identity"]>)}>
+                <option value="">Choose…</option>
+                {Object.entries(labels).map(([value, text]) => <option key={value} value={value}>{text as string}</option>)}
+            </select>
+        </Field>
+    );
 
     const next = () => {
         if (stepErrors(step).length > 0) {
@@ -370,6 +398,20 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                                 {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
                             </select>
                         </Field>
+                    )}
+                    {options && (
+                        <>
+                            <p className="text-muted mb-0">Options trading also needs these answers, to judge whether options suit you.</p>
+                            {suitability("liquidity_needs", "How important is being able to turn this money into cash quickly?", LIQUIDITY_LABELS)}
+                            {suitability("risk_tolerance", "Risk tolerance", RISK_LABELS)}
+                            {suitability("investment_objective", "Investment objective", OBJECTIVE_LABELS)}
+                            {suitability("investment_time_horizon", "How long do you plan to invest?", HORIZON_LABELS)}
+                            {suitability("marital_status", "Marital status", MARITAL_LABELS)}
+                            <Field label="Number of dependents" error={error("identity.number_of_dependents")}>
+                                <input className="form-control" type="number" min={0} max={99} step={1} inputMode="numeric" value={identity.number_of_dependents ?? ""}
+                                    onChange={event => set("identity", { number_of_dependents: event.target.value === "" ? undefined : Number(event.target.value) })} />
+                            </Field>
+                        </>
                     )}
                 </div>
             )}
