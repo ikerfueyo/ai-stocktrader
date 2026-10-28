@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Broker } from "./broker";
 import type { Account, AccountCreationRequest, Order, Transfer } from "./types";
 import { accountSummary, CASH_ACTIVITY_TYPES, cashRowsOf, ledgerOf, listAllActivities, taxLotsOf } from "../brokerLedger";
+import { closeAccountProblem } from "../../accounts";
 
 // The brokerage scenarios, written against the Broker interface only, so the same steps run against the simulator
 // (lib/server/broker/sim/scenarios.sim.ts, npm run test:scenarios) and against Alpaca's Broker API sandbox
@@ -50,6 +51,15 @@ type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corp
 const STOCKS = 4;
 const roundCents = (value: number) => Math.round(value * 100) / 100;
 
+// Alpaca requires these suitability answers for options (in identity, though its spec marks them deprecated there); the app asks
+// them only with options, when applying or in Settings
+const SUITABILITY = {
+    liquidity_needs: "somewhat_important", risk_tolerance: "moderate", investment_objective: "growth", investment_time_horizon: "3_to_5_years", marital_status: "SINGLE", number_of_dependents: 0
+} as const;
+
+// An agreement as the app's account routes sign it
+const signedNow = (agreement: string) => ({ agreement, signed_at: new Date().toISOString(), ip_address: "127.0.0.1" }) as never;
+
 // An application as the app sends it, with fake details
 export const testApplication = (options: { margin?: boolean; options?: boolean; ira?: "traditional" | "roth" } = {}): AccountCreationRequest => {
     const signed = { signed_at: new Date().toISOString(), ip_address: "127.0.0.1" };
@@ -62,9 +72,7 @@ export const testApplication = (options: { margin?: boolean; options?: boolean; 
             given_name: "Scenario", family_name: "Tester", date_of_birth: "1980-01-15", tax_id: "587-42-3816", tax_id_type: "USA_SSN",
             country_of_citizenship: "USA", country_of_birth: "USA", country_of_tax_residence: "USA", funding_source: ["employment_income"],
             annual_income_min: "50000", annual_income_max: "100000", liquid_net_worth_min: "50000", liquid_net_worth_max: "100000", total_net_worth_min: "100000", total_net_worth_max: "200000",
-            // Alpaca requires the suitability answers for options (in identity, though its spec marks them deprecated there)
-            liquidity_needs: "somewhat_important", risk_tolerance: "moderate", investment_objective: "growth", investment_time_horizon: "3_to_5_years", marital_status: "SINGLE", number_of_dependents: 0,
-            investment_experience_with_stocks: "over_5_years", ...(options.options ? { investment_experience_with_options: "1_to_5_years" } : {})
+            investment_experience_with_stocks: "over_5_years", ...(options.options ? { ...SUITABILITY, investment_experience_with_options: "1_to_5_years" } : {})
         },
         disclosures: { is_control_person: false, is_affiliated_exchange_or_finra: false, is_politically_exposed: false, immediate_family_exposed: false, employment_status: "retired" },
         agreements: agreements.map(agreement => ({ agreement, ...signed })),
@@ -376,6 +384,62 @@ export const SCENARIOS: Scenario[] = [
             assert.equal(await positionQty(h, accountId, contract.symbol), 1);
             await filled(h, accountId, await h.broker.closePosition(accountId, contract.symbol));
             assert.equal(await positionQty(h, accountId, contract.symbol), 0);
+        }
+    },
+    {
+        name: "options later: a cash account adds the options agreement with the suitability answers, as Settings does, and is approved",
+        async run(h) {
+            const account = await onboard(h);
+            const experience = { investment_experience_with_options: "1_to_5_years" };
+            // Without the answers the agreement isn't accepted (the simulator; Alpaca refuses an options application without them)
+            await assert.rejects(h.broker.updateAccount(account.id, { agreements: [signedNow("options_agreement")], identity: experience } as never),
+                (error: { status?: number }) => error.status === 422);
+            await h.broker.updateAccount(account.id, { agreements: [signedNow("options_agreement")], identity: { ...experience, ...SUITABILITY } } as never);
+            await h.broker.requestOptionsApproval(account.id, { level: 2 });
+            const approval = await waitFor(h, "the options approval", async () => (await h.broker.listOptionsApprovals(account.id)).find(({ status }) => status === "APPROVED"));
+            assert.equal(approval.approved_level, 2);
+            // Settings doesn't change enabled_assets: approval turns options on
+            assert.ok((await h.broker.getAccount(account.id)).enabled_assets?.includes("us_option"));
+        }
+    },
+    {
+        name: "margin upgrade: a cash account signs the margin agreement, as Settings does, then borrows and sells short",
+        async run(h) {
+            const accountId = await fundedAccount(h, 10000);
+            assert.equal(String((await h.broker.getTradeAccount(accountId)).multiplier), "1");
+            await assert.rejects(h.broker.updateConfigurations(accountId, { max_margin_multiplier: "2", no_shorting: false }), (error: { status?: number }) => error.status === 422);
+            await h.broker.updateAccount(accountId, { agreements: [signedNow("margin_agreement")] } as never);
+            await h.broker.updateConfigurations(accountId, { max_margin_multiplier: "2", no_shorting: false });
+            const trading = await waitFor(h, "margin to be enabled", async () => {
+                const current = await h.broker.getTradeAccount(accountId);
+                return String(current.multiplier) === "2" && current.shorting_enabled ? current : null;
+            });
+            assert.ok(Number(trading.buying_power) > Number(trading.cash), `buying power ${trading.buying_power} against cash ${trading.cash}`);
+            await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.other, side: "sell", qty: "3" }));
+            assert.equal(await positionQty(h, accountId, h.symbols.other), -3);
+        }
+    },
+    {
+        name: "close: an account closes once its orders are cancelled and its cash withdrawn, then takes no orders",
+        async run(h) {
+            const accountId = await fundedAccount(h, 1000);
+            // What the close route checks first, from the broker's figures
+            const problem = async () => {
+                const [positions, orders, trading] = await Promise.all([h.broker.listPositions(accountId), h.broker.listOrders(accountId, { status: "open" }), h.broker.getTradeAccount(accountId)]);
+                return closeAccountProblem({ positions: positions.length, openOrders: orders.length, cash: trading.cash, pendingTransferOut: trading.pending_transfer_out });
+            };
+            const resting = await placed(h, accountId, { symbol: h.symbols.stock, side: "buy", qty: "1", type: "limit", limit_price: "1.00" });
+            assert.match(String(await problem()), /open orders/);
+            await h.broker.cancelOrder(accountId, idOf(resting));
+            await waitFor(h, "the order's cancellation", async () => (await h.broker.getOrder(accountId, idOf(resting))).status === "canceled");
+            assert.match(String(await problem()), /cash/);
+            const [link] = await h.broker.listAchRelationships(accountId);
+            const withdrawal = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "OUTGOING", amount: "1000.00", relationship_id: link.id } as never);
+            await waitFor(h, "the withdrawal's completion", async () => (await h.broker.listTransfers(accountId)).some(({ id, status }) => id === withdrawal.id && status === "COMPLETE"));
+            assert.equal(await problem(), null);
+            await h.broker.closeAccount(accountId);
+            await waitFor(h, "the account's closing", async () => (await h.broker.getAccount(accountId)).status === "ACCOUNT_CLOSED");
+            await assert.rejects(placed(h, accountId, { symbol: h.symbols.stock, side: "buy", qty: "1" }), (error: { status?: number }) => error.status === 403 || error.status === 422);
         }
     },
     {

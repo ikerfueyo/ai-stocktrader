@@ -8,7 +8,8 @@ import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
 import W9Certification from "./W9Certification";
-import { EXPERIENCE_LEVELS, US_STATES, type ExperienceLevel } from "@/lib/kyc";
+import { EXPERIENCE_LEVELS, US_STATES, optionsSuitabilityErrors, type AccountApplication, type ExperienceLevel } from "@/lib/kyc";
+import { EXPERIENCE_LABELS, Field, RANGES, SUITABILITY_FIELDS, SuitabilityFields, type SuitabilityAnswers } from "./OptionsSuitability";
 import type { AccountConfigurations, BrokerAccount, OptionsApprovalResponse } from "@/lib/types";
 
 const OPTIONS_LEVEL_LABELS = ["None", "Level 1: covered calls and cash-secured puts", "Level 2: also buying calls and puts", "Level 3: also spreads"];
@@ -36,6 +37,9 @@ const AccountSettings = () => {
     const [trusted, setTrusted] = useState({ given_name: "", family_name: "", email_address: "", phone_number: "" });
     const [optionsLevel, setOptionsLevel] = useState(1);
     const [optionsExperience, setOptionsExperience] = useState<ExperienceLevel | "">("");
+    // What an options request adds to the account's identity when it lacks them: annual income and the suitability answers
+    const [annualIncome, setAnnualIncome] = useState(-1);
+    const [suitability, setSuitability] = useState<SuitabilityAnswers>({});
     const [acceptOptions, setAcceptOptions] = useState(false);
     const [acceptMargin, setAcceptMargin] = useState(false);
     const [confirmClose, setConfirmClose] = useState(false);
@@ -118,6 +122,17 @@ const AccountSettings = () => {
     const maxLevel = isIra ? IRA_MAX_OPTIONS_LEVEL : 3;
     const approvedLevel = configurations.max_options_trading_level ?? 0;
     const latestApproval = approvals[0];
+    // An account opened without options lacks the answers Alpaca requires for them, which the request then adds
+    const identity = (account.identity ?? {}) as AccountApplication["identity"];
+    const needsIncome = identity.annual_income_min === undefined;
+    const needsSuitability = SUITABILITY_FIELDS.some(field => identity[field] === undefined);
+    const income = RANGES[annualIncome];
+    const identityChanges: Partial<AccountApplication["identity"]> = {
+        ...(optionsExperience && optionsExperience !== identity.investment_experience_with_options ? { investment_experience_with_options: optionsExperience } : {}),
+        ...(needsIncome && income ? { annual_income_min: income.min, annual_income_max: income.max } : {}),
+        ...(needsSuitability ? suitability : {})
+    };
+    const optionsReady = Object.keys(optionsSuitabilityErrors({ ...identity, ...identityChanges })).length === 0;
 
     const onContact = (event: FormEvent) => {
         event.preventDefault();
@@ -141,10 +156,10 @@ const AccountSettings = () => {
         await patchConfigurations({ max_margin_multiplier: "2", no_shorting: false });
     }, "Your account is now a margin account.");
     const onRequestOptions = () => save("options", async () => {
-        if (!agreements.includes("options_agreement") || (optionsExperience && optionsExperience !== account.identity?.investment_experience_with_options)) {
+        if (!agreements.includes("options_agreement") || Object.keys(identityChanges).length > 0) {
             await patchAccount({
                 ...(agreements.includes("options_agreement") ? {} : { agreements: [{ agreement: "options_agreement" }] }),
-                ...(optionsExperience ? { identity: { investment_experience_with_options: optionsExperience } } : {})
+                ...(Object.keys(identityChanges).length > 0 ? { identity: identityChanges } : {})
             });
         }
         await axios.post(`/api/accounts/${id}/options`, { level: optionsLevel });
@@ -288,9 +303,18 @@ const AccountSettings = () => {
                         {!account.identity?.investment_experience_with_options && (
                             <select className="form-control" aria-label="Options experience" value={optionsExperience} onChange={event => setOptionsExperience(event.target.value as ExperienceLevel | "")}>
                                 <option value="">Your options experience…</option>
-                                {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{level === "none" ? "None" : level === "1_to_5_years" ? "1 to 5 years" : "Over 5 years"}</option>)}
+                                {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
                             </select>
                         )}
+                        {needsIncome && (
+                            <Field label="Annual income">
+                                <select className="form-control" value={annualIncome} onChange={event => setAnnualIncome(Number(event.target.value))}>
+                                    <option value={-1}>Choose…</option>
+                                    {RANGES.map(({ label }, index) => <option key={label} value={index}>{label}</option>)}
+                                </select>
+                            </Field>
+                        )}
+                        {needsSuitability && <SuitabilityFields answers={{ ...identity, ...suitability }} onChange={changes => setSuitability(previous => ({ ...previous, ...changes }))} />}
                         {!agreements.includes("options_agreement") && (
                             <label className="onboarding-check">
                                 <input type="checkbox" checked={acceptOptions} onChange={event => setAcceptOptions(event.target.checked)} />
@@ -299,7 +323,7 @@ const AccountSettings = () => {
                         )}
                         {noticeFor("options")}
                         <button type="button" className="btn btn-dark"
-                            disabled={(!agreements.includes("options_agreement") && !acceptOptions) || (!account.identity?.investment_experience_with_options && !optionsExperience)}
+                            disabled={(!agreements.includes("options_agreement") && !acceptOptions) || !optionsReady}
                             onClick={onRequestOptions}>Request options approval</button>
                     </div>
                 )}
