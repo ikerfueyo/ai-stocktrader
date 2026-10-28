@@ -16,7 +16,7 @@ export const GET = withUser(async (request, { params }: AccountContext, userId) 
     return NextResponse.json<BrokerAccount>(await getBroker().getAccount(account_id));
 });
 
-const EDITABLE = ["contact", "identity", "disclosures", "trusted_contact", "agreements"] as const;
+const EDITABLE = ["contact", "identity", "disclosures", "trusted_contact", "agreements", "beneficiaries"] as const;
 
 // Update the account's details: body Alpaca's AccountUpdateRequest with contact, identity (not the tax ID or date of birth),
 // disclosures, trusted_contact and agreements (new ones are signed now from this IP). A changed address, name, citizenship or

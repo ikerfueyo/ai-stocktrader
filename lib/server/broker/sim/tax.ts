@@ -167,3 +167,87 @@ export const taxYear = ({ year, sales, dividends, interest, withholding }: TaxYe
 
 // Backup withholding on an amount paid (dividends, or a sale's gross proceeds), rounded to the cent
 export const backupWithholding = (amount: number) => amount > 0 ? cents(amount * BACKUP_WITHHOLDING_RATE) : 0;
+
+// IRAs: Form 1099-R for distributions and Form 5498 for contributions and the year-end value. An IRA's trades, dividends and interest
+// aren't reported (no 1099-B, DIV or INT), and it isn't subject to backup withholding.
+
+export interface IraDistribution {
+    date: string;
+    gross: number;
+    fedWithheld: number;
+    stateWithheld: number;
+    // The 1099-R's box 7 distribution code (lib/ira.ts's DISTRIBUTION_REASONS)
+    code: string;
+}
+
+export interface Form1099RLine {
+    code: string;
+    // Box 1
+    gross: number;
+    // Box 2a: the taxable amount, or null when it isn't determined (box 2b: a Roth's non-qualified distribution, whose taxable part
+    // depends on the owner's contributions)
+    taxable: number | null;
+    taxableNotDetermined: boolean;
+    // Boxes 4 and 14
+    fedWithheld: number;
+    stateWithheld: number;
+}
+
+export interface Form1099R {
+    year: number;
+    // The IRA/SEP/SIMPLE box: checked for a traditional IRA
+    traditional: boolean;
+    // One form per distribution code
+    lines: Form1099RLine[];
+    // Filed for distributions of $10 or more
+    required: boolean;
+}
+
+export const form1099R = ({ year, subType, distributions }: { year: number; subType: "traditional" | "roth"; distributions: IraDistribution[] }): Form1099R => {
+    const lines = new Map<string, Form1099RLine>();
+    for (const distribution of distributions.filter(({ date }) => inYear(date, year))) {
+        const line = lines.get(distribution.code) ?? { code: distribution.code, gross: 0, taxable: 0, taxableNotDetermined: false, fedWithheld: 0, stateWithheld: 0 };
+        line.gross = cents(line.gross + distribution.gross);
+        line.fedWithheld = cents(line.fedWithheld + distribution.fedWithheld);
+        line.stateWithheld = cents(line.stateWithheld + distribution.stateWithheld);
+        lines.set(distribution.code, line);
+    }
+    for (const line of lines.values()) {
+        // A traditional IRA's distributions are taxable in full (no basis tracked); a qualified Roth distribution isn't taxable; other
+        // Roth distributions are left for the owner to work out
+        if (subType === "traditional") line.taxable = line.gross;
+        else if (line.code === "Q") line.taxable = 0;
+        else {
+            line.taxable = null;
+            line.taxableNotDetermined = true;
+        }
+    }
+    const all = [...lines.values()];
+    return { year, traditional: subType === "traditional", lines: all, required: all.reduce((sum, { gross }) => sum + gross, 0) >= REPORTING_THRESHOLD };
+};
+
+export interface Form5498 {
+    year: number;
+    // Box 1 (traditional) or box 10 (Roth): the contributions for the tax year, including those made by the next April 15
+    contributions: number;
+    traditional: boolean;
+    // Box 5: the account's value at the year's end
+    fairMarketValue: number;
+    // Box 11: a required minimum distribution is due for the next year
+    rmdNextYear: boolean;
+}
+
+// The age required minimum distributions start (SECURE 2.0): 73 for those born 1951 to 1959, 75 from 1960, 72 before
+export const rmdAge = (dateOfBirth: string): number => {
+    const year = Number(dateOfBirth.slice(0, 4));
+    return year >= 1960 ? 75 : year >= 1951 ? 73 : 72;
+};
+
+export const form5498 = ({ year, subType, contributions, fairMarketValue, dateOfBirth }: { year: number; subType: "traditional" | "roth"; contributions: { taxYear: number; amount: number }[]; fairMarketValue: number; dateOfBirth: string }): Form5498 => ({
+    year,
+    contributions: cents(contributions.filter(({ taxYear }) => taxYear === year).reduce((sum, { amount }) => sum + amount, 0)),
+    traditional: subType === "traditional",
+    fairMarketValue: cents(fairMarketValue),
+    // Roth owners take no required distributions in their lifetime
+    rmdNextYear: subType === "traditional" && year + 1 - Number(dateOfBirth.slice(0, 4)) >= rmdAge(dateOfBirth)
+});

@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import { useBrokerAccount } from "@/context/BrokerAccountContext";
 import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
@@ -11,7 +12,7 @@ export type DocumentsTab = "documents" | "gains";
 
 const TYPE_LABELS: Record<string, string> = {
     trade_confirmation: "Trade confirmation", trade_confirmation_json: "Trade confirmation (JSON)", account_statement: "Account statement",
-    tax_statement: "Tax statement (1099)", account_application: "Account application"
+    tax_statement: "Tax statement (1099, 1099-R, 5498)", account_application: "Account application"
 };
 const thisYear = new Date().getFullYear();
 const YEARS = Array.from({ length: 6 }, (_, i) => thisYear - i);
@@ -122,7 +123,16 @@ const DocumentList = () => {
     );
 };
 
+// An IRA's trades aren't taxed as they happen, so it has no gains and losses report (its forms are the 1099-R and 5498)
 const GainsReport = () => {
+    const { active } = useBrokerAccount();
+    if (active?.kind === "traditional_ira" || active?.kind === "roth_ira") {
+        return <p className="mt-4 text-muted">Gains and losses inside an IRA aren&apos;t taxed or reported as they happen: distributions are, on Form 1099-R, and contributions and the year-end value on Form 5498 (in Documents).</p>;
+    }
+    return <TaxableGainsReport />;
+};
+
+const TaxableGainsReport = () => {
     const [year, setYear] = useState(thisYear);
     const [report, setReport] = useState<TaxReport | null | undefined>(undefined);
     const [error, setError] = useState<string | null>(null);

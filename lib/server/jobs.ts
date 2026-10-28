@@ -5,6 +5,7 @@ import { singleton } from "./cache";
 import { fetchQuotes } from "./marketData";
 import { getMarketStatus } from "./market";
 import { withAccountLock } from "./portfolio";
+import { withLedgerAccount } from "./requestContext";
 import { updateAccount } from "./upkeep";
 import { syncAssets } from "./assets";
 import { syncCalendar } from "./calendar";
@@ -63,26 +64,28 @@ const isLeader = async (): Promise<boolean> => {
     return true;
 };
 
-// The users whose accounts are on margin (borrowing, short or with an open call), with the symbols they hold
-const usersToCheck = async (): Promise<{ users: string[]; tickers: string[] }> => {
-    const accounts = await accountsOnMargin();
-    if (accounts.length === 0) return { users: [], tickers: [] };
-    const { rows } = await pool.query<{ user_id: string; ticker: string | null }>(
-        `SELECT b.user_id, l.symbol AS ticker FROM broker_accounts b LEFT JOIN sim_lots l ON l.account_id = b.account_id AND l.qty > 0 WHERE b.account_id = ANY($1)`, [accounts]
+// The accounts on margin (borrowing, short or with an open call) with their users, and the symbols they hold
+const accountsToCheck = async (): Promise<{ accounts: { accountId: string; userId: string }[]; tickers: string[] }> => {
+    const ids = await accountsOnMargin();
+    if (ids.length === 0) return { accounts: [], tickers: [] };
+    const { rows } = await pool.query<{ account_id: string; user_id: string; ticker: string | null }>(
+        `SELECT b.account_id, b.user_id, l.symbol AS ticker FROM broker_accounts b LEFT JOIN sim_lots l ON l.account_id = b.account_id AND l.qty > 0 WHERE b.account_id = ANY($1)`, [ids]
     );
-    return { users: [...new Set(rows.map(({ user_id }) => user_id))], tickers: [...new Set(rows.flatMap(({ ticker }) => ticker ? [ticker.toUpperCase()] : []))] };
+    const accounts = [...new Map(rows.map(row => [row.account_id, { accountId: row.account_id, userId: row.user_id }])).values()];
+    return { accounts, tickers: [...new Set(rows.flatMap(({ ticker }) => ticker ? [ticker.toUpperCase()] : []))] };
 };
 
 // Dividends and the margin check (updateAccount) for every user on margin, so calls are met and liquidations happen without anyone
 // loading a page (orders are the sim-orders job's). The broker only liquidates during the regular session.
 const updateAccounts = async () => {
     const market = await getMarketStatus();
-    const { users, tickers } = await usersToCheck();
-    if (users.length === 0) return;
+    const { accounts, tickers } = await accountsToCheck();
+    if (accounts.length === 0) return;
     // Warm the quote cache with every ticker at once (one bulk call when the plan has it), so each user's checks reuse it
     if (market.session !== "closed" && tickers.length > 0) await Promise.allSettled(fetchQuotes(tickers));
-    for (const userId of users) {
-        await withAccountLock(userId, db => updateAccount(userId, LABEL, db)).catch(error => console.error(`${LABEL}: ${userId}: ${error.message}`));
+    // Each account on its own (a user's IRA and individual account are checked apart)
+    for (const { accountId, userId } of accounts) {
+        await withLedgerAccount(accountId, () => withAccountLock(userId, db => updateAccount(userId, LABEL, db))).catch(error => console.error(`${LABEL}: ${accountId}: ${error.message}`));
     }
 };
 
@@ -100,13 +103,13 @@ const runCorporateActions = async () => {
     return { accounts, orders, watchlist: rowCount ?? 0 };
 };
 
-// Posts due dividends for every user whose account has fills, under each user's account lock
+// Posts due dividends for every account with fills, each under its user's account lock
 const postAllDividends = async () => {
-    const { rows } = await pool.query<{ user_id: string }>(
-        "SELECT DISTINCT b.user_id FROM sim_activities a JOIN broker_accounts b ON b.account_id = a.account_id WHERE a.activity_type = 'FILL'"
+    const { rows } = await pool.query<{ account_id: string; user_id: string }>(
+        "SELECT DISTINCT b.account_id, b.user_id FROM sim_activities a JOIN broker_accounts b ON b.account_id = a.account_id WHERE a.activity_type = 'FILL'"
     );
-    for (const { user_id } of rows) {
-        await withAccountLock(user_id, db => postDividends(user_id, LABEL, db)).catch(error => console.error(`${LABEL}: dividends: ${user_id}: ${error.message}`));
+    for (const { account_id, user_id } of rows) {
+        await withLedgerAccount(account_id, () => withAccountLock(user_id, db => postDividends(user_id, LABEL, db))).catch(error => console.error(`${LABEL}: dividends: ${account_id}: ${error.message}`));
     }
 };
 

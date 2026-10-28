@@ -74,6 +74,9 @@ export interface Broker {
     listOptionContracts(query: { underlying_symbols?: string; expiration_date?: string; expiration_date_gte?: string; expiration_date_lte?: string; type?: "call" | "put"; strike_price_gte?: string; strike_price_lte?: string; limit?: number }): Promise<OptionContract[]>;
     getOptionContract(symbol: string): Promise<OptionContract>;
 
+    // IRAs: GET /v1/accounts/ira_excess_contributions, the IRAs whose contributions for a tax year exceed the limit for the owner's age
+    listIraExcessContributions(): Promise<{ account_id: string; tax_year: number; total_contribution_amount: number }[]>;
+
     // The ledger: GET /v1/accounts/activities?account_id=
     listActivities(accountId: string, query?: ListActivitiesQuery): Promise<Activity[]>;
 

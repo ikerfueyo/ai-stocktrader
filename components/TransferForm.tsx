@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
@@ -11,7 +11,9 @@ import { apiErrorMessage, logError } from "@/lib/apiError";
 import { formatCurrency, roundCents } from "@/lib/orders";
 import { formatEastern } from "@/lib/marketHours";
 import { accountNumberValid, digitsOnly, routingValid } from "@/lib/payments";
-import type { BrokerTransfer, TransferRequest } from "@/lib/types";
+import { useBrokerAccount } from "@/context/BrokerAccountContext";
+import { distributionWithholding } from "@/lib/ira";
+import type { BrokerTransfer, IraOverview, TransferRequest } from "@/lib/types";
 
 type Direction = "deposit" | "withdraw";
 
@@ -22,9 +24,29 @@ const expected = (iso: string) => formatEastern(iso, { withDay: true });
 
 // Deposit or withdraw money. Deposits come by ACH from the linked bank account (linked here first if there's none), with up to the
 // instant limit credited at once. Withdrawals go by ACH to it (free, next banking day) or by wire to a recipient bank (with its fee,
-// the same day), and only from withdrawable cash.
+// the same day), and only from withdrawable cash. In an IRA, a deposit is a contribution for a tax year (within what's left of the
+// limit across the user's IRAs) and a withdrawal a distribution, with its reason and tax withholding.
 const TransferForm = ({ direction }: { direction: Direction }) => {
     const { account, refreshAccount } = useAccount();
+    const { active } = useBrokerAccount();
+    const isIra = active?.kind === "traditional_ira" || active?.kind === "roth_ira";
+    const [ira, setIra] = useState<IraOverview | null>(null);
+    const [iraVersion, setIraVersion] = useState(0);
+    const [taxYear, setTaxYear] = useState<number | null>(null);
+    const [reason, setReason] = useState("");
+    const [fedPct, setFedPct] = useState(10);
+    const [statePct, setStatePct] = useState(0);
+    useEffect(() => {
+        if (!isIra) return;
+        const load = async () => {
+            try {
+                setIra((await axios.get<IraOverview>("/api/ira")).data);
+            } catch (error) {
+                logError(error);
+            }
+        };
+        load();
+    }, [isIra, iraVersion]);
     const { accountId, relationships, approved, banks, holderName, terms, error: loadError, reload } = useFunding();
     const wireFee = terms?.wireFee ?? 0;
     const isDeposit = direction === "deposit";
@@ -37,7 +59,18 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
 
     const fee = !isDeposit && method === "wire" ? wireFee : 0;
     const withdrawable = account?.withdrawableCash ?? 0;
-    const maxAmount = isDeposit ? terms?.dailyAch ?? 0 : Math.max(0, roundCents(withdrawable - fee));
+    const year = ira?.years.find(entry => entry.taxYear === taxYear) ?? ira?.years[0] ?? null;
+    const reasons = ira?.account?.distributionReasons ?? [];
+    const chosenReason = reasons.some(entry => entry.reason === reason) ? reason : reasons[0]?.reason ?? "";
+    const withholding = (() => {
+        try {
+            return distributionWithholding(roundCents(value), { fedPct, statePct });
+        } catch {
+            return null;
+        }
+    })();
+    // An IRA contribution is also capped at what's left of the year's limit
+    const maxAmount = isDeposit ? Math.min(terms?.dailyAch ?? 0, isIra && year ? year.remaining : Infinity) : Math.max(0, roundCents(withdrawable - fee));
     const marginCall = account?.marginStatus !== undefined && account.marginStatus !== "ok";
     const chosenBank = method === "wire" ? (bankId || banks[0]?.id || "") : "";
     const addingBank = method === "wire" && !chosenBank;
@@ -58,7 +91,8 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
             }
             const transfer: TransferRequest["transfer"] = {
                 type: isDeposit ? "ach" : method, direction: isDeposit ? "INCOMING" : "OUTGOING", amount: roundCents(value),
-                ...(isDeposit || method === "ach" ? { relationshipId: approved?.id } : { bankId: recipient })
+                ...(isDeposit || method === "ach" ? { relationshipId: approved?.id } : { bankId: recipient }),
+                ...(isIra ? { ira: isDeposit ? { taxYear: year?.taxYear } : { distributionReason: chosenReason, fedPct, statePct } } : {})
             };
             const { data } = await axios.post<BrokerTransfer>(`/api/accounts/${accountId}/transfers`, { transfer } satisfies TransferRequest);
             const instant = Number(data.instant_amount ?? 0);
@@ -69,6 +103,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
                     : `Withdrawal of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. It should arrive by ${expected(data.expires_at!)}.`
             });
             await Promise.all([refreshAccount(), reload()]);
+            setIraVersion(version => version + 1);
         } catch (error) {
             logError(error);
             setStatus({ ok: false, message: apiErrorMessage(error) });
@@ -78,11 +113,57 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
     };
 
     const needsBank = (isDeposit || method === "ach") && !approved;
-    const canSubmit = !submitting && value > 0 && value <= maxAmount && !needsBank && (!addingBank || newBankValid) && !(isDeposit ? false : marginCall);
+    const iraReady = !isIra || (isDeposit ? year !== null : chosenReason !== "" && withholding !== null);
+    const canSubmit = !submitting && value > 0 && value <= maxAmount && !needsBank && (!addingBank || newBankValid) && !(isDeposit ? false : marginCall) && iraReady;
 
     return (
         <div className="transfer-container mt-5">
-            <h1 className="transfer-title">{isDeposit ? "Deposit" : "Withdraw"}</h1>
+            <h1 className="transfer-title">{isIra ? (isDeposit ? "Contribute" : "Take a distribution") : isDeposit ? "Deposit" : "Withdraw"}</h1>
+            {isIra && isDeposit && ira && year && (
+                <section className="transfer-fields ira-contribution">
+                    {ira.years.length > 1 && (
+                        <label className="transfer-field">
+                            <span className="transfer-field-label">Tax year</span>
+                            <select className="form-control" value={year.taxYear} onChange={event => setTaxYear(Number(event.target.value))}>
+                                {ira.years.map(entry => <option key={entry.taxYear} value={entry.taxYear}>{entry.taxYear}{entry.taxYear < new Date().getFullYear() ? ` (until ${entry.deadline})` : ""}</option>)}
+                            </select>
+                        </label>
+                    )}
+                    <div className="ira-progress" role="progressbar" aria-valuemin={0} aria-valuemax={year.limit} aria-valuenow={year.contributed} aria-label={`${year.taxYear} contributions`}>
+                        <div className="ira-progress-bar" style={{ width: `${Math.min(100, year.contributed / year.limit * 100)}%` }} />
+                    </div>
+                    <small className="text-muted">
+                        {formatCurrency(year.contributed)} of your {formatCurrency(year.limit)} {year.taxYear} limit contributed across your IRAs; {formatCurrency(year.remaining)} left.
+                        {" "}The limit counts IRAs here only: contributions elsewhere, and income limits for a Roth, are yours to keep track of.
+                    </small>
+                </section>
+            )}
+            {isIra && !isDeposit && ira?.account && (
+                <section className="transfer-fields">
+                    <label className="transfer-field">
+                        <span className="transfer-field-label">Reason (the IRS needs one; it sets the 1099-R&apos;s code)</span>
+                        <select className="form-control" value={chosenReason} onChange={event => setReason(event.target.value)}>
+                            {reasons.map(entry => <option key={entry.reason} value={entry.reason}>{entry.label} (code {entry.code})</option>)}
+                        </select>
+                    </label>
+                    <div className="transfer-row">
+                        <label className="transfer-field">
+                            <span className="transfer-field-label">Federal withholding</span>
+                            <QuantityStepper value={fedPct} setValue={pct => setFedPct(Math.min(100, Math.max(0, pct)))} max={100} decimals={2} />
+                        </label>
+                        <label className="transfer-field">
+                            <span className="transfer-field-label">State withholding</span>
+                            <QuantityStepper value={statePct} setValue={pct => setStatePct(Math.min(100, Math.max(0, pct)))} max={100} decimals={2} />
+                        </label>
+                    </div>
+                    <small className="text-muted">
+                        {withholding
+                            ? `You receive ${formatCurrency(withholding.net)}; ${formatCurrency(withholding.fedAmount)} federal and ${formatCurrency(withholding.stateAmount)} state tax is withheld and sent to the tax authorities.`
+                            : "Federal and state withholding can't add up to more than 100%."}
+                        {" "}Federal withholding is 10% unless you set it to 0%.{ira.account.subType === "traditional" ? " Distributions before 59½ usually owe a 10% penalty too." : ""}
+                    </small>
+                </section>
+            )}
             {!isDeposit && account && (
                 <p className="transfer-available">
                     Withdrawable: <strong>{formatCurrency(withdrawable)}</strong>

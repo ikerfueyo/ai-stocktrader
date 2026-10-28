@@ -10,7 +10,8 @@ import { getAccount } from "./accounts";
 import { fillsAsTrades } from "./positions";
 import { subjectToBackupWithholding } from "./withholding";
 import { renderDocument, type ApplicationPayload, type DocumentPayload, type Holder, type RenderableDocument, type StatementPayload, type TaxStatementPayload, type TradeConfirmationPayload } from "./documentRender";
-import { reportSales, taxYear, termOf, type Acquisition, type Disposal, type ReportedSale, type TaxYear } from "./tax";
+import { form1099R, form5498, reportSales, taxYear, termOf, type Acquisition, type Disposal, type ReportedSale, type TaxYear } from "./tax";
+import { DISTRIBUTION_REASONS } from "../../../ira";
 import type { SimAccountRow } from "./shapes";
 import type { AccountDocument, ListDocumentsQuery } from "../types";
 
@@ -53,9 +54,9 @@ const holderOf = (row: SimAccountRow): Holder => {
 const store = async (accountId: string, doc: { type: DocumentType; subType?: string | null; name: string; date: string; periodStart: string; periodEnd: string; preliminary?: boolean; payload: DocumentPayload }) => {
     await pool.query(
         `INSERT INTO sim_documents (id, account_id, "type", sub_type, name, "date", period_start, period_end, preliminary, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (account_id, "type", period_start, period_end, preliminary) DO UPDATE SET name = EXCLUDED.name, "date" = EXCLUDED."date", payload = EXCLUDED.payload, created_at = now()
+         ON CONFLICT (account_id, "type", sub_type, period_start, period_end, preliminary) DO UPDATE SET name = EXCLUDED.name, "date" = EXCLUDED."date", payload = EXCLUDED.payload, created_at = now()
          WHERE sim_documents.preliminary`,
-        [randomUUID(), accountId, doc.type, doc.subType ?? null, doc.name, doc.date, doc.periodStart, doc.periodEnd, doc.preliminary ?? false, JSON.stringify(doc.payload)]
+        [randomUUID(), accountId, doc.type, doc.subType ?? "", doc.name, doc.date, doc.periodStart, doc.periodEnd, doc.preliminary ?? false, JSON.stringify(doc.payload)]
     );
 };
 
@@ -184,6 +185,28 @@ export const unrealizedLots = async (accountId: string) => {
     });
 };
 
+// An IRA's 1099-R and 5498 for a year: its distributions (dated when they left the account, with their withholding and code), the
+// contributions for the tax year, and its value at the year's last close
+const iraForms = async (row: SimAccountRow, year: number) => {
+    const subType = (row.account_sub_type ?? "traditional") as "traditional" | "roth";
+    const { rows: transfers } = await pool.query<{ direction: string; amount: string; ira: Record<string, string>; sent: string }>(
+        `SELECT direction, amount, ira, (sent_at AT TIME ZONE 'America/New_York')::date::text AS sent FROM sim_transfers
+         WHERE account_id = $1 AND ira IS NOT NULL AND status NOT IN ('CANCELED', 'REJECTED', 'RETURNED') AND (direction = 'INCOMING' OR status <> 'QUEUED')`, [row.id]
+    );
+    const distributions = transfers.filter(({ direction }) => direction === "OUTGOING").map(transfer => ({
+        date: transfer.sent, gross: Number(transfer.amount), fedWithheld: Number(transfer.ira.fed_withholding_amount ?? 0), stateWithheld: Number(transfer.ira.state_withholding_amount ?? 0),
+        code: DISTRIBUTION_REASONS[transfer.ira.distribution_reason]?.code ?? "1"
+    }));
+    const contributions = transfers.filter(({ direction }) => direction === "INCOMING").map(transfer => ({ taxYear: Number(transfer.ira.tax_year), amount: Number(transfer.amount) }));
+    const { rows: [close] } = await pool.query<{ equity: string }>(`SELECT equity FROM sim_daily_balances WHERE account_id = $1 AND "date" <= $2 ORDER BY "date" DESC LIMIT 1`, [row.id, `${year}-12-31`]);
+    const dateOfBirth = (row.identity as { date_of_birth?: string } | null)?.date_of_birth ?? "1900-01-01";
+    return {
+        subType,
+        form1099R: form1099R({ year, subType, distributions }),
+        form5498: form5498({ year, subType, contributions, fairMarketValue: Number(close?.equity ?? 0), dateOfBirth })
+    };
+};
+
 // The first Monday after a month ends (its statement is out "after the first weekend")
 const statementDue = (monthEnd: string) => {
     let day = addDays(monthEnd, 1);
@@ -197,10 +220,10 @@ export const generateDocuments = async (accountId: string, now = new Date()) => 
     const row = await accountRow(accountId);
     const holder = holderOf(row);
     const day = today(now);
-    const { rows: existing } = await pool.query<{ type: DocumentType; period_start: string }>(
-        `SELECT "type", period_start::text FROM sim_documents WHERE account_id = $1 AND NOT preliminary`, [accountId]
+    const { rows: existing } = await pool.query<{ type: DocumentType; sub_type: string; period_start: string }>(
+        `SELECT "type", sub_type, period_start::text FROM sim_documents WHERE account_id = $1 AND NOT preliminary`, [accountId]
     );
-    const has = (type: DocumentType, start: string) => existing.some(doc => doc.type === type && doc.period_start === start);
+    const has = (type: DocumentType, start: string, subType?: string) => existing.some(doc => doc.type === type && doc.period_start === start && (subType === undefined || doc.sub_type === subType));
     const created = row.created_at.toISOString();
     const createdDay = today(row.created_at);
     let made = 0;
@@ -230,9 +253,26 @@ export const generateDocuments = async (accountId: string, now = new Date()) => 
         await store(accountId, { type: "account_statement", subType: "monthly", name: `Account statement ${monthName(month)}`, date: end, periodStart: month, periodEnd: end, payload: await statementPayload(accountId, holder, month, end) });
         made++;
     }
+    // An IRA's tax forms: the 1099-R by January 31 for a year with distributions, the 5498 by May 31 (after the April 15 deadline for the
+    // year's contributions) for a year with contributions or a value at its end. No 1099-B, DIV or INT.
+    if (row.account_type === "ira") {
+        for (let year = Number(createdDay.slice(0, 4)); year < Number(day.slice(0, 4)); year++) {
+            const start = `${year}-01-01`;
+            const forms = await iraForms(row, year);
+            if (!has("tax_statement", start, "1099-R") && day >= `${year + 1}-01-31` && forms.form1099R.lines.length > 0) {
+                await store(accountId, { type: "tax_statement", subType: "1099-R", name: `Form 1099-R for ${year}`, date: `${year + 1}-01-31`, periodStart: start, periodEnd: `${year}-12-31`, payload: { holder, iraType: forms.subType, form: "1099-R", form1099R: forms.form1099R } });
+                made++;
+            }
+            if (!has("tax_statement", start, "5498") && day >= `${year + 1}-05-31` && (forms.form5498.contributions > 0 || forms.form5498.fairMarketValue > 0)) {
+                await store(accountId, { type: "tax_statement", subType: "5498", name: `Form 5498 for ${year}`, date: `${year + 1}-05-31`, periodStart: start, periodEnd: `${year}-12-31`, payload: { holder, iraType: forms.subType, form: "5498", form5498: forms.form5498 } });
+                made++;
+            }
+        }
+        return made;
+    }
     for (let year = Number(createdDay.slice(0, 4)); year < Number(day.slice(0, 4)); year++) {
         const start = `${year}-01-01`;
-        if (has("tax_statement", start) || day < `${year + 1}-02-15`) continue;
+        if (has("tax_statement", start, "1099-Comp") || day < `${year + 1}-02-15`) continue;
         const figures = figuresOnly(await accountTaxYear(accountId, year));
         const active = figures.form1099B.sales.length > 0 || figures.form1099DIV.ordinaryDividends > 0 || figures.form1099INT.interestIncome > 0;
         if (!active) continue;
@@ -250,6 +290,13 @@ export const generatePreliminaryDocuments = async (accountId: string, year: numb
     const day = today(now);
     const month = `${day.slice(0, 7)}-01`;
     await store(accountId, { type: "account_statement", subType: "monthly", name: `Account statement ${monthName(month)} (preliminary)`, date: day, periodStart: month, periodEnd: day, preliminary: true, payload: await statementPayload(accountId, holder, month, day) });
+    if (row.account_type === "ira") {
+        const forms = await iraForms(row, year);
+        const period = { date: day, periodStart: `${year}-01-01`, periodEnd: `${year}-12-31`, preliminary: true };
+        await store(accountId, { type: "tax_statement", subType: "1099-R", name: `Form 1099-R for ${year} (preliminary)`, ...period, payload: { holder, iraType: forms.subType, form: "1099-R", form1099R: forms.form1099R } });
+        await store(accountId, { type: "tax_statement", subType: "5498", name: `Form 5498 for ${year} (preliminary)`, ...period, payload: { holder, iraType: forms.subType, form: "5498", form5498: forms.form5498 } });
+        return;
+    }
     const figures = figuresOnly(await accountTaxYear(accountId, year));
     await store(accountId, {
         type: "tax_statement", subType: "1099-Comp", name: `Consolidated 1099 for ${year} (preliminary)`, date: day, periodStart: `${year}-01-01`, periodEnd: `${year}-12-31`, preliminary: true,

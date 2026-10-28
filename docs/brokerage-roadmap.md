@@ -323,6 +323,14 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 - **Documents:** Form 5498 and 1099-R. The 1099-B doesn't apply inside an IRA.
 - **UI:** the IRA in the account switcher, contribution progress against the limit, and a distribution request form.
 
+- **As built (done):** `lib/ira.ts` (rules), `lib/server/ira.ts` (the app's side), the simulator's IRA accounts, transfers and tax forms, and the Settings, Contribute and Distribution pages (CLAUDE.md has the details). Checked against Alpaca's IRA overview (Oct 2026) and IRS Notice 2025-67 ($7,500 for 2026, $1,100 catch-up). Where it differs from the plan above:
+  - An IRA opens from the user's individual account (Alpaca's shared KYC): the details are copied and the SSN is asked again. Alpaca has no IRA agreement in its enum, so the customer and account agreements are signed again and the app records the IRA disclosure statement it delivered.
+  - Options up to level 2 in IRAs, as Alpaca allows. Margin is 1x and shorting is off; trades can use unsettled proceeds (Alpaca's limited margin), so good-faith violations aren't modeled.
+  - The contribution limit is checked by the app across the user's IRAs at this broker (Alpaca checks only by age, after the fact, through its excess contributions endpoint, which the simulator also answers). Income limits for Roth contributions and contributions at other brokers aren't known.
+  - A distribution's reason is checked against the account's type and the owner's age (and the 5-year rule for a qualified Roth distribution); withholding is 10% federal unless opted out, plus any state percentage, posted as WH activities. Unsupported reasons (disability, rollovers) aren't offered, as at Alpaca.
+  - Documents: the 1099-R and 5498 are tax_statement documents with those sub-types (Alpaca's AccountDocumentType has no IRA types). RMD notices and amounts aren't produced; the 5498 marks when an RMD is due next year. Spousal consent is only flagged on the page.
+  - IRA transfers, rollovers and ACATS aren't offered (Alpaca doesn't support them yet).
+
 ### Phase 11: AlpacaBroker adapter (no live connection yet)
 - Implement `lib/server/broker/alpaca/` against the same interface:
   - OAuth client credentials (`authx.alpaca.markets`, 15-minute tokens), REST calls, and SSE streams with a `since_ulid` checkpoint and deduplication.

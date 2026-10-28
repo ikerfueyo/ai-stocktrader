@@ -5,6 +5,7 @@ import pool from "../../db";
 import { BrokerError } from "../errors";
 import { maskTaxId, validateApplication, type AccountApplication, type AgreementName } from "../../../kyc";
 import { easternParts } from "../../../marketHours";
+import { beneficiaryErrors, IRA_MAX_OPTIONS_LEVEL, maskBeneficiaries, type BeneficiaryInput } from "../../../ira";
 import { configurationError, decideOptionsApproval, defaultConfigurations, nextReviewStep, submittedDueAt, updateNeedsReview } from "./kyc";
 import { toAccount, toOptionsApproval, type SimAccountRow } from "./shapes";
 import type { BrokerEventStream } from "../broker";
@@ -132,9 +133,20 @@ const newAccountNumber = () => `9${String(randomInt(0, 1e8)).padStart(8, "0")}`;
 
 // POST /v1/accounts: validates the application, stores it with the tax ID masked, and starts the review (SUBMITTED). Trading
 // configurations start from the agreements signed (a margin agreement makes a margin account).
+// An IRA (account_type ira) needs its sub-type (traditional or roth), can't have the margin agreement, and keeps its beneficiaries with
+// their tax IDs masked, as Alpaca returns them.
 export const createAccount = async (request: AccountCreationRequest): Promise<Account> => {
     const errors = requestErrors(request);
     if (!request.contact || !request.identity || !request.disclosures) errors.unshift("contact, identity and disclosures are required");
+    const ira = request.account_type === "ira";
+    if (request.account_type && !["trading", "ira"].includes(request.account_type)) errors.push(`account_type ${request.account_type} isn't offered`);
+    if (ira) {
+        if (!["traditional", "roth"].includes(String(request.account_sub_type ?? ""))) errors.push("account_sub_type (traditional or roth) is required for an IRA");
+        if (agreementNames(request.agreements).includes("margin_agreement")) errors.push("IRAs can't have margin: leave out the margin agreement");
+        errors.push(...beneficiaryErrors((request.beneficiaries ?? []) as BeneficiaryInput[], easternParts(new Date()).dateKey));
+    } else if (request.account_sub_type || request.beneficiaries?.length) {
+        errors.push("account_sub_type and beneficiaries are for IRA accounts");
+    }
     if (errors.length > 0) throw invalid(errors);
     const identity = { ...request.identity!, tax_id: maskTaxId(request.identity!.tax_id ?? "") };
     const agreements = agreementNames(request.agreements);
@@ -144,11 +156,12 @@ export const createAccount = async (request: AccountCreationRequest): Promise<Ac
         try {
             const { rows: [row] } = await pool.query<SimAccountRow>(
                 `INSERT INTO sim_accounts (id, account_number, account_type, status, status_due_at, contact, identity, disclosures, agreements,
-                                           trusted_contact, enabled_assets, configurations)
-                 VALUES ($1, $2, 'trading', 'SUBMITTED', $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+                                           trusted_contact, enabled_assets, configurations, account_sub_type, beneficiaries)
+                 VALUES ($1, $2, $11, 'SUBMITTED', $3, $4, $5, $6, $7, $8, $9, $10, $12, $13) RETURNING *`,
                 [randomUUID(), newAccountNumber(), submittedDueAt(now), JSON.stringify(request.contact), JSON.stringify(identity),
                     JSON.stringify(request.disclosures), JSON.stringify(request.agreements), request.trusted_contact ? JSON.stringify(request.trusted_contact) : null,
-                    enabledAssets.filter(asset => asset !== "us_option"), JSON.stringify({ ...defaultConfigurations(agreements), ...(request.trading_configurations ?? {}), max_options_trading_level: 0 })]
+                    enabledAssets.filter(asset => asset !== "us_option"), JSON.stringify({ ...defaultConfigurations(agreements), ...(request.trading_configurations ?? {}), max_options_trading_level: 0, ...(ira ? { max_margin_multiplier: "1", no_shorting: true } : {}) }),
+                    ira ? "ira" : "trading", ira ? request.account_sub_type : null, ira ? JSON.stringify(maskBeneficiaries((request.beneficiaries ?? []) as BeneficiaryInput[])) : null]
             );
             await statusEvent(row, null, "SUBMITTED");
             return toAccount(row);
@@ -175,6 +188,16 @@ export const updateAccount = async (accountId: string, update: AccountUpdateRequ
     const trusted = update.trusted_contact === undefined ? row.trusted_contact : update.trusted_contact;
     const signed = new Map(row.agreements.map(agreement => [agreement.agreement, agreement]));
     for (const agreement of update.agreements ?? []) if (!signed.has(agreement.agreement)) signed.set(agreement.agreement, agreement);
+    // An IRA's beneficiaries, replaced all at once (as Alpaca does); none for other accounts, and no margin for an IRA
+    const update_ = update as AccountUpdateRequest & { beneficiaries?: BeneficiaryInput[] };
+    const ira = row.account_type === "ira";
+    if (update_.beneficiaries !== undefined) {
+        if (!ira) throw invalid(["beneficiaries are for IRA accounts"]);
+        const problems = beneficiaryErrors(update_.beneficiaries, easternParts(new Date()).dateKey);
+        if (problems.length > 0) throw invalid(problems);
+    }
+    if (ira && signed.has("margin_agreement" as never)) throw invalid(["IRAs can't have margin"]);
+    const beneficiaries = update_.beneficiaries !== undefined ? maskBeneficiaries(update_.beneficiaries) : row.beneficiaries ?? null;
     const agreements = [...signed.values()];
     const errors = requestErrors({ ...toAccount(row), contact, identity: identity!, disclosures, trusted_contact: trusted ?? undefined, agreements }, { storedTaxId: true });
     if (errors.length > 0) throw invalid(errors);
@@ -183,12 +206,12 @@ export const updateAccount = async (accountId: string, update: AccountUpdateRequ
         { contact: update.contact as Record<string, unknown> | undefined, identity: update.identity as Record<string, unknown> | undefined, disclosures: update.disclosures as Record<string, unknown> | undefined }
     );
     const { rows: [updated] } = await pool.query<SimAccountRow>(
-        `UPDATE sim_accounts SET contact = $2, identity = $3, disclosures = $4, trusted_contact = $5, agreements = $6,
+        `UPDATE sim_accounts SET contact = $2, identity = $3, disclosures = $4, trusted_contact = $5, agreements = $6, beneficiaries = $9,
                 status = CASE WHEN $7 THEN 'ACCOUNT_UPDATED' ELSE status END,
                 status_due_at = CASE WHEN $7 THEN now() + make_interval(secs => $8) ELSE status_due_at END, updated_at = now()
          WHERE id = $1 RETURNING *`,
         [accountId, JSON.stringify(contact), JSON.stringify(identity), JSON.stringify(disclosures), trusted ? JSON.stringify(trusted) : null,
-            JSON.stringify(agreements), review, Number(process.env.SIM_KYC_REVIEW_SECONDS ?? 60)]
+            JSON.stringify(agreements), review, Number(process.env.SIM_KYC_REVIEW_SECONDS ?? 60), beneficiaries ? JSON.stringify(beneficiaries) : null]
     );
     if (review && row.status !== "ACCOUNT_UPDATED") await statusEvent(updated, row.status, "ACCOUNT_UPDATED");
     return toAccount(updated);
@@ -224,7 +247,7 @@ export const getConfigurations = async (accountId: string): Promise<AccountConfi
 // PATCH /v1/trading/accounts/{id}/account/configurations (configurationError's rules)
 export const updateConfigurations = async (accountId: string, update: AccountConfigurations): Promise<AccountConfigurations> => {
     const row = await readRow(accountId);
-    const error = configurationError(update, { hasMarginAgreement: agreementNames(row.agreements).includes("margin_agreement"), approvedOptionsLevel: row.options_approved_level });
+    const error = configurationError(update, { hasMarginAgreement: agreementNames(row.agreements).includes("margin_agreement"), approvedOptionsLevel: row.options_approved_level, ira: row.account_type === "ira" });
     if (error) throw invalid([error]);
     const configurations = { ...row.configurations, ...update };
     await pool.query("UPDATE sim_accounts SET configurations = $2, updated_at = now() WHERE id = $1", [accountId, JSON.stringify(configurations)]);
@@ -236,6 +259,7 @@ export const requestOptionsApproval = async (accountId: string, level: number): 
     const row = await readRow(accountId);
     if (row.status === "REJECTED" || row.status === "ACCOUNT_CLOSED") throw new BrokerError(422, 42210000, `options can't be requested for an account in status ${row.status}`);
     if (![1, 2, 3].includes(level)) throw invalid(["level must be 1, 2 or 3"]);
+    if (row.account_type === "ira" && level > IRA_MAX_OPTIONS_LEVEL) throw invalid([`IRAs can trade options up to level ${IRA_MAX_OPTIONS_LEVEL}`]);
     const { rows: [approval] } = await pool.query(
         `INSERT INTO sim_options_approvals (id, account_id, requested_level, due_at) VALUES ($1, $2, $3, now() + make_interval(secs => $4)) RETURNING *`,
         [randomUUID(), accountId, level, OPTIONS_REVIEW_SECONDS]

@@ -151,7 +151,7 @@ CREATE INDEX broker_accounts_user_idx ON broker_accounts (user_id, created_at);
 CREATE TABLE account_attestations (
     id SERIAL PRIMARY KEY,
     account_id UUID NOT NULL REFERENCES broker_accounts(account_id),
-    kind VARCHAR(32) NOT NULL CHECK (kind IN ('w9', 'form_crs', 'privacy_notice')),
+    kind VARCHAR(32) NOT NULL CHECK (kind IN ('w9', 'form_crs', 'privacy_notice', 'ira_disclosure')),
     details JSONB NOT NULL DEFAULT '{}',
     signed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ip_address VARCHAR(64) NOT NULL
@@ -172,6 +172,8 @@ CREATE TABLE sim_accounts (
     disclosures JSONB NOT NULL,
     agreements JSONB NOT NULL,
     trusted_contact JSONB,
+    -- An IRA's beneficiaries (Alpaca's Beneficiary objects, tax IDs masked)
+    beneficiaries JSONB,
     enabled_assets TEXT[] NOT NULL DEFAULT '{us_equity}',
     kyc_results JSONB,
     configurations JSONB NOT NULL,
@@ -257,6 +259,8 @@ CREATE TABLE sim_transfers (
     complete_at TIMESTAMPTZ NOT NULL,
     return_at TIMESTAMPTZ,
     return_code VARCHAR(4),
+    -- An IRA transfer's details (Alpaca's TransferIRADetails): a contribution's tax_year, a distribution's reason and withholding
+    ira JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -500,7 +504,7 @@ CREATE TABLE sim_documents (
     id UUID PRIMARY KEY,
     account_id UUID NOT NULL REFERENCES sim_accounts(id),
     "type" VARCHAR(32) NOT NULL CHECK ("type" IN ('account_application', 'account_statement', 'tax_statement', 'trade_confirmation', 'trade_confirmation_json')),
-    sub_type VARCHAR(64),
+    sub_type VARCHAR(64) NOT NULL DEFAULT '',
     name VARCHAR(255) NOT NULL,
     "date" DATE NOT NULL,
     period_start DATE NOT NULL,
@@ -508,7 +512,7 @@ CREATE TABLE sim_documents (
     preliminary BOOLEAN NOT NULL DEFAULT false,
     payload JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (account_id, "type", period_start, period_end, preliminary)
+    CONSTRAINT sim_documents_unique_period UNIQUE (account_id, "type", sub_type, period_start, period_end, preliminary)
 );
 CREATE INDEX sim_documents_account_idx ON sim_documents (account_id, "date");
 

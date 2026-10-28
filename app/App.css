@@ -1903,3 +1903,70 @@ header a.header-pill.withdraw:hover {
 .spread-legs td:nth-child(3) {
   min-width: 10rem;
 }
+
+/* IRAs: opening one, beneficiaries and contribution progress */
+.ira-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.ira-type {
+  flex: 1 1 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.ira-type.selected {
+  border-color: #00a5a8;
+  background: #eefafa;
+}
+
+.beneficiaries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.beneficiary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.beneficiary-row .form-control {
+  width: auto;
+  flex: 1 1 120px;
+}
+
+.beneficiary-share {
+  width: 110px;
+}
+
+.beneficiary-list {
+  padding-left: 18px;
+}
+
+.ira-progress {
+  height: 10px;
+  border-radius: 5px;
+  background: #e9ecef;
+  overflow: hidden;
+}
+
+.ira-progress-bar {
+  height: 100%;
+  background: #00a5a8;
+}
+
+.ira-type input[type="radio"] {
+  align-self: flex-start;
+}

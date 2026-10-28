@@ -11,7 +11,8 @@ import type { BrokerAccountKind, BrokerAccountSummary } from "../types";
 // switcher (the active_account cookie, when it's one of the user's), else the newest open one. requireAccount guards the routes that
 // trade or move money.
 
-export const ACTIVE_ACCOUNT_COOKIE = "active_account";
+export { ACTIVE_ACCOUNT_COOKIE } from "./requestContext";
+import { ACTIVE_ACCOUNT_COOKIE } from "./requestContext";
 
 interface BrokerAccountRow {
     account_id: string;

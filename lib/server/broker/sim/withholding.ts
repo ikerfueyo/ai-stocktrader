@@ -9,8 +9,10 @@ import { backupWithholding } from "./tax";
 // ActivityType enum leaves WH out; reason says what it was withheld from, for the 1099s.
 
 // Whether the account's dividends and proceeds are subject to backup withholding: its W-9 certification (the app's newest
-// account_attestations w9) says it is, or there's none on file
+// account_attestations w9) says it is, or there's none on file. IRAs aren't subject to it.
 export const subjectToBackupWithholding = async (accountId: string, db: Pick<PoolClient, "query"> = pool): Promise<boolean> => {
+    const { rows: [account] } = await db.query<{ account_type: string }>("SELECT account_type FROM sim_accounts WHERE id = $1", [accountId]);
+    if (account?.account_type === "ira") return false;
     const { rows: [row] } = await db.query<{ details: { backup_withholding?: boolean } }>(
         "SELECT details FROM account_attestations WHERE account_id = $1 AND kind = 'w9' ORDER BY signed_at DESC, id DESC LIMIT 1", [accountId]
     ).catch(() => ({ rows: [] as { details: { backup_withholding?: boolean } }[] }));

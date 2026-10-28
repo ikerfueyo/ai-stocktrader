@@ -1,4 +1,5 @@
 import "server-only";
+import { contributionLimit, contributionTaxYears, distributionReasonError, distributionWithholding, type IraSubType } from "../../../ira";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import pool from "../../db";
@@ -25,8 +26,8 @@ const forbidden = (message: string) => new BrokerError(403, 40310000, message);
 const notFound = (what: string) => new BrokerError(404, 40410000, `${what} not found`);
 
 const accountStatus = async (accountId: string) => {
-    const { rows: [row] } = await pool.query<{ status: string; identity: { given_name: string; family_name: string } }>(
-        "SELECT status, identity FROM sim_accounts WHERE id = $1", [accountId]
+    const { rows: [row] } = await pool.query<{ status: string; identity: { given_name: string; family_name: string; date_of_birth?: string }; account_type: string; account_sub_type: IraSubType | null }>(
+        "SELECT status, identity, account_type, account_sub_type FROM sim_accounts WHERE id = $1", [accountId]
     );
     if (!row) throw notFound("account");
     return row;
@@ -144,6 +145,43 @@ const LIVE = "('QUEUED', 'APPROVAL_PENDING', 'PENDING', 'SENT_TO_CLEARING', 'APP
 const transferEvent = (row: SimTransferRow, from: string) =>
     emitEvent(row.account_id, "transfers", { account_id: row.account_id, transfer_id: row.id, status_from: from, status_to: row.status });
 
+// An IRA transfer's details (Alpaca's TransferIRADetails), or null for another account's. A contribution is for a tax year still open
+// (the current one, or the prior one until April 15; the current one by default). A distribution needs a reason that fits the account's
+// type and the owner's age, and withholds 10% federal unless the request elects otherwise, and any state percentage.
+const iraDetailsFor = async (accountId: string, account: Awaited<ReturnType<typeof accountStatus>>, request: CreateTransferRequest, amount: number, today: string) => {
+    const asked = (request as CreateTransferRequest & { ira?: { tax_year?: string | number; distribution_reason?: string; tax_withholding?: { fed_pct?: string | number; state_pct?: string | number } } }).ira;
+    if (account.account_type !== "ira") {
+        if (asked) throw invalid("ira is only for IRA accounts");
+        return null;
+    }
+    const year = Number(today.slice(0, 4));
+    if (request.direction === "INCOMING") {
+        const taxYear = asked?.tax_year === undefined || asked.tax_year === "" ? year : Number(asked.tax_year);
+        if (!contributionTaxYears(today).includes(taxYear)) throw invalid(`contributions for ${taxYear} aren't accepted now (open: ${contributionTaxYears(today).join(", ")})`);
+        return { tax_year: String(taxYear) };
+    }
+    if (!asked?.distribution_reason) throw invalid("ira.distribution_reason is required for an IRA distribution");
+    const { rows: [first] } = await pool.query<{ year: number | null }>(
+        `SELECT MIN((ira->>'tax_year')::int) AS year FROM sim_transfers WHERE account_id = $1 AND direction = 'INCOMING' AND status IN ${LIVE}`, [accountId]
+    );
+    const problem = distributionReasonError(asked.distribution_reason, account.account_sub_type ?? "traditional", {
+        dateOfBirth: account.identity.date_of_birth ?? "1900-01-01", day: today, firstContributionYear: first?.year ?? null
+    });
+    if (problem) throw invalid(problem);
+    const pct = (value: string | number | undefined) => value === undefined || value === "" ? undefined : Number(value);
+    let withholding;
+    try {
+        withholding = distributionWithholding(amount, { fedPct: pct(asked.tax_withholding?.fed_pct), statePct: pct(asked.tax_withholding?.state_pct) });
+    } catch (error) {
+        throw invalid((error as Error).message);
+    }
+    return {
+        distribution_reason: asked.distribution_reason, tax_year: String(year),
+        fed_withholding_pct: String(withholding.fedPct), fed_withholding_amount: withholding.fedAmount.toFixed(2),
+        state_withholding_pct: String(withholding.statePct), state_withholding_amount: withholding.stateAmount.toFixed(2)
+    };
+};
+
 // POST /v1/accounts/{id}/transfers. An ACH transfer needs an approved bank link; a wire goes out to a recipient bank (incoming wires
 // can't be requested). An ACH deposit is credited at once up to the instant limit (instant_amount), the rest when it settles.
 // Outgoing transfers need an ACTIVE account (Alpaca pauses them while updated details are reviewed). Until the simulator keeps the
@@ -163,6 +201,7 @@ export const createTransfer = async (accountId: string, request: CreateTransferR
     const error = transferRequestError(request, { todayTotal: Number(total) });
     if (error) throw invalid(error);
     const amount = Number(request.amount);
+    const ira = await iraDetailsFor(accountId, account, request, amount, today);
     if (request.transfer_type === "ach") {
         if (!isUuid(request.relationship_id)) throw invalid("relationship_id must be one of the account's bank links");
         await advanceRelationships(accountId);
@@ -190,13 +229,13 @@ export const createTransfer = async (accountId: string, request: CreateTransferR
             instant = instantAmount(amount, Number(outstanding));
         }
         const { rows: [row] } = await client.query<SimTransferRow>(
-            `INSERT INTO sim_transfers (id, account_id, "type", direction, status, amount, instant_amount, fee, relationship_id, bank_id, sent_at, complete_at, return_at, return_code)
-             VALUES ($1, $2, $3, $4, 'QUEUED', $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+            `INSERT INTO sim_transfers (id, account_id, "type", direction, status, amount, instant_amount, fee, relationship_id, bank_id, sent_at, complete_at, return_at, return_code, ira)
+             VALUES ($1, $2, $3, $4, 'QUEUED', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
             [randomUUID(), accountId, request.transfer_type, request.direction, amount.toFixed(2), instant.toFixed(2), fee.toFixed(2),
                 request.transfer_type === "ach" ? request.relationship_id : null, request.transfer_type === "wire" ? request.bank_id : null,
-                timeline.sentAt, timeline.completeAt, returned?.at ?? null, returned?.code ?? null]
+                timeline.sentAt, timeline.completeAt, returned?.at ?? null, returned?.code ?? null, ira ? JSON.stringify(ira) : null]
         );
-        if (instant > 0) await postActivity(client, { accountId, type: "CSD", netAmount: instant, description: "ACH deposit (credited instantly)", transferId: row.id, at: now });
+        if (instant > 0) await postActivity(client, { accountId, type: "CSD", netAmount: instant, description: `${ira ? `IRA contribution for ${ira.tax_year}` : "ACH deposit"} (credited instantly)`, transferId: row.id, at: now });
         await client.query("COMMIT");
         await transferEvent(row, "");
         return toTransfer(row);
@@ -209,7 +248,7 @@ export const createTransfer = async (accountId: string, request: CreateTransferR
 };
 
 // Moves one transfer to its next status, posting its activities, in one database transaction
-const step = async (row: SimTransferRow, to: string, activities: { type: string; netAmount: number; description: string }[], reason: string | null = null) => {
+const step = async (row: SimTransferRow, to: string, activities: { type: string; subType?: string; netAmount: number; description: string; reason?: string }[], reason: string | null = null) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -231,7 +270,20 @@ const step = async (row: SimTransferRow, to: string, activities: { type: string;
     }
 };
 
-const label = (row: SimTransferRow) => `${row.type === "ach" ? "ACH" : "Wire"} ${row.direction === "INCOMING" ? "deposit" : "withdrawal"}`;
+const label = (row: SimTransferRow) => row.ira
+    ? `${row.type === "ach" ? "ACH" : "Wire"} IRA ${row.direction === "INCOMING" ? `contribution for ${row.ira.tax_year}` : `distribution (${row.ira.distribution_reason})`}`
+    : `${row.type === "ach" ? "ACH" : "Wire"} ${row.direction === "INCOMING" ? "deposit" : "withdrawal"}`;
+
+// An IRA distribution leaves as what's paid out (CSW) and the tax withheld from it (WH: FWH federal, SWH state), which is remitted
+const distributionDebits = (row: SimTransferRow, amount: number) => {
+    const fed = Number(row.ira?.fed_withholding_amount ?? 0);
+    const state = Number(row.ira?.state_withholding_amount ?? 0);
+    return [
+        { type: "CSW", netAmount: -Math.round((amount - fed - state) * 100) / 100, description: label(row) },
+        ...(fed > 0 ? [{ type: "WH", subType: "FWH", netAmount: -fed, reason: "distribution", description: `Federal income tax withheld (${row.ira!.fed_withholding_pct}%) from an IRA distribution of $${amount.toFixed(2)}` }] : []),
+        ...(state > 0 ? [{ type: "WH", subType: "SWH", netAmount: -state, reason: "distribution", description: `State income tax withheld (${row.ira!.state_withholding_pct}%) from an IRA distribution of $${amount.toFixed(2)}` }] : [])
+    ];
+};
 
 // Advances every due transfer one step at a time until none is due: to clearing (an outgoing transfer's cash leaves the account,
 // with any fee), complete (a deposit's cash arrives, less what was credited instantly), and returned (the deposit is taken back,
@@ -251,7 +303,7 @@ export const advanceTransfers = async (accountId: string | null = null, now = ne
             const amount = Number(row.amount);
             if (row.status === "QUEUED") {
                 const debits = row.direction === "OUTGOING"
-                    ? [{ type: "CSW", netAmount: -amount, description: label(row) }, ...(Number(row.fee) > 0 ? [{ type: "FEE", netAmount: -Number(row.fee), description: "Outgoing wire fee" }] : [])]
+                    ? [...(row.ira ? distributionDebits(row, amount) : [{ type: "CSW", netAmount: -amount, description: label(row) }]), ...(Number(row.fee) > 0 ? [{ type: "FEE", netAmount: -Number(row.fee), description: "Outgoing wire fee" }] : [])]
                     : [];
                 await step(row, "SENT_TO_CLEARING", debits);
             } else if (row.status === "SENT_TO_CLEARING") {
@@ -331,4 +383,17 @@ export const ledgerCash = async (accountIds: string[]): Promise<{ cash: number; 
         )
     ]);
     return { cash: Number(ledger.cash), pendingOut: Number(pending.out), unsettledInstant: Number(pending.instant) };
+};
+
+// GET /v1/accounts/ira_excess_contributions: each IRA's contributions per tax year (transfers that haven't been cancelled, rejected or
+// returned) above the limit for the owner's age, as Alpaca checks it (it doesn't know about IRAs at other brokers, or income limits)
+export const listIraExcessContributions = async () => {
+    const { rows } = await pool.query<{ account_id: string; tax_year: string; total: string; date_of_birth: string | null }>(
+        `SELECT t.account_id, t.ira->>'tax_year' AS tax_year, SUM(t.amount) AS total, s.identity->>'date_of_birth' AS date_of_birth
+         FROM sim_transfers t JOIN sim_accounts s ON s.id = t.account_id
+         WHERE s.account_type = 'ira' AND t.direction = 'INCOMING' AND t.status IN ${LIVE} AND t.ira ? 'tax_year'
+         GROUP BY t.account_id, t.ira->>'tax_year', s.identity->>'date_of_birth'`
+    );
+    return rows.filter(row => Number(row.total) > contributionLimit(Number(row.tax_year), row.date_of_birth ?? "1900-01-01") + 0.005)
+        .map(row => ({ account_id: row.account_id, tax_year: Number(row.tax_year), total_contribution_amount: Number(row.total) }));
 };

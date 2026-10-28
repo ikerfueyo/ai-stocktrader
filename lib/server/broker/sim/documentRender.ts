@@ -1,7 +1,7 @@
 // The simulator's account documents as printable HTML pages (a PDF through the browser's print), from the data each keeps. Pure, so
 // it can be unit tested; ./documents.ts stores the data. Every page says it's simulated: no account exists at any broker, and the
 // figures aren't for filing.
-import type { TaxYear } from "./tax";
+import type { Form1099R, Form5498, TaxYear } from "./tax";
 
 export interface Holder {
     name: string;
@@ -53,7 +53,16 @@ export interface TaxStatementPayload {
     backupWithholding: boolean;
 }
 
-export type DocumentPayload = TradeConfirmationPayload | StatementPayload | ApplicationPayload | TaxStatementPayload;
+// An IRA's tax form: the 1099-R (distributions) or the 5498 (contributions and the year-end value)
+export interface IraTaxPayload {
+    holder: Holder;
+    iraType: "traditional" | "roth";
+    form: "1099-R" | "5498";
+    form1099R?: Form1099R;
+    form5498?: Form5498;
+}
+
+export type DocumentPayload = TradeConfirmationPayload | StatementPayload | ApplicationPayload | TaxStatementPayload | IraTaxPayload;
 
 export interface RenderableDocument {
     type: "account_application" | "account_statement" | "tax_statement" | "trade_confirmation" | "trade_confirmation_json";
@@ -132,7 +141,7 @@ ${account.trusted_contact ? `<h2>Trusted contact</h2>${fields(account.trusted_co
 <h2>Agreements</h2>
 ${table(["Agreement", "Signed", "IP address"], (account.agreements ?? []).map(agreement => [escape(agreement.agreement.replaceAll("_", " ")), escape(time(agreement.signed_at)), escape(agreement.ip_address)]))}
 <h2>Certifications and disclosures delivered</h2>
-${table(["", "When", "IP address", "Details"], payload.attestations.map(entry => [escape(entry.kind === "w9" ? "W-9 certification" : entry.kind === "form_crs" ? "Form CRS delivered" : entry.kind === "privacy_notice" ? "Privacy notice delivered" : entry.kind), escape(time(entry.at)), escape(entry.ipAddress ?? ""), escape(Object.keys(entry.details).length ? JSON.stringify(entry.details) : "")]))}`;
+${table(["", "When", "IP address", "Details"], payload.attestations.map(entry => [escape(entry.kind === "w9" ? "W-9 certification" : entry.kind === "form_crs" ? "Form CRS delivered" : entry.kind === "privacy_notice" ? "Privacy notice delivered" : entry.kind === "ira_disclosure" ? "IRA disclosure statement and custodial agreement delivered" : entry.kind), escape(time(entry.at)), escape(entry.ipAddress ?? ""), escape(Object.keys(entry.details).length ? JSON.stringify(entry.details) : "")]))}`;
 };
 
 const tax = (payload: TaxStatementPayload) => {
@@ -164,12 +173,36 @@ ${totals("long")}
 <p class="muted">W: a loss disallowed by the wash sale rule (shares of the same security bought within 30 days before or after the sale), added to the replacement shares' basis. Wash sales are found within this account only.</p>`;
 };
 
+const iraTax = (payload: IraTaxPayload) => {
+    const label = payload.iraType === "roth" ? "Roth IRA" : "Traditional IRA";
+    if (payload.form === "5498" && payload.form5498) {
+        const form = payload.form5498;
+        return `${holderBlock(payload.holder)}
+<p>Form 5498, IRA contribution information, for tax year ${form.year} (${escape(label)}). Contributions for ${form.year} include those made through April 15, ${form.year + 1}.</p>
+${table(["Box", "Amount"], [
+            [form.traditional ? "1 IRA contributions" : "10 Roth IRA contributions", escape(money(form.contributions))],
+            ["5 Fair market value of account (December 31)", escape(money(form.fairMarketValue))],
+            ["7 IRA type", escape(form.traditional ? "IRA" : "Roth IRA")],
+            ["11 Required minimum distribution for next year", escape(form.rmdNextYear ? "Yes (an RMD notice follows; the simulator doesn't work out the amount)" : "No")]
+        ], { numeric: [1] })}
+<p class="muted">Contributions are reported as made; whether they're deductible (traditional) or allowed (Roth, by income) is for the owner's return.</p>`;
+    }
+    const form = payload.form1099R!;
+    return `${holderBlock(payload.holder)}
+<p>Form 1099-R, distributions from an IRA, for tax year ${form.year} (${escape(label)}). One form per distribution code.</p>
+${form.lines.length === 0 ? "<p>No distributions this year.</p>" : table(["Box 7 code", "1 Gross distribution", "2a Taxable amount", "2b Taxable amount not determined", "4 Federal income tax withheld", "14 State tax withheld", "IRA/SEP/SIMPLE"],
+        form.lines.map(line => [escape(line.code), escape(money(line.gross)), escape(line.taxable === null ? "" : money(line.taxable)), escape(line.taxableNotDetermined ? "X" : ""), escape(money(line.fedWithheld)), escape(money(line.stateWithheld)), escape(form.traditional ? "X" : "")]),
+        { numeric: [1, 2, 4, 5] })}
+<p class="muted">Codes: 1 early distribution, no known exception; 7 normal distribution; 8, 81, P and P1 removals of excess contributions; Q qualified Roth distribution; J early Roth distribution; 8J and PJ Roth excess removals. A traditional IRA's distributions are taxable in full (no basis is tracked).</p>`;
+};
+
 // The document as a full HTML page
 export const renderDocument = (document: RenderableDocument): string => {
     const body = document.type === "trade_confirmation" || document.type === "trade_confirmation_json" ? confirmation(document.payload as TradeConfirmationPayload)
         : document.type === "account_statement" ? statement(document.payload as StatementPayload)
             : document.type === "account_application" ? application(document.payload as ApplicationPayload)
-                : tax(document.payload as TaxStatementPayload);
+                : "form" in document.payload ? iraTax(document.payload as IraTaxPayload)
+                    : tax(document.payload as TaxStatementPayload);
     return `<!doctype html>
 <html lang="en">
 <head>

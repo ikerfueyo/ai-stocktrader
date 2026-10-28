@@ -43,6 +43,14 @@ const DOCUMENTS: Record<string, { title: string; covers: string[] }> = {
             "Its legal and disciplinary history, and how to get more information and report concerns."
         ]
     },
+    ira_disclosure: {
+        title: "IRA disclosure statement and custodial agreement",
+        covers: [
+            "The rules for traditional and Roth IRAs: who can contribute, the yearly limit across all your IRAs, the prior year's contributions until April 15, and the taxes and penalties on distributions, including before 59½.",
+            "Your beneficiaries, how required minimum distributions work (a traditional IRA's from age 73 or 75), and the custodian's duties and fees.",
+            "In this simulator: no IRA is opened anywhere, contributions and distributions move no money, and the tax forms are marked simulated."
+        ]
+    },
     privacy_notice: {
         title: "Privacy notice",
         covers: [

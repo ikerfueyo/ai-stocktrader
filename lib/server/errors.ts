@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import type { ApiError } from "../types";
 
 import { HttpError, UpstreamError, isHttpError } from "./httpError";
+import { ACTIVE_ACCOUNT_COOKIE, withRequestContext } from "./requestContext";
 
 export { HttpError, UpstreamError };
 
@@ -42,7 +43,8 @@ export const withUser = <Context>(handler: (request: NextRequest, context: Conte
             if (!userId) {
                 throw new HttpError("Sign in required", 401);
             }
-            return await handler(request, context, userId);
+            // The account the request is for: the one the account switcher made active (ledgerAccountId checks it's the user's)
+            return await withRequestContext({ activeAccountId: request.cookies.get(ACTIVE_ACCOUNT_COOKIE)?.value ?? null }, () => handler(request, context, userId));
         } catch (error) {
             return errorResponse(request, error);
         }

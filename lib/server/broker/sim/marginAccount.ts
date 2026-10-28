@@ -142,7 +142,8 @@ export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds
     return {
         row, ledger, cash, positions, assets, quotes, staleTickers: staleTickers.filter(ticker => symbols.includes(ticker)).concat(symbols.filter(symbol => prices[symbol] === undefined)),
         reserved, state, calls, session: sessionNow,
-        shortingBlocked: shortingBlocked({ hasMarginAgreement: hasMarginAgreement(row), noShorting: row.configurations?.no_shorting === true, equity: state.equity }),
+        shortingBlocked: row.account_type === "ira" ? "IRAs can't sell short"
+            : shortingBlocked({ hasMarginAgreement: hasMarginAgreement(row), noShorting: row.configurations?.no_shorting === true, equity: state.equity }),
         withdrawable
     };
 };

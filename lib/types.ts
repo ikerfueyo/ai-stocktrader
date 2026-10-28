@@ -559,7 +559,35 @@ export interface TransferRequest {
         amount: number;
         relationshipId?: string;
         bankId?: string;
+        // IRAs: a contribution's tax year (the current one by default); a distribution's reason and withholding percentages (federal
+        // 10% unless elected otherwise)
+        ira?: { taxYear?: number; distributionReason?: string; fedPct?: number; statePct?: number };
     };
+}
+
+// GET /api/ira: the tax years open for IRA contributions, each with the user's limit (by age), what they've contributed across their
+// IRAs and what's left; the IRA kinds they have open; and for an IRA as the active account, its type, the distribution reasons that
+// fit now (lib/ira.ts), its beneficiaries and whether spousal consent may be needed
+export interface IraOverview {
+    years: { taxYear: number; limit: number; contributed: number; remaining: number; deadline: string }[];
+    openKinds: BrokerAccountKind[];
+    account: {
+        subType: "traditional" | "roth";
+        label: string;
+        distributionReasons: { reason: string; label: string; code: string }[];
+        beneficiaries: { given_name: string; middle_name?: string | null; family_name: string; date_of_birth: string; relationship: "spouse" | "other"; type: "primary" | "contingent"; share_pct: string }[];
+        spousalConsentMayBeNeeded: boolean;
+    } | null;
+}
+
+// POST /api/accounts/ira
+export interface OpenIraRequest {
+    subType: "traditional" | "roth";
+    // The account holder's Social Security number, entered again (it isn't kept)
+    taxId: string;
+    beneficiaries: { given_name: string; middle_name?: string | null; family_name: string; date_of_birth: string; tax_id: string; relationship: "spouse" | "other"; type: "primary" | "contingent"; share_pct: string }[];
+    acceptedAgreements: boolean;
+    iraDisclosure: boolean;
 }
 
 // Brokerage accounts. Account objects are Alpaca's (the broker's shape), re-exported for the pages.

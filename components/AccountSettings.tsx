@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Beneficiaries, OpenIra } from "./IraSettings";
+import { IRA_MAX_OPTIONS_LEVEL } from "@/lib/ira";
 import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
@@ -111,6 +113,9 @@ const AccountSettings = () => {
 
     const agreements = (account.agreements ?? []).map(({ agreement }) => agreement);
     const isMargin = agreements.includes("margin_agreement");
+    const isIra = account.account_type === "ira";
+    // IRAs trade options up to level 2
+    const maxLevel = isIra ? IRA_MAX_OPTIONS_LEVEL : 3;
     const approvedLevel = configurations.max_options_trading_level ?? 0;
     const latestApproval = approvals[0];
 
@@ -251,7 +256,17 @@ const AccountSettings = () => {
                 </div>
             </Section>
 
-            {!isMargin && (
+            {isIra ? (
+                <Section title="Beneficiaries">
+                    <Beneficiaries accountId={account.id} state={account.contact?.state} onSaved={load} />
+                </Section>
+            ) : (
+                <Section title="Retirement accounts (IRAs)">
+                    <OpenIra state={account.contact?.state} onOpened={refreshAccounts} />
+                </Section>
+            )}
+
+            {!isMargin && !isIra && (
                 <Section title="Upgrade to margin">
                     <p className="text-muted">Borrow against your stocks and sell short. Borrowing costs interest, and you can lose more than you deposit.</p>
                     <label className="onboarding-check">
@@ -265,10 +280,10 @@ const AccountSettings = () => {
 
             <Section title="Options trading">
                 {latestApproval?.status && <p className="text-muted">Latest request: level {latestApproval.requested_level}, {latestApproval.status.toLowerCase().replaceAll("_", " ")}{latestApproval.status !== "PENDING" && latestApproval.status !== "REJECTED" ? ` (level ${latestApproval.approved_level} approved)` : ""}.</p>}
-                {approvedLevel < 3 && !pendingApproval && (
+                {approvedLevel < maxLevel && !pendingApproval && (
                     <div className="transfer-fields">
                         <select className="form-control" aria-label="Options level" value={optionsLevel} onChange={event => setOptionsLevel(Number(event.target.value))}>
-                            {[1, 2, 3].filter(level => level > approvedLevel).map(level => <option key={level} value={level}>{OPTIONS_LEVEL_LABELS[level]}</option>)}
+                            {[1, 2, 3].filter(level => level > approvedLevel && level <= maxLevel).map(level => <option key={level} value={level}>{OPTIONS_LEVEL_LABELS[level]}</option>)}
                         </select>
                         {!account.identity?.investment_experience_with_options && (
                             <select className="form-control" aria-label="Options experience" value={optionsExperience} onChange={event => setOptionsExperience(event.target.value as ExperienceLevel | "")}>
@@ -288,12 +303,18 @@ const AccountSettings = () => {
                             onClick={onRequestOptions}>Request options approval</button>
                     </div>
                 )}
-                <p className="text-muted">Options trading itself arrives in a later version; approval can be requested now.</p>
+                {isIra && <p className="text-muted">IRAs can trade options up to level 2: covered calls, cash-secured puts, and buying calls and puts.</p>}
             </Section>
 
-            <Section title="Tax certification (W-9)">
-                <W9Certification accountId={account.id} />
-            </Section>
+            {isIra ? (
+                <Section title="Taxes">
+                    <p className="text-muted">An IRA isn&apos;t subject to backup withholding, and its trades and dividends aren&apos;t reported each year. Its tax forms are the 1099-R (distributions) and the 5498 (contributions and year-end value), on the Documents page.</p>
+                </Section>
+            ) : (
+                <Section title="Tax certification (W-9)">
+                    <W9Certification accountId={account.id} />
+                </Section>
+            )}
 
             <Section title="Close account">
                 <p className="text-muted">Close your positions, cancel your open orders and withdraw your cash first. Your records are kept.</p>

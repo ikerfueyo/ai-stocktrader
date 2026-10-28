@@ -2,6 +2,7 @@ import "server-only";
 import type { Pool, PoolClient } from "pg";
 import pool from "./db";
 import { singleton } from "./cache";
+import { requestContext } from "./requestContext";
 import { loadCorporateActions } from "./corporateActions";
 import { roundCents, type Dividend, type Split, type Trade } from "./account";
 import { advanceTransfers } from "./broker/sim/transfers";
@@ -15,14 +16,18 @@ import type { CashActivityRow, Position, TradeHistoryRow } from "../types";
 // The pool, or the client holding a user's account lock (withAccountLock)
 export type Db = Pool | PoolClient;
 
-// The user's account whose ledger the app reads and trades: their newest open account (one individual account each until IRAs)
+// The user's account whose ledger the app reads and trades: the one a background job is working on (withLedgerAccount), else the
+// request's active account (the account switcher's cookie) when it's the user's and open, else their newest open account (else their
+// newest). A user can hold an individual account and an IRA of each kind.
 export const ledgerAccountId = async (userId: string, db: Db = pool): Promise<string | null> => {
-    const { rows: [row] } = await db.query<{ account_id: string }>(
-        `SELECT b.account_id FROM broker_accounts b JOIN sim_accounts s ON s.id = b.account_id
-         WHERE b.user_id = $1 ORDER BY (s.status IN ('REJECTED', 'ACCOUNT_CLOSED')), b.created_at DESC LIMIT 1`,
+    const { accountId, activeAccountId } = requestContext();
+    const { rows } = await db.query<{ account_id: string; open: boolean }>(
+        `SELECT b.account_id, s.status NOT IN ('REJECTED', 'ACCOUNT_CLOSED') AS open FROM broker_accounts b JOIN sim_accounts s ON s.id = b.account_id
+         WHERE b.user_id = $1 ORDER BY (s.status IN ('REJECTED', 'ACCOUNT_CLOSED')), b.created_at DESC`,
         [userId]
     );
-    return row?.account_id ?? null;
+    if (accountId) return rows.some(row => row.account_id === accountId) ? accountId : null;
+    return rows.find(row => row.open && row.account_id === activeAccountId)?.account_id ?? rows[0]?.account_id ?? null;
 };
 
 const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };

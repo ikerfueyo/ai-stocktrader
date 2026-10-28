@@ -118,6 +118,7 @@ export class SimBroker implements Broker {
         if (!found) throw new BrokerError(404, 40410000, `option contract not found for ${symbol}`);
         return toOptionContract(found.contract);
     }
+    listIraExcessContributions = transfers.listIraExcessContributions;
     createAchRelationship = transfers.createAchRelationship;
     listAchRelationships = transfers.listAchRelationships;
     deleteAchRelationship = transfers.deleteAchRelationship;

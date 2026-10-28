@@ -18,6 +18,8 @@ export interface SimAccountRow {
     disclosures: Account["disclosures"];
     agreements: NonNullable<Account["agreements"]>;
     trusted_contact: Account["trusted_contact"] | null;
+    // An IRA's beneficiaries (tax IDs masked)
+    beneficiaries?: Record<string, unknown>[] | null;
     enabled_assets: string[];
     kyc_results: KYCResults | null;
     configurations: AccountConfigurations;
@@ -33,10 +35,11 @@ export interface SimAccountRow {
 
 // The account as GET /v1/accounts/{id} returns it, with its KYC results and trading configurations (Alpaca's AccountExtended
 // fields). last_equity comes from the ledger (Phase 3); until then it's 0.
-export const toAccount = (row: SimAccountRow, lastEquity = "0"): Account & { kyc_results?: KYCResults; trading_configurations?: AccountConfigurations } => ({
+export const toAccount = (row: SimAccountRow, lastEquity = "0"): Account & { kyc_results?: KYCResults; trading_configurations?: AccountConfigurations; account_sub_type?: "traditional" | "roth"; beneficiaries?: Record<string, unknown>[] } => ({
     id: row.id,
     account_number: row.account_number,
     account_type: row.account_type as Account["account_type"],
+    ...(row.account_type === "ira" ? { account_sub_type: row.account_sub_type as "traditional" | "roth", beneficiaries: row.beneficiaries ?? [] } : {}),
     status: row.status as Account["status"],
     currency: "USD",
     created_at: row.created_at.toISOString(),
@@ -135,6 +138,8 @@ export interface SimTransferRow {
     id: string; account_id: string; type: "ach" | "wire"; direction: "INCOMING" | "OUTGOING"; status: string; amount: string; instant_amount: string;
     fee: string; relationship_id: string | null; bank_id: string | null; reason: string | null; sent_at: Date; complete_at: Date;
     return_at: Date | null; return_code: string | null; created_at: Date; updated_at: Date;
+    // An IRA transfer's details: a contribution's tax_year; a distribution's reason, tax year and withholding
+    ira?: { tax_year?: string; distribution_reason?: string; fed_withholding_pct?: string; fed_withholding_amount?: string; state_withholding_pct?: string; state_withholding_amount?: string } | null;
 }
 export interface SimActivityRow {
     id: string; account_id: string; activity_type: string; activity_sub_type: string | null; date: string; created_at: Date; net_amount: string;
@@ -207,6 +212,7 @@ export const toTransfer = (row: SimTransferRow): Transfer => ({
     amount: decimal(row.amount)!, requested_amount: decimal(row.amount), instant_amount: decimal(row.instant_amount)!, fee: decimal(row.fee),
     ...(row.relationship_id ? { relationship_id: row.relationship_id } : {}), ...(row.bank_id ? { bank_id: row.bank_id } : {}),
     reason: row.reason, created_at: row.created_at.toISOString(), updated_at: row.updated_at.toISOString(),
+    ...(row.ira ? { ira: row.ira } : {}),
     // When the funds are expected: an incoming deposit's settlement, or an outgoing transfer's arrival
     expires_at: row.complete_at.toISOString()
 });

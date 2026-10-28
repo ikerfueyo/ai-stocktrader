@@ -3,6 +3,7 @@
 // configurations. Pure, so it can be unit tested; ./accounts.ts stores the results. Outcomes are deterministic, triggered by the
 // applicant's last name for testing: "Reject", "ActionRequired" or "Review" (case-insensitive).
 import type { AccountApplication, AgreementName } from "../../../kyc";
+import { IRA_MAX_OPTIONS_LEVEL } from "../../../ira";
 import type { AccountConfigurations, AccountStatus, KYCResults } from "../types";
 
 // How long each automatic step takes, in seconds (environment overrides for testing)
@@ -125,9 +126,12 @@ export const defaultConfigurations = (agreements: AgreementName[]): Required<Acc
     ptp_no_exception_entry: false
 });
 
-// Why a configuration change isn't allowed, or null: margin above 1x and shorting need the margin agreement, options trading can't
-// exceed the approved level, and overnight trading isn't offered
-export const configurationError = (update: AccountConfigurations, { hasMarginAgreement, approvedOptionsLevel }: { hasMarginAgreement: boolean; approvedOptionsLevel: number }): string | null => {
+// Why a configuration change isn't allowed, or null: margin above 1x and shorting need the margin agreement (which an IRA can't have),
+// options trading can't exceed the approved level (at most 2 in an IRA), and overnight trading isn't offered
+export const configurationError = (update: AccountConfigurations, { hasMarginAgreement, approvedOptionsLevel, ira = false }: { hasMarginAgreement: boolean; approvedOptionsLevel: number; ira?: boolean }): string | null => {
+    if (ira && update.max_margin_multiplier !== undefined && update.max_margin_multiplier !== "1") return "IRAs can't use margin";
+    if (ira && update.no_shorting === false) return "IRAs can't sell short";
+    if (ira && update.max_options_trading_level !== undefined && update.max_options_trading_level > IRA_MAX_OPTIONS_LEVEL) return `IRAs can trade options up to level ${IRA_MAX_OPTIONS_LEVEL}`;
     if (update.max_margin_multiplier !== undefined && !["1", "2", "4"].includes(update.max_margin_multiplier)) return "max_margin_multiplier must be 1, 2 or 4";
     if (update.max_margin_multiplier !== undefined && update.max_margin_multiplier !== "1" && !hasMarginAgreement) return "Margin needs the margin agreement";
     if (update.no_shorting === false && !hasMarginAgreement) return "Short selling needs a margin account (the margin agreement)";

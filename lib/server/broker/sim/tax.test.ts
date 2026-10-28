@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { backupWithholding, reportSales, taxYear, termOf, type Acquisition, type Disposal } from "./tax";
+import { backupWithholding, form1099R, form5498, reportSales, rmdAge, taxYear, termOf, type Acquisition, type Disposal } from "./tax";
 import { renderDocument } from "./documentRender";
 
 const buy = (lotId: string, qty: number, acquiredAt: string, symbol = "XYZ"): Acquisition => ({ lotId, symbol, side: "long", qty, acquiredAt: `${acquiredAt}T15:00:00Z` });
@@ -87,6 +87,36 @@ describe("The year's 1099 figures", () => {
         assert.equal(backupWithholding(100), 24);
         assert.equal(backupWithholding(12.345), 2.96);
         assert.equal(backupWithholding(-5), 0);
+    });
+});
+
+describe("IRA forms", () => {
+    test("1099-R: a line per distribution code, taxable in full from a traditional IRA, with the withholding", () => {
+        const form = form1099R({ year: 2026, subType: "traditional", distributions: [
+            { date: "2026-03-01", gross: 1000, fedWithheld: 100, stateWithheld: 50, code: "1" },
+            { date: "2026-06-01", gross: 500, fedWithheld: 50, stateWithheld: 0, code: "1" },
+            { date: "2025-12-01", gross: 900, fedWithheld: 90, stateWithheld: 0, code: "1" }
+        ] });
+        assert.deepEqual(form.lines, [{ code: "1", gross: 1500, taxable: 1500, taxableNotDetermined: false, fedWithheld: 150, stateWithheld: 50 }]);
+        assert.equal(form.traditional, true);
+        assert.equal(form.required, true);
+    });
+
+    test("1099-R: a qualified Roth distribution isn't taxable; other Roth distributions are left undetermined", () => {
+        const form = form1099R({ year: 2026, subType: "roth", distributions: [
+            { date: "2026-03-01", gross: 400, fedWithheld: 0, stateWithheld: 0, code: "Q" }, { date: "2026-04-01", gross: 300, fedWithheld: 30, stateWithheld: 0, code: "J" }
+        ] });
+        assert.deepEqual(form.lines.map(({ code, taxable, taxableNotDetermined }) => [code, taxable, taxableNotDetermined]), [["Q", 0, false], ["J", null, true]]);
+        assert.equal(form1099R({ year: 2026, subType: "roth", distributions: [] }).required, false);
+    });
+
+    test("5498: the tax year's contributions (made by the next April 15), the year-end value, and the RMD box", () => {
+        const contributions = [{ taxYear: 2026, amount: 5000 }, { taxYear: 2026, amount: 2500 }, { taxYear: 2025, amount: 7000 }];
+        assert.deepEqual(form5498({ year: 2026, subType: "roth", contributions, fairMarketValue: 7712.345, dateOfBirth: "1950-01-01" }),
+            { year: 2026, contributions: 7500, traditional: false, fairMarketValue: 7712.35, rmdNextYear: false });
+        assert.equal(form5498({ year: 2026, subType: "traditional", contributions, fairMarketValue: 0, dateOfBirth: "1954-05-01" }).rmdNextYear, true, "73 in 2027");
+        assert.equal(form5498({ year: 2026, subType: "traditional", contributions, fairMarketValue: 0, dateOfBirth: "1960-05-01" }).rmdNextYear, false, "75 only in 2035");
+        assert.deepEqual([rmdAge("1950-06-01"), rmdAge("1955-06-01"), rmdAge("1960-06-01")], [72, 73, 75]);
     });
 });
 
