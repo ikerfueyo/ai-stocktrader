@@ -97,7 +97,9 @@ export const getAccount = async (userId: string, db: Db = pool) => {
         };
     }
     await advanceTransfers(accountId);
-    const [transactions, held] = await Promise.all([fillsAsTrades(db, accountId), openLots(db, accountId)]);
+    // In turn, not together: db is the lock's client inside withAccountLock
+    const transactions = await fillsAsTrades(db, accountId);
+    const held = await openLots(db, accountId);
     const heldTickers = [...new Set(held.map(({ symbol }) => symbol))];
     const { splits, dividends, unsynced } = await loadCorporateActions([...new Set(transactions.map(({ ticker }) => ticker.toUpperCase()))], heldTickers);
     await applyCorporateActions(db, accountId, heldTickers);
