@@ -52,8 +52,8 @@ export const GET = withUser(async (request, context, userId) => {
         trades,
         cash: cash.map(({ date, type, amount }) => ({
             date,
-            amount: (type === "DEPOSIT" || type === "DIVIDEND_IN" ? 1 : -1) * parseFloat(amount),
-            // Fees count against the return; deposits and withdrawals don't
+            amount: (type === "DEPOSIT" || type === "DIVIDEND_IN" || type === "CORPORATE_ACTION_IN" ? 1 : -1) * parseFloat(amount),
+            // Fees, interest and corporate action cash count in the return; deposits and withdrawals don't
             external: type === "DEPOSIT" || type === "WITHDRAW"
         })),
         splits, closes, dates

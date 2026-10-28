@@ -5,6 +5,8 @@ import { getBroker } from "@/lib/server/broker";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { isForeignListing } from "@/lib/server/marketData";
 import { enforceMargin, ledgerAccountId, withAccountLock, withReasons } from "@/lib/server/portfolio";
+import pool from "@/lib/server/db";
+import { positionQty } from "@/lib/server/broker/sim/positions";
 import type { AppOrder, BrokerOrderRequest } from "@/lib/types";
 
 // Place an order on the active account: Alpaca's CreateOrderRequest (symbol, side, type, time_in_force, qty or notional, prices,
@@ -16,8 +18,9 @@ export const POST = withUser(async (request, context, userId) => {
     if (!body || typeof body !== "object") throw new HttpError("An order is required", 400);
     const symbol = String(body.symbol ?? "").trim().toUpperCase();
     if (isForeignListing(symbol)) throw new HttpError("Only U.S. listings can be traded", 400);
-    if (symbol) await requireTradableStock(symbol);
     const { accountId } = await requireAccount(request, userId, "trade");
+    // A position in a symbol that has left the universe (delisted, or renamed before the universe syncs) can still be closed
+    if (symbol && (await positionQty(pool, accountId, symbol)) === 0) await requireTradableStock(symbol);
     const label = `POST /api/orders ${symbol}`;
     const order = await withAccountLock(userId, async db => {
         const placed = await getBroker().createOrder(accountId, { ...body, symbol } as BrokerOrderRequest);

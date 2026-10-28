@@ -9,10 +9,11 @@ import { updateAccount } from "./upkeep";
 import { syncAssets } from "./assets";
 import { syncCalendar } from "./calendar";
 import { isSlotDue } from "./schedule";
+import { easternParts } from "../marketHours";
 import { advanceAccounts } from "./broker/sim/accounts";
 import { advanceTransfers, fastForwardTransfers } from "./broker/sim/transfers";
-import { endOfDay } from "./broker/sim/positions";
-import { matchOrders } from "./broker/sim/orders";
+import { applyDueCorporateActions, endOfDay } from "./broker/sim/positions";
+import { matchOrders, processCorporateActionOrders } from "./broker/sim/orders";
 import { accountsOnMargin, endOfDayMargin } from "./broker/sim/calls";
 import { postDividends } from "./portfolio";
 
@@ -80,6 +81,20 @@ const updateAccounts = async () => {
     }
 };
 
+// Corporate actions that have taken effect: applied to every account holding the symbol, their effect on open orders, and watchlists
+// following symbol changes
+const runCorporateActions = async () => {
+    const accounts = await applyDueCorporateActions();
+    const orders = await processCorporateActionOrders();
+    const { rowCount } = await pool.query(
+        `UPDATE watchlist w SET ticker = c.new_ticker FROM corporate_actions c
+         WHERE c."type" = 'NAME_CHANGE' AND c.ex_date <= $1 AND w.ticker = c.ticker
+           AND NOT EXISTS (SELECT 1 FROM watchlist o WHERE o.user_id = w.user_id AND o.ticker = c.new_ticker)`,
+        [easternParts(new Date()).dateKey]
+    );
+    return { accounts, orders, watchlist: rowCount ?? 0 };
+};
+
 // Posts due dividends for every user whose account has fills, under each user's account lock
 const postAllDividends = async () => {
     const { rows } = await pool.query<{ user_id: string }>(
@@ -101,6 +116,8 @@ export const JOBS: Job[] = [
     // The end of the trading day: deduct the day's regulatory fees, then keep each account's closing balances (last_equity), issue
     // margin calls, accrue margin interest (posted at month end) and charge hard-to-borrow fees
     { name: "eod", slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
+    // Corporate actions apply before the pre-market opens (reading an account, and every order match, apply them too)
+    { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
     // Dividends paid overnight post before the open, for every account with fills (reading an account posts them too)
     { name: "dividends", slots: ["06:00"], leaderOnly: true, run: postAllDividends },
     // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar

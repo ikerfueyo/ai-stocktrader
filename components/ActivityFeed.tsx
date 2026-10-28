@@ -14,9 +14,9 @@ const FILTERS = [
     { label: "Fees", types: "FEE" },
     { label: "Interest", types: "INT" },
     { label: "Dividends", types: "DIV" },
-    { label: "Splits", types: "SPLIT" }
+    { label: "Corporate actions", types: "SPLIT,MA,SPIN,REORG,CIL" }
 ];
-const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split", INT: "Interest" };
+const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split", INT: "Interest", MA: "Merger", SPIN: "Spinoff", REORG: "Removal", CIL: "Cash in lieu" };
 
 // The fields the feed shows, from either a trade activity or a non-trade one
 const describe = (activity: BrokerActivity) => {

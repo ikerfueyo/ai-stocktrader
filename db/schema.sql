@@ -65,11 +65,18 @@ CREATE TABLE cash_activity (
 -- (below 1 for a reverse split); amount is a dividend's cash per share.
 CREATE TABLE corporate_actions (
     ticker VARCHAR(255) NOT NULL,
-    "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('SPLIT', 'DIVIDEND')),
+    "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('SPLIT', 'DIVIDEND', 'STOCK_DIVIDEND', 'CASH_MERGER', 'STOCK_MERGER', 'MIXED_MERGER', 'SPINOFF', 'NAME_CHANGE', 'WORTHLESS')),
+    -- The effective date (the ex-date of splits, dividends and spinoffs)
     ex_date DATE NOT NULL,
     payment_date DATE,
+    -- New shares per old share (splits, stock dividends as 1 + the rate, stock mergers, spinoffs) and cash per share (dividends,
+    -- cash and mixed mergers)
     factor NUMERIC(18, 8),
     amount NUMERIC(18, 6),
+    -- The symbol it leads to: the acquirer, the spun-off company or the new symbol
+    new_ticker VARCHAR(32),
+    -- alphavantage (splits and dividends) or alpaca (the rest)
+    source VARCHAR(16) NOT NULL DEFAULT 'alphavantage',
     PRIMARY KEY (ticker, "type", ex_date)
 );
 
@@ -392,10 +399,19 @@ CREATE INDEX sim_fee_accruals_open_idx ON sim_fee_accruals (account_id, "date") 
 CREATE TABLE sim_corporate_actions_applied (
     account_id UUID NOT NULL REFERENCES sim_accounts(id),
     symbol VARCHAR(32) NOT NULL,
-    "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('SPLIT', 'DIVIDEND')),
+    "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('SPLIT', 'DIVIDEND', 'STOCK_DIVIDEND', 'CASH_MERGER', 'STOCK_MERGER', 'MIXED_MERGER', 'SPINOFF', 'NAME_CHANGE', 'WORTHLESS')),
     ex_date DATE NOT NULL,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (account_id, symbol, "type", ex_date)
+);
+
+-- Corporate actions whose effect on open orders (cancelled, or adjusted by a replacement) has been applied, once each
+CREATE TABLE sim_corporate_action_orders (
+    ticker VARCHAR(255) NOT NULL,
+    "type" VARCHAR(16) NOT NULL,
+    ex_date DATE NOT NULL,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (ticker, "type", ex_date)
 );
 
 -- Each trading day's closing balances (the end-of-day job), for last_equity and the other last_* figures

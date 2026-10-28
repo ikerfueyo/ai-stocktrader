@@ -6,6 +6,7 @@ import { rateLimiter } from "../rateLimit";
 import type { components as Trading } from "./generated/tradingApi";
 import type { components as MarketData } from "./generated/marketDataApi";
 import type { QuoteBook } from "../../types";
+import { fromAlpacaCorporateActions, type StoredCorporateAction } from "./corporateActions";
 
 // Alpaca's free market data (a Trading API account's keys, used for data only: no orders, no money) for what Alpha Vantage
 // doesn't have: the asset list with its trading flags, the market calendar and clock, and the top of book with sizes. Without
@@ -91,4 +92,22 @@ export const fetchQuoteBooks = (tickers: string[]): Promise<QuoteBook | null>[] 
     // Each caller gets the failure through its own promise; this keeps a reply nobody ends up waiting on from going unhandled
     snapshots.catch(() => {});
     return symbols.map(symbol => cachePromise(bookCache, symbol, 15000, async () => toBook((await snapshots)[symbol])));
+};
+
+// A symbol's corporate actions from a year back to 90 days ahead (GET /v1/corporate-actions), as the app stores them (stock dividends,
+// mergers, spinoffs, symbol changes and worthless removals; Alpha Vantage gives the splits and cash dividends)
+export const fetchAlpacaCorporateActions = async (symbol: string): Promise<StoredCorporateAction[]> => {
+    const today = new Date();
+    const start = new Date(today.getTime() - 365 * 86400000).toISOString().slice(0, 10);
+    const end = new Date(today.getTime() + 90 * 86400000).toISOString().slice(0, 10);
+    const stored: StoredCorporateAction[] = [];
+    let pageToken: string | null = null;
+    do {
+        const page: { corporate_actions?: Parameters<typeof fromAlpacaCorporateActions>[0]; next_page_token?: string | null } = await fetchAlpaca("data", "/v1/corporate-actions", {
+            symbols: symbol, start, end, limit: 1000, ...(pageToken ? { page_token: pageToken } : {})
+        });
+        stored.push(...fromAlpacaCorporateActions(page.corporate_actions ?? {}));
+        pageToken = page.next_page_token ?? null;
+    } while (pageToken);
+    return stored;
 };

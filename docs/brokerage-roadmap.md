@@ -252,6 +252,13 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - Cash and stock mergers post `MA`. Spinoffs add a new position with a basis allocation. Symbol or CUSIP changes rename the asset. Delistings are handled too.
 - **Orders, following Alpaca:** a reverse split cancels GTC orders. A forward split adjusts GTC buy-limit and sell-stop orders and cancels the others with `reason=CORPORATE_ACTION`. This replaces today's "cancel every order placed before a split".
 
+- **As built (done):** the rules are `lib/server/broker/sim/corporateActions.ts`; `positions.ts` applies them to lots (`applyCorporateActions`) and `orders.ts` to orders (`processCorporateActionOrders`), with a daily `corporate-actions` job (CLAUDE.md has the details). Where it differs from the plan above:
+  - Without Alpaca keys only Alpha Vantage's splits and cash dividends arrive; the other types need Alpaca's corporate actions API. Unit splits, redemptions and rights aren't stored (not for common stocks).
+  - Following Alpaca's docs, bracket, OCO and OTO orders are do-not-reduce, do-not-cancel, so splits and dividends leave them as they are; mergers, symbol changes and worthless removals cancel every open order in the symbol. A spinoff cancels the source's other open orders, and a cash dividend lowers GTC buy limits and sell stops by its amount.
+  - A symbol change renames the lots and posts no activity (Alpaca shows it through the asset); watchlists follow it. The app's asset universe catches up at its next sync, and until then a position in the new symbol can be closed but not added to.
+  - Basis allocation for spinoffs and mixed mergers, and cash in lieu (off by default: Alpaca keeps fractional shares), use the quotes when the action is applied rather than the effective date's closes.
+  - Delistings without a worthless removal leave the position as it is, closable through its symbol.
+
 ### Phase 7: Documents and tax
 - **Documents** in Alpaca's document object shape (`id`, `type`, `date`, `name`, `sub_type`), rendered as printable HTML routes (`/documents/[id]`, downloadable as PDF through print). Alpaca mode proxies Alpaca's PDFs.
   - `trade_confirmation`: one per trading day, at the beginning of the next day, plus `trade_confirmation_json`.

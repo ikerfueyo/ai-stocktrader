@@ -19,8 +19,10 @@ const statusClass = (status: string) =>
 const FILL_LABELS: Record<FillPolicy, string> = {
     ASK: "at ask", BID: "at bid", SIM_ASK: "at ask (simulated)", SIM_BID: "at bid (simulated)", LAST: "at last price", OPEN: "in the opening auction", CLOSE: "in the closing auction"
 };
-const CASH_LABELS: Record<CashActivityType, string> = { DEPOSIT: "Deposit", WITHDRAW: "Withdrawal", DIVIDEND_IN: "Dividend received", DIVIDEND_OUT: "Dividend paid (short)", FEE: "Fee", INTEREST: "Margin interest" };
-const isCredit = (type: CashActivityType) => type === "DEPOSIT" || type === "DIVIDEND_IN";
+const CASH_LABELS: Record<CashActivityType, string> = { DEPOSIT: "Deposit", WITHDRAW: "Withdrawal", DIVIDEND_IN: "Dividend received", DIVIDEND_OUT: "Dividend paid (short)", FEE: "Fee", INTEREST: "Margin interest",
+    CORPORATE_ACTION_IN: "Corporate action", CORPORATE_ACTION_OUT: "Corporate action (short)"
+};
+const isCredit = (type: CashActivityType) => type === "DEPOSIT" || type === "DIVIDEND_IN" || type === "CORPORATE_ACTION_IN";
 
 const formatDate = (date: string) => new Date(date).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
 

@@ -9,7 +9,8 @@ import { planDividends, roundCents, type Dividend, type Split, type Trade } from
 import { easternParts, easternTime, settlementDate } from "../../../marketHours";
 import { emitEvent } from "./accounts";
 import { activityId, ledgerCash, postActivity } from "./transfers";
-import { applyFill, applySplit, isLongTerm, positionsFromLots, type Lot } from "./ledger";
+import { applyFill, isLongTerm, positionsFromLots, type Lot } from "./ledger";
+import { applyActionToLots, type CorporateAction, type CorporateActionType, type LotEffect } from "./corporateActions";
 import { FEE_DESCRIPTIONS, feesFor, roundFeeUp, type FeeAccrual } from "./feeSchedule";
 import { assetId, type SimAccountRow, type SimActivityRow } from "./shapes";
 import { toAlpacaPosition } from "./tradeAccount";
@@ -17,8 +18,8 @@ import type { Position as AlpacaPosition } from "../types";
 import type { Position, Quote } from "../../../types";
 
 // The simulator's trade ledger: fills post FILL activities that close and open FIFO tax lots (sim_lots, the positions' only source),
-// realize P&L against the lots they close, settle T+1 and accrue regulatory fees; splits adjust the lots and dividends post DIV
-// activities, each once per account; the end of the day deducts the fees and keeps the closing balances. The caller holds the account
+// realize P&L against the lots they close, settle T+1 and accrue regulatory fees; corporate actions adjust, move and close the lots
+// and dividends post DIV activities, each once per account; the end of the day deducts the fees and keeps the closing balances. The caller holds the account
 // lock and runs fills inside a transaction (the app's withAccountLock and inTransaction).
 
 type Db = PoolClient | typeof pool;
@@ -37,42 +38,155 @@ export const openLots = async (db: Db, accountId: string, symbol?: string): Prom
 
 const dayOf = (date: Date | string) => easternParts(new Date(date)).dateKey;
 
-// Applies the stored splits of these symbols whose ex-date has come to the account's lots acquired before it, once each (SPLIT
-// activities). Runs before every fill in the symbol, so a fill never closes lots in pre-split shares.
-export const applySplits = async (db: Db, accountId: string, symbols: string[], now = new Date()) => {
+// For local testing: SIM_CASH_IN_LIEU=true pays out the fractional share a split, stock dividend, merger or spinoff leaves, instead of
+// keeping it (Alpaca supports fractional shares, so the default keeps it)
+const CASH_IN_LIEU = process.env.SIM_CASH_IN_LIEU === "true";
+
+export interface ActionRow { ticker: string; type: CorporateActionType; ex_date: string; factor: string | null; amount: string | null; new_ticker: string | null }
+
+export const toAction = (row: ActionRow): CorporateAction => ({
+    type: row.type, symbol: row.ticker, newSymbol: row.new_ticker, factor: row.factor === null ? null : Number(row.factor), cash: row.amount === null ? null : Number(row.amount), exDate: row.ex_date
+});
+
+// Applies the stored corporate actions of these symbols whose effective date has come to the account's lots acquired before it, once
+// each, oldest first (applyActionToLots): the activities it posts (SPLIT, DIV SDIV, MA, SPIN, REORG, CIL, with the P&L each realizes),
+// the lots' new shares, prices and symbols, the new lots of a spinoff, and what each closing realized. An action that moves shares to
+// a new symbol (a merger, a symbol change) brings that symbol's later actions along. Cash dividends post on their payment date
+// instead (postDividends). Runs before every fill in the symbol, so a fill never closes lots in pre-action shares; without a
+// transaction of the caller's, it runs in its own, holding the account lock.
+export const applyCorporateActions = async (db: Db, accountId: string, symbols: string[], now = new Date()): Promise<void> => {
     if (symbols.length === 0) return;
-    const { rows: splits } = await db.query<{ ticker: string; ex_date: string; factor: string }>(
-        `SELECT ticker, ex_date::text, factor FROM corporate_actions c
-         WHERE "type" = 'SPLIT' AND ticker = ANY($1) AND ex_date <= $2
-           AND NOT EXISTS (SELECT 1 FROM sim_corporate_actions_applied a WHERE a.account_id = $3 AND a.symbol = c.ticker AND a."type" = 'SPLIT' AND a.ex_date = c.ex_date)
-         ORDER BY ex_date`,
-        [symbols, dayOf(now), accountId]
-    );
-    for (const { ticker, ex_date, factor } of splits) {
-        const ratio = Number(factor);
-        const before = (await openLots(db, accountId, ticker)).filter(lot => dayOf(lot.acquiredAt) < ex_date);
-        if (ratio > 0 && before.length > 0) {
-            const adjusted = applySplit(before, ratio);
-            for (const lot of adjusted) {
-                await db.query("UPDATE sim_lots SET qty = $2, original_qty = original_qty * $3, price = $4 WHERE id = $1", [lot.id, lot.qty, ratio, lot.price]);
-            }
-            const change = adjusted.reduce((sum, lot) => sum + lot.qty, 0) - before.reduce((sum, lot) => sum + lot.qty, 0);
-            const label = ratio >= 1 ? `${ratio}-for-1 split` : `1-for-${Math.round(1 / ratio)} reverse split`;
-            await postActivity(db, { accountId, type: "SPLIT", netAmount: 0, description: `${ticker} ${label}`, symbol: ticker, qty: change, at: easternTime(ex_date, "09:30") });
+    if (db === pool) {
+        const client = await pool.connect();
+        try {
+            await client.query("BEGIN");
+            await lockAccount(client, accountId);
+            await applyCorporateActions(client, accountId, symbols, now);
+            await client.query("COMMIT");
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
         }
-        await db.query(`INSERT INTO sim_corporate_actions_applied (account_id, symbol, "type", ex_date) VALUES ($1, $2, 'SPLIT', $3) ON CONFLICT DO NOTHING`, [accountId, ticker, ex_date]);
+        return;
+    }
+    const queue = [...new Set(symbols.map(symbol => symbol.toUpperCase()))];
+    const seen = new Set(queue);
+    while (queue.length > 0) {
+        const { rows } = await db.query<ActionRow>(
+            `SELECT ticker, "type", ex_date::text, factor, amount, new_ticker FROM corporate_actions c
+             WHERE "type" <> 'DIVIDEND' AND ticker = ANY($1) AND ex_date <= $2
+               AND NOT EXISTS (SELECT 1 FROM sim_corporate_actions_applied a WHERE a.account_id = $3 AND a.symbol = c.ticker AND a."type" = c."type" AND a.ex_date = c.ex_date)
+             ORDER BY ex_date, ticker`,
+            [queue.splice(0, queue.length), dayOf(now), accountId]
+        );
+        for (const row of rows) {
+            const action = toAction(row);
+            const before = (await openLots(db, accountId, row.ticker)).filter(lot => dayOf(lot.acquiredAt) < row.ex_date);
+            if (before.length > 0) {
+                const needsPrices = CASH_IN_LIEU || row.type === "SPINOFF" || row.type === "MIXED_MERGER";
+                const [own, other] = needsPrices
+                    ? await Promise.all([row.ticker, row.new_ticker].map(symbol => symbol ? fetchQuotes([symbol])[0].then(quote => quote.price, () => null) : Promise.resolve(null)))
+                    : [null, null];
+                const effect = applyActionToLots(before, action, { prices: { symbol: own, newSymbol: other }, cashInLieu: CASH_IN_LIEU });
+                await postLotEffect(db as PoolClient, accountId, before, effect, easternTime(row.ex_date, "09:30"));
+                if (row.new_ticker && !seen.has(row.new_ticker)) {
+                    seen.add(row.new_ticker);
+                    queue.push(row.new_ticker);
+                }
+            }
+            await db.query(`INSERT INTO sim_corporate_actions_applied (account_id, symbol, "type", ex_date) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, [accountId, row.ticker, row.type, row.ex_date]);
+        }
     }
 };
+
+// Applies the corporate actions that have taken effect to every account holding their symbols (the corporate-actions job; reading an
+// account or filling in a symbol applies them too). Returns how many accounts it looked at.
+export const applyDueCorporateActions = async (now = new Date()): Promise<number> => {
+    const { rows } = await pool.query<{ account_id: string; symbols: string[] }>(
+        `SELECT l.account_id, array_agg(DISTINCT l.symbol) AS symbols FROM sim_lots l JOIN corporate_actions c ON c.ticker = l.symbol
+         WHERE l.qty > 0 AND c."type" <> 'DIVIDEND' AND c.ex_date <= $1 AND l.acquired_at < (c.ex_date::timestamp AT TIME ZONE 'America/New_York')
+           AND NOT EXISTS (SELECT 1 FROM sim_corporate_actions_applied a WHERE a.account_id = l.account_id AND a.symbol = c.ticker AND a."type" = c."type" AND a.ex_date = c.ex_date)
+         GROUP BY l.account_id`,
+        [dayOf(now)]
+    );
+    for (const { account_id, symbols } of rows) {
+        await applyCorporateActions(pool, account_id, symbols, now).catch(error => console.error(`Corporate actions for ${account_id}: ${error.message}`));
+    }
+    return rows.length;
+};
+
+// Writes an action's effect: its activities (with the P&L the closings under each realize), the lots' new state (original_qty
+// scaled with the shares, so a split or merger keeps it in today's terms), the new lots, and the closings
+const postLotEffect = async (db: PoolClient, accountId: string, lots: Lot[], effect: LotEffect, at: Date) => {
+    const activityIds = new Map<string, string>();
+    for (const entry of effect.activities) {
+        const realized = effect.closings.filter(({ tag }) => tag === entry.tag).reduce((sum, { realized }) => sum + realized, 0);
+        const row = await postActivity(db, { accountId, type: entry.type, subType: entry.subType ?? undefined, netAmount: entry.netAmount, description: entry.description, symbol: entry.symbol, qty: entry.qty, at });
+        if (effect.closings.some(({ tag }) => tag === entry.tag)) await db.query("UPDATE sim_activities SET realized_pl = $2 WHERE id = $1", [row.id, roundCents(realized).toFixed(2)]);
+        activityIds.set(entry.tag, row.id);
+    }
+    for (const update of effect.updates) {
+        const lot = lots.find(({ id }) => id === update.id)!;
+        const scale = lot.qty > 0 && update.qty > 0 ? update.qty / lot.qty : 1;
+        await db.query("UPDATE sim_lots SET qty = $2, price = $3, symbol = $4, original_qty = original_qty * $5 WHERE id = $1", [update.id, update.qty, update.price, update.symbol, scale]);
+    }
+    const openedIds: string[] = [];
+    for (const lot of effect.opened) {
+        const id = randomUUID();
+        openedIds.push(id);
+        await db.query(
+            `INSERT INTO sim_lots (id, account_id, symbol, side, qty, original_qty, price, acquired_at, fill_id) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`,
+            [id, accountId, lot.symbol, lot.side, lot.qty, lot.price, lot.acquiredAt, activityIds.get("spin") ?? null]
+        );
+    }
+    for (const closing of effect.closings) {
+        const lotId = closing.lotId ?? openedIds[closing.openedIndex!];
+        const fillId = activityIds.get(closing.tag);
+        if (!lotId || !fillId || !(closing.qty > 0)) continue;
+        await db.query(
+            `INSERT INTO sim_lot_closings (account_id, lot_id, fill_id, qty, lot_price, close_price, realized, closed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [accountId, lotId, fillId, closing.qty, closing.lotPrice, closing.price, roundCents(closing.realized).toFixed(2), at]
+        );
+    }
+};
+
+// The symbol each traded symbol now goes by, after the account's applied symbol changes, with the date each took effect
+const appliedRenames = async (db: Db, accountId: string) =>
+    (await db.query<{ ticker: string; new_ticker: string; ex_date: string }>(
+        `SELECT c.ticker, c.new_ticker, c.ex_date::text FROM sim_corporate_actions_applied a
+         JOIN corporate_actions c ON c.ticker = a.symbol AND c."type" = a."type" AND c.ex_date = a.ex_date
+         WHERE a.account_id = $1 AND a."type" = 'NAME_CHANGE' ORDER BY c.ex_date`, [accountId]
+    )).rows;
 
 // The signed position in a symbol now, from its open lots
 export const positionQty = async (db: Db, accountId: string, symbol: string): Promise<number> =>
     positionsFromLots(await openLots(db, accountId, symbol)).find(({ ticker }) => ticker === symbol)?.quantity ?? 0;
 
-// The account's fills as trades to replay (oldest first, quantities as filled), for dividends and the equity history
-export const fillsAsTrades = async (db: Db, accountId: string): Promise<Trade[]> =>
-    (await db.query<{ symbol: string; side: string; price: string; qty: string; net_amount: string; created_at: Date }>(
-        "SELECT symbol, side, price, qty, net_amount, created_at FROM sim_activities WHERE account_id = $1 AND activity_type = 'FILL' ORDER BY created_at, id", [accountId]
-    )).rows.map(row => ({ ticker: row.symbol, type: row.side === "buy" ? "BUY" : "SELL", price: row.price, quantity: row.qty, total: String(Math.abs(Number(row.net_amount))), date: row.created_at }));
+// The account's fills as trades to replay (oldest first, quantities as filled), for dividends and the equity history, with the shares
+// corporate actions moved as trades at no cost (shares received as buys, removed as sells; their cash is in the cash ledger) and the
+// trades before a symbol change under the new symbol. Splits are replayed from the stored splits.
+export const fillsAsTrades = async (db: Db, accountId: string): Promise<Trade[]> => {
+    const [{ rows }, renames] = await Promise.all([
+        db.query<{ activity_type: string; activity_sub_type: string | null; symbol: string; side: string | null; price: string | null; qty: string; net_amount: string; created_at: Date }>(
+            `SELECT activity_type, activity_sub_type, symbol, side, price, qty, net_amount, created_at FROM sim_activities
+             WHERE account_id = $1 AND (activity_type = 'FILL' OR (activity_type IN ('MA', 'SPIN', 'REORG', 'CIL') AND qty <> 0) OR (activity_type = 'DIV' AND activity_sub_type = 'SDIV'))
+             ORDER BY created_at, id`, [accountId]
+        ),
+        appliedRenames(db, accountId)
+    ]);
+    return rows.map(row => {
+        const date = row.created_at;
+        let ticker = row.symbol;
+        for (const { ticker: from, new_ticker: to, ex_date } of renames) if (ticker === from && dayOf(date) < ex_date) ticker = to;
+        if (row.activity_type === "FILL") {
+            return { ticker, type: row.side === "buy" ? "BUY" : "SELL", price: row.price!, quantity: row.qty, total: String(Math.abs(Number(row.net_amount))), date };
+        }
+        const qty = Number(row.qty);
+        return { ticker, type: qty > 0 ? "BUY" : "SELL", price: 0, quantity: Math.abs(qty), total: 0, date };
+    });
+};
 
 // Posts the dividends paid since they were last checked (planDividends on the replayed fills, with the splits): DIV activities, a
 // credit for a long held at the ex-date's open and a charge for a short, dated at the payment date's close, once each
@@ -129,7 +243,7 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     await lockAccount(db, accountId);
     const at = fill.at ?? new Date();
     const symbol = fill.symbol.toUpperCase();
-    await applySplits(db, accountId, [symbol], at);
+    await applyCorporateActions(db, accountId, [symbol], at);
     const lots = await openLots(db, accountId, symbol);
     const newLotId = randomUUID();
     const { closings, opened, realized } = applyFill(lots, { side: fill.side, qty: fill.qty, price: fill.price, at: at.toISOString() }, newLotId, symbol);

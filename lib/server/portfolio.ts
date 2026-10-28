@@ -6,7 +6,7 @@ import { loadCorporateActions } from "./corporateActions";
 import { roundCents, type Dividend, type Split, type Trade } from "./account";
 import { advanceTransfers } from "./broker/sim/transfers";
 import { enforceMargin as enforceAccountMargin } from "./broker/sim/calls";
-import { applySplits, fillsAsTrades, listFills, ledgerState, openLots, postDividends as postAccountDividends } from "./broker/sim/positions";
+import { applyCorporateActions, fillsAsTrades, listFills, ledgerState, openLots, postDividends as postAccountDividends } from "./broker/sim/positions";
 import type { SimActivityRow } from "./broker/sim/shapes";
 import { orderReasons } from "./broker/sim/orders";
 import type { Order as BrokerOrder } from "./broker/types";
@@ -29,7 +29,7 @@ const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0 };
 
 // A user's account from the broker's ledger (lib/server/broker/sim/positions.ts): its fills as trades to replay (for dividends and
 // the history), the traded tickers' splits and dividends (fetching any never fetched and refreshing the held tickers' once a day,
-// then applying due splits to the lots, so a split is in place before the account is valued or traded; unsynced lists the tickers
+// then applying due corporate actions to the lots, so a split or merger is in place before the account is valued or traded; unsynced lists the tickers
 // whose fetch failed), positions from the open FIFO lots, total cash (every activity's net amount: fills, deposits, withdrawals,
 // fees, dividends, after advancing due transfers) less queued withdrawals (pendingTransferOut), which are held from the moment
 // they're requested, realized P&L, net dividends, and what can't be withdrawn yet: instant deposit credit (unsettledInstant) and sale
@@ -46,7 +46,7 @@ export const getAccount = async (userId: string, db: Db = pool) => {
     const [transactions, held] = await Promise.all([fillsAsTrades(db, accountId), openLots(db, accountId)]);
     const heldTickers = [...new Set(held.map(({ symbol }) => symbol))];
     const { splits, dividends, unsynced } = await loadCorporateActions([...new Set(transactions.map(({ ticker }) => ticker.toUpperCase()))], heldTickers);
-    await applySplits(db, accountId, heldTickers);
+    await applyCorporateActions(db, accountId, heldTickers);
     const ledger = await ledgerState(db, accountId);
     return {
         accountId, transactions, splits, dividends, unsynced, positions: ledger.positions,
@@ -79,16 +79,17 @@ export const getFills = async (userId: string, { since }: { since?: Date } = {},
 };
 
 // The user's cash ledger, oldest first, as CashActivityRows: the broker's cash activities (CSD deposits, CSW withdrawals, FEE fees,
-// DIV dividends received or charged on shorts, INT margin interest; fills are on the Trades tab)
+// DIV dividends received or charged on shorts, INT margin interest, MA and CIL cash from corporate actions; fills are on the Trades tab)
 export const loadCashActivity = async (userId: string, db: Db = pool): Promise<CashActivityRow[]> => {
     const accountId = await ledgerAccountId(userId, db);
     if (!accountId) return [];
     const { rows } = await db.query<{ id: string; activity_type: string; created_at: Date; net_amount: string; description: string; symbol: string | null }>(
-        "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND activity_type IN ('CSD', 'CSW', 'FEE', 'DIV', 'INT') ORDER BY created_at, id",
+        "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND (activity_type IN ('CSD', 'CSW', 'FEE', 'DIV', 'INT') OR (activity_type IN ('MA', 'CIL') AND net_amount <> 0)) ORDER BY created_at, id",
         [accountId]
     );
     const typeOf = (activity: string, amount: number): CashActivityRow["type"] =>
-        activity === "DIV" ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : activity === "CSD" ? "DEPOSIT" : activity === "CSW" ? "WITHDRAW" : activity === "INT" ? "INTEREST" : "FEE";
+        activity === "DIV" ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : activity === "CSD" ? "DEPOSIT" : activity === "CSW" ? "WITHDRAW" : activity === "INT" ? "INTEREST"
+            : activity === "MA" || activity === "CIL" ? (amount >= 0 ? "CORPORATE_ACTION_IN" : "CORPORATE_ACTION_OUT") : "FEE";
     return rows.map(row => ({
         id: row.id, user_id: userId, date: row.created_at.toISOString(), type: typeOf(row.activity_type, Number(row.net_amount)), method: row.description,
         amount: Math.abs(Number(row.net_amount)).toFixed(2), ticker: row.symbol, reference: null

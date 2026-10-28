@@ -74,8 +74,9 @@ export interface QuoteBook {
     time: string;
 }
 
-// INTEREST is margin interest charged (posted monthly)
-export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE" | "INTEREST";
+// INTEREST is margin interest charged (posted monthly); CORPORATE_ACTION_IN cash received from a merger or in lieu of a fractional
+// share, CORPORATE_ACTION_OUT cash a short pays for one
+export type CashActivityType = TransferType | "DIVIDEND_IN" | "DIVIDEND_OUT" | "FEE" | "INTEREST" | "CORPORATE_ACTION_IN" | "CORPORATE_ACTION_OUT";
 
 // An entry of the account's cash ledger as GET /api/transfers returns it: a deposit, withdrawal or fee from the broker's activities
 // (method is its description; id is the activity's), or a dividend received on a long or paid on a short from the mock ledger
@@ -402,6 +403,17 @@ export interface DailySeries {
 
 // An order as the order routes return it: the broker's, with why it ended (the reason its trade event gave), when it did
 export type AppOrder = BrokerOrder & { reason?: string | null };
+
+// GET /api/quote/[ticker]/corporate-actions: a split, dividend, stock dividend, merger, spinoff, symbol change or removal
+export interface CorporateActionEntry {
+    type: "SPLIT" | "DIVIDEND" | "STOCK_DIVIDEND" | "CASH_MERGER" | "STOCK_MERGER" | "MIXED_MERGER" | "SPINOFF" | "NAME_CHANGE" | "WORTHLESS";
+    ticker: string;
+    newTicker: string | null;
+    // The effective date (the ex-date of splits, dividends and spinoffs) and a dividend's payment date
+    exDate: string;
+    paymentDate: string | null;
+    description: string;
+}
 
 // GET /api/orders/[id]: the order with its legs, and its fills (and those of the orders it replaced), newest first
 export interface OrderDetails {

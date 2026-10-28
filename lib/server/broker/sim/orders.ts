@@ -9,9 +9,10 @@ import { fetchPrices, fetchQuote } from "../../marketData";
 import type { AssetRow } from "../../universe";
 import { getMarketStatus } from "../../market";
 import { reducesPosition, roundCents } from "../../account";
-import { easternParts, sessionOn } from "../../../marketHours";
+import { easternParts, easternTime, sessionOn } from "../../../marketHours";
 import { emitEvent } from "./accounts";
-import { ledgerState, listFills, lockAccount, positionQty, recordFill } from "./positions";
+import { ledgerState, listFills, lockAccount, positionQty, recordFill, toAction, type ActionRow } from "./positions";
+import { adjustOrder, describe, type OrderAdjustment } from "./corporateActions";
 import { buyingPowerCost } from "./margin";
 import { hardToBorrow, marginSnapshot, OPEN_ORDER_STATUSES } from "./marginAccount";
 import { locatedShares, consumeLocates } from "./locates";
@@ -189,7 +190,13 @@ export const createOrder = async (accountId: string, request: CreateOrderRequest
     // An OCO order's own limit is its take profit
     if (spec.orderClass === "oco" && spec.takeProfit) spec.limitPrice = spec.takeProfit.limitPrice;
     const asset = await findAsset(spec.symbol);
-    if (asset === null) throw new BrokerError(422, 40010001, `asset ${spec.symbol} not found`);
+    // A symbol outside the universe (delisted, or renamed before the universe syncs) can only be closed; checked again under the lock
+    if (asset === null) {
+        const held = await positionQty(pool, accountId, spec.symbol);
+        if (!(spec.side === "sell" ? held > 0 : held < 0)) {
+            throw new BrokerError(422, 40010001, held === 0 ? `asset ${spec.symbol} not found` : `asset ${spec.symbol} is no longer listed: the position can only be closed`);
+        }
+    }
     const quote = await fetchQuote(spec.symbol);
     const market = await marketContext();
     const id = await withAccountTx(accountId, async db => {
@@ -197,6 +204,10 @@ export const createOrder = async (accountId: string, request: CreateOrderRequest
         await requireUniqueClientId(db, accountId, spec.clientOrderId);
         const now = new Date();
         const position = await positionQty(db, accountId, spec.symbol);
+        // A symbol outside the universe (delisted, or renamed before the universe syncs) can only be closed
+        if (asset === null && !(spec.side === "sell" ? position > 0 : position < 0)) {
+            throw new BrokerError(422, 40010001, position === 0 ? `asset ${spec.symbol} not found` : `asset ${spec.symbol} is no longer listed: the position can only be closed`);
+        }
         validateOrder(spec, {
             now, price: quote.price, position, openOrders: (await openOrdersIn(db, accountId, spec.symbol)).map(summarize), configurations: account.configurations ?? {},
             asset: asset ? { tradable: asset.tradable, fractionable: asset.fractionable, shortable: asset.shortable, attributes: asset.attributes } : null
@@ -299,10 +310,10 @@ export const listOrderFills = async (accountId: string, orderId: string) => {
 
 // Ends an order (expired, canceled or rejected) with the reason (none for a cancel the user asked for), and settles its legs: an entry that filled at least in part sends
 // its legs live for what it filled; one that filled nothing cancels them
-const endOrder = async (db: PoolClient, row: SimOrderRow, status: "expired" | "canceled" | "rejected", reason: string | null): Promise<SimOrderRow> => {
+const endOrder = async (db: PoolClient, row: SimOrderRow, status: "expired" | "canceled" | "rejected", reason: string | null, eventReason = reason): Promise<SimOrderRow> => {
     const timestamp = status === "expired" ? "expired_at" : status === "canceled" ? "canceled_at" : "failed_at";
     const ended = await updateOrder(db, row.id, { status, reason: reason?.slice(0, 500) ?? null, [timestamp]: new Date() });
-    await orderEvent(db, ended, status, { reason });
+    await orderEvent(db, ended, status, { reason: eventReason });
     if (ended.group_role === "entry") {
         const filled = Number(ended.filled_qty);
         if (filled > 0) await activateLegs(db, ended, filled);
@@ -402,25 +413,62 @@ const fillOrder = async (db: PoolClient, row: SimOrderRow, fill: MatchFill, quot
     return updated;
 };
 
-// Cancels the orders placed before a split of their symbol took effect, since their shares and prices are in the old terms
-// (Alpaca adjusts some GTC orders instead; Phase 6)
-const splitSince = async (symbols: string[]) => {
-    const today = easternParts(new Date()).dateKey;
-    const { rows } = await pool.query<{ ticker: string; ex_date: string }>(
-        `SELECT ticker, ex_date::text FROM corporate_actions WHERE "type" = 'SPLIT' AND ticker = ANY($1) AND ex_date <= $2`, [symbols, today]
+// A corporate action's effect on the open orders of its symbol placed before its effective date (adjustOrder), once per action, from
+// the effective date on: cancelled, or replaced by an order in the new terms (the remaining shares × the ratio, prices ÷ it, or
+// lowered by a dividend). Their trade events carry Alpaca's reason, CORPORATE_ACTION; the orders keep the details.
+export const processCorporateActionOrders = async (now = new Date()) => {
+    const today = easternParts(now).dateKey;
+    const { rows: actions } = await pool.query<ActionRow>(
+        `SELECT c.ticker, c."type", c.ex_date::text, c.factor, c.amount, c.new_ticker FROM corporate_actions c
+         WHERE c.ex_date <= $1 AND c.ex_date >= $1::date - 30
+           AND NOT EXISTS (SELECT 1 FROM sim_corporate_action_orders p WHERE p.ticker = c.ticker AND p."type" = c."type" AND p.ex_date = c.ex_date)
+           AND EXISTS (SELECT 1 FROM sim_orders o WHERE o.symbol = c.ticker AND o.status = ANY($2) AND o.created_at < (c.ex_date::timestamp AT TIME ZONE 'America/New_York'))
+         ORDER BY c.ex_date, c.ticker`,
+        [today, OPEN]
     );
-    return (row: SimOrderRow) => rows.find(({ ticker, ex_date }) => ticker === row.symbol && ex_date > easternParts(row.created_at).dateKey)?.ex_date ?? null;
+    for (const row of actions) {
+        const action = toAction(row);
+        const { rows: orders } = await pool.query<SimOrderRow>(
+            "SELECT * FROM sim_orders WHERE symbol = $1 AND status = ANY($2) AND created_at < $3 ORDER BY created_at", [row.ticker, OPEN, easternTime(row.ex_date, "00:00")]
+        );
+        for (const order of orders) {
+            await withAccountTx(order.account_id, async db => {
+                const { rows: [current] } = await db.query<SimOrderRow>("SELECT * FROM sim_orders WHERE id = $1 FOR UPDATE", [order.id]);
+                if (!current || !OPEN.includes(current.status)) return;
+                const remaining = current.qty === null ? null : Number(current.qty) - Number(current.filled_qty);
+                const adjustment = adjustOrder({
+                    side: current.side, type: current.type, timeInForce: current.time_in_force, orderClass: current.order_class, qty: remaining,
+                    limitPrice: num(current.limit_price), stopPrice: num(current.stop_price)
+                }, action);
+                if (adjustment.kind === "cancel") await endOrder(db, current, "canceled", adjustment.reason, "CORPORATE_ACTION");
+                else if (adjustment.kind === "replace") await replaceForAction(db, current, adjustment);
+            }).catch(error => console.error(`${LABEL}: ${describe(action)} on order ${order.id}: ${error.message}`));
+        }
+        await pool.query(`INSERT INTO sim_corporate_action_orders (ticker, "type", ex_date) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [row.ticker, row.type, row.ex_date]);
+    }
+    return actions.length;
+};
+
+// Replaces an order with one in a corporate action's new terms, linked both ways, as Alpaca reports such an adjustment (replaced)
+const replaceForAction = async (db: PoolClient, current: SimOrderRow, adjustment: Extract<OrderAdjustment, { kind: "replace" }>) => {
+    const spec = { ...toSpec(current), qty: adjustment.qty, limitPrice: adjustment.limitPrice, stopPrice: adjustment.stopPrice, clientOrderId: null };
+    const pending = await updateOrder(db, current.id, { status: "pending_replace" });
+    await orderEvent(db, pending, "pending_replace", { reason: "CORPORATE_ACTION" });
+    const replacement = await insertOrder(db, current.account_id, {
+        spec, status: current.status === "partially_filled" ? "new" : current.status, parentId: current.parent_id, groupId: current.group_id, groupRole: current.group_role,
+        replaces: current.id, hwm: num(current.hwm), expiresAt: current.expires_at, liquidation: current.liquidation ?? false
+    });
+    await db.query("UPDATE sim_orders SET parent_id = $2 WHERE parent_id = $1", [current.id, replacement.id]);
+    const replaced = await updateOrder(db, current.id, { status: "replaced", replaced_by: replacement.id, replaced_at: new Date(), reason: adjustment.reason });
+    await orderEvent(db, replaced, "replaced", { reason: "CORPORATE_ACTION" });
+    await orderEvent(db, replacement, replacement.status);
 };
 
 // One order on one tick (evaluateOrder), applied in the account's transaction on the order as it is now
-const matchOne = async (orderId: string, accountId: string, quote: Quote | null, context: Omit<MatchContext, "now">, split: string | null): Promise<boolean> =>
+const matchOne = async (orderId: string, accountId: string, quote: Quote | null, context: Omit<MatchContext, "now">): Promise<boolean> =>
     withAccountTx(accountId, async db => {
         const { rows: [row] } = await db.query<SimOrderRow>("SELECT * FROM sim_orders WHERE id = $1 FOR UPDATE", [orderId]);
         if (!row || !WORKING.includes(row.status)) return false;
-        if (split) {
-            await endOrder(db, row, "canceled", `Cancelled for the ${row.symbol} stock split on ${split}`);
-            return true;
-        }
         const result = evaluateOrder(toLive(row), quote, { ...context, now: new Date() });
         let order = row;
         let changed = false;
@@ -450,9 +498,11 @@ const matchOne = async (orderId: string, accountId: string, quote: Quote | null,
     });
 
 // The order engine's tick (the sim-orders job, and right after an order is placed or replaced): every working order, or one
-// account's, or the ones asked for, oldest first, against current quotes (fetched once for all; none overnight, when only expiries
+// account's, or the ones asked for, oldest first, after any corporate actions' effect on them (processCorporateActionOrders), against current quotes (fetched once for all; none overnight, when only expiries
 // can happen). A quote too old to trade on (isStaleQuote) counts as none. Returns how many orders changed.
 export const matchOrders = async ({ accountId, orderIds }: { accountId?: string; orderIds?: string[] } = {}): Promise<number> => {
+    // Corporate actions that took effect adjust or cancel the orders placed before them first
+    await processCorporateActionOrders().catch(error => console.error(`${LABEL}: corporate actions: ${error.message}`));
     const { rows } = await pool.query<SimOrderRow>(
         `SELECT * FROM sim_orders WHERE status = ANY($1) AND ($2::uuid IS NULL OR account_id = $2) AND ($3::uuid[] IS NULL OR id = ANY($3)) ORDER BY created_at, id`,
         [WORKING, accountId ?? null, orderIds ?? null]
@@ -462,12 +512,11 @@ export const matchOrders = async ({ accountId, orderIds }: { accountId?: string;
     const symbols = [...new Set(rows.map(({ symbol }) => symbol))];
     const needsQuotes = context.session !== "closed" || rows.some(({ time_in_force }) => time_in_force === "cls");
     const { quotes, staleTickers } = needsQuotes ? await fetchPrices(symbols, LABEL) : { quotes: {} as Record<string, Quote>, staleTickers: [] as string[] };
-    const splitOf = await splitSince(symbols);
     let changed = 0;
     for (const row of rows) {
         const quote = staleTickers.includes(row.symbol) ? null : quotes[row.symbol] ?? null;
         try {
-            if (await matchOne(row.id, row.account_id, quote, context, splitOf(row))) changed++;
+            if (await matchOne(row.id, row.account_id, quote, context)) changed++;
         } catch (error) {
             console.error(`${LABEL}: ${row.id} (${row.side} ${row.symbol}): ${error instanceof Error ? error.message : error}`);
         }
