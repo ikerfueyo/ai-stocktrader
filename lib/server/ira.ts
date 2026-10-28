@@ -1,7 +1,7 @@
 import "server-only";
 import type { NextRequest } from "next/server";
 import pool from "./db";
-import { getBroker } from "./broker";
+import { brokerMode, getBroker } from "./broker";
 import { HttpError } from "./httpError";
 import { clientIp, FINAL_STATUSES, listAccountRows } from "./brokerAccounts";
 import {
@@ -112,7 +112,7 @@ export const openIra = async (request: NextRequest, userId: string, input: { sub
         enabled_assets: ["us_equity"]
     } as AccountCreationRequest;
     const account = await broker.createAccount(accountRequest);
-    await pool.query("INSERT INTO broker_accounts (account_id, user_id, broker, kind, account_number) VALUES ($1, $2, 'sim', $3, $4)", [account.id, userId, KINDS[subType], account.account_number]);
+    await pool.query("INSERT INTO broker_accounts (account_id, user_id, broker, kind, account_number) VALUES ($1, $2, $3, $4, $5)", [account.id, userId, brokerMode(), KINDS[subType], account.account_number]);
     await pool.query(
         `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'ira_disclosure', $2, $3), ($1, 'form_crs', '{}', $3), ($1, 'privacy_notice', '{}', $3)`,
         [account.id, JSON.stringify({ sub_type: subType }), ip]

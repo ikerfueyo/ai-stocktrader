@@ -2,15 +2,21 @@ import { NextResponse } from "next/server";
 import { getBroker } from "@/lib/server/broker";
 import { requireAccount } from "@/lib/server/brokerAccounts";
 import { HttpError, withUser } from "@/lib/server/errors";
+import { isHttpError } from "@/lib/server/httpError";
 import { ledgerAccountId, withAccountLock } from "@/lib/server/portfolio";
 import type { BrokerLocateRequest, Locate } from "@/lib/types";
 
-// The account's locates for hard-to-borrow short sales, newest first (?status=active|expired|rejected, ?symbol=)
+// The account's locates for hard-to-borrow short sales, newest first (?status=active|expired|rejected, ?symbol=); none from a broker
+// that doesn't offer them (Alpaca's Broker API: 501)
 export const GET = withUser(async (request, context, userId) => {
     const accountId = await ledgerAccountId(userId);
-    if (!accountId) return NextResponse.json({ locates: [], next_page_token: null });
+    const none = { locates: [], next_page_token: null };
+    if (!accountId) return NextResponse.json(none);
     const params = request.nextUrl.searchParams;
-    return NextResponse.json(await getBroker().listLocates(accountId, { status: params.get("status") ?? undefined, symbol: params.get("symbol") ?? undefined }));
+    return NextResponse.json(await getBroker().listLocates(accountId, { status: params.get("status") ?? undefined, symbol: params.get("symbol") ?? undefined }).catch(error => {
+        if (isHttpError(error) && error.status === 501) return none;
+        throw error;
+    }));
 });
 
 // Locate shares of a hard-to-borrow stock before shorting it (Alpaca's CreateLocateRequest: symbol, qty in round lots of 100,

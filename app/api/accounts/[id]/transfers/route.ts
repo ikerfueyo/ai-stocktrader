@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { HttpError, withUser } from "@/lib/server/errors";
-import { getBroker } from "@/lib/server/broker";
+import { brokerMode, getBroker } from "@/lib/server/broker";
 import { findUserAccount, requireAccount } from "@/lib/server/brokerAccounts";
-import { withAccountLock } from "@/lib/server/portfolio";
+import { forgetBrokerLedger, withAccountLock } from "@/lib/server/portfolio";
 import { marginSnapshot, withdrawalError } from "@/lib/server/broker/sim/marginAccount";
 import pool from "@/lib/server/db";
 import { TRANSFER_FEES } from "@/lib/server/broker/sim/funding";
@@ -23,7 +23,8 @@ export const GET = withUser(async (request, { params }: AccountContext, userId) 
 // Deposits are ACH from the approved bank link; withdrawals go by ACH to it or by wire (with its fee) to a recipient bank. A
 // withdrawal can only come from withdrawable cash (the broker's margin account: settled cash, less deposit credit and sale proceeds
 // not yet settled and another queued withdrawal, no more than the excess over Reg T initial margin less what open orders hold), and
-// not during a margin call. The broker sets the timing, limits and fees. An IRA's deposits are contributions (ira.taxYear) and its
+// not during a margin call; with Alpaca, no more than its cash_withdrawable (it checks the rest itself). The broker sets the timing,
+// limits and fees. An IRA's deposits are contributions (ira.taxYear) and its
 // withdrawals distributions (ira.distributionReason, fedPct, statePct).
 export const POST = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
@@ -56,10 +57,19 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         } : {})
     };
     if (direction === "INCOMING") {
-        return NextResponse.json<BrokerTransfer>(await getBroker().createTransfer(account_id, transfer), { status: 201 });
+        const deposit = await getBroker().createTransfer(account_id, transfer);
+        forgetBrokerLedger(account_id);
+        return NextResponse.json<BrokerTransfer>(deposit, { status: 201 });
     }
     const fee = type === "wire" ? TRANSFER_FEES.wireOutDomestic : 0;
     const created = await withAccountLock(userId, async () => {
+        if (brokerMode() !== "sim") {
+            const withdrawable = Number((await getBroker().getTradeAccount(account_id)).cash_withdrawable ?? 0);
+            if (amount + fee > withdrawable + 0.005) {
+                throw new HttpError(`Only $${withdrawable.toFixed(2)} can be withdrawn now${fee > 0 ? `, including the $${fee} wire fee` : ""}`, 400);
+            }
+            return getBroker().createTransfer(account_id, transfer);
+        }
         const snapshot = await marginSnapshot(pool, account_id);
         const problem = withdrawalError(snapshot, amount + fee);
         if (problem) {
@@ -74,5 +84,6 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         }
         return getBroker().createTransfer(account_id, transfer);
     });
+    forgetBrokerLedger(account_id);
     return NextResponse.json<BrokerTransfer>(created, { status: 201 });
 });

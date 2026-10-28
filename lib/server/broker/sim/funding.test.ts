@@ -70,6 +70,7 @@ describe("Bank links", () => {
     test("need a valid routing number, a 4- to 17-digit account number and a checking or savings type", () => {
         assert.equal(relationshipRequestError(valid), null);
         assert.match(relationshipRequestError({ ...valid, bank_routing_number: "011000016" })!, /routing/);
+        assert.match(relationshipRequestError({ processor_token: "processor-sandbox-1" })!, /Plaid/);
         assert.match(relationshipRequestError({ ...valid, bank_account_number: "12-34" })!, /4 to 17 digits/);
         assert.match(relationshipRequestError({ ...valid, bank_account_type: "BROKERAGE" })!, /CHECKING or SAVINGS/);
     });

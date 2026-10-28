@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { withUser } from "@/lib/server/errors";
 import { roundCents, valueAccount } from "@/lib/server/account";
-import { getAccount, getFills, withAccountLock } from "@/lib/server/portfolio";
+import { brokerLedger, forgetBrokerLedger, getAccount, getFills, ledgerAccountId, readsThroughBroker, withAccountLock } from "@/lib/server/portfolio";
+import { getBroker } from "@/lib/server/broker";
+import { accountSummary } from "@/lib/server/brokerLedger";
 import { updateAccount } from "@/lib/server/upkeep";
 import { marginSnapshot } from "@/lib/server/broker/sim/marginAccount";
 import { accruedInterest, MARGIN_RATE } from "@/lib/server/broker/sim/calls";
@@ -11,12 +13,23 @@ import { totalOptionRequirement } from "@/lib/server/broker/sim/options";
 import type { Account } from "@/lib/types";
 
 const LIQUIDATION_RATIO = Number(process.env.SIM_LIQUIDATION_RATIO ?? 0.75);
+// Alpaca's margin rate isn't in its API: ALPACA_MARGIN_RATE (annual), the simulator's by default
+const ALPACA_MARGIN_RATE = Number(process.env.ALPACA_MARGIN_RATE ?? MARGIN_RATE);
 
 // The account for the header and the margin panel: the broker's margin figures (buying power, equity, initial and maintenance margin,
 // the debit and its interest, open calls, whether it may short), unrealized and realized P&L, what's withdrawable and settling, and
 // the past week's liquidations (Alpha Vantage API, one call per position, shared with /api/portfolio by the price cache). Posts paid
-// dividends and runs the margin check first.
+// dividends and runs the margin check first. With Alpaca, the figures are its trading account's (lib/server/brokerLedger.ts).
 export const GET = withUser(async (request, context, userId) => {
+    if (readsThroughBroker()) {
+        const accountId = await ledgerAccountId(userId);
+        if (accountId) {
+            // Always fresh: the header reloads it after every change
+            forgetBrokerLedger(accountId);
+            const [{ trade, positions, ledger }, configurations] = await Promise.all([brokerLedger(accountId), getBroker().getConfigurations(accountId)]);
+            return NextResponse.json<Account>(accountSummary({ trade, positions, configurations, ledger, marginRate: ALPACA_MARGIN_RATE }));
+        }
+    }
     await withAccountLock(userId, db => updateAccount(userId, "GET /api/account", db));
     const { accountId, positions, totalCash, realizedPnl, netDividends, pendingTransferOut, unsettledProceeds, accruedFees } = await getAccount(userId);
     const liquidations = (await getFills(userId, { since: new Date(Date.now() - 7 * 86400000) })).filter(({ reason }) => reason === "LIQUIDATION").slice(0, 20);

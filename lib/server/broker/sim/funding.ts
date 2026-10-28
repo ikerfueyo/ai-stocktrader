@@ -119,7 +119,9 @@ const digits = (value: string) => value.replace(/\D/g, "");
 const normalizeName = (name: string) => name.toLowerCase().replace(/[^a-z ]/g, " ").split(/\s+/).filter(Boolean);
 
 // Why a bank link can't be requested (422), or null
-export const relationshipRequestError = (request: { account_owner_name?: string; bank_account_type?: string; bank_account_number?: string; bank_routing_number?: string }): string | null => {
+export const relationshipRequestError = (request: { account_owner_name?: string; bank_account_type?: string; bank_account_number?: string; bank_routing_number?: string; processor_token?: string }): string | null => {
+    // Plaid's processor tokens are for Alpaca; the simulator has no bank to look them up with
+    if (request.processor_token) return "the simulator links banks by routing and account number, not Plaid processor tokens";
     if (!request.account_owner_name?.trim()) return "account_owner_name is required";
     if (request.bank_account_type !== "CHECKING" && request.bank_account_type !== "SAVINGS") return "bank_account_type must be CHECKING or SAVINGS";
     if (!routingValid(request.bank_routing_number ?? "")) return "bank_routing_number isn't a valid ABA routing number";

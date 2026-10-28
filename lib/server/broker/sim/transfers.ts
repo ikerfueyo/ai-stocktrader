@@ -360,12 +360,16 @@ export const cancelTransfer = async (accountId: string, transferId: string): Pro
 export const listActivities = async (accountId: string, query: ListActivitiesQuery = {}): Promise<Activity[]> => {
     await advanceTransfers(accountId);
     const types = query.activity_types ? (Array.isArray(query.activity_types) ? query.activity_types : String(query.activity_types).split(",")) : null;
+    // A page continues after page_token, the last activity of the page before (Alpaca's paging), in the direction asked for
+    const ascending = query.direction === "asc";
     const { rows } = await pool.query<SimActivityRow>(
-        `SELECT *, "date"::text AS "date" FROM sim_activities
+        `SELECT *, "date"::text AS "date" FROM sim_activities a
          WHERE account_id = $1 AND ($2::text[] IS NULL OR activity_type = ANY($2)) AND ($3::date IS NULL OR "date" = $3) AND ($4::date IS NULL OR "date" <= $4)
-           AND ($5::date IS NULL OR "date" >= $5)
-         ORDER BY created_at ${query.direction === "asc" ? "ASC" : "DESC"}, id LIMIT $6`,
-        [accountId, types, query.date ?? null, query.until ?? null, query.after ?? null, Math.min(Number(query.page_size ?? 100), 1000)]
+           AND ($5::date IS NULL OR "date" >= $5) AND ($7::uuid IS NULL OR order_id = $7)
+           AND ($8::text IS NULL OR (created_at, id) ${ascending ? ">" : "<"} (SELECT created_at, id FROM sim_activities WHERE id = $8 AND account_id = $1))
+         ORDER BY created_at ${ascending ? "ASC" : "DESC"}, id ${ascending ? "ASC" : "DESC"} LIMIT $6`,
+        [accountId, types, query.date ?? null, query.until ?? null, query.after ?? null, Math.min(Number(query.page_size ?? 100), 1000),
+            isUuid(query.order_id) ? query.order_id : null, query.page_token ?? null]
     );
     return rows.map(row => row.activity_type === "FILL" ? toFillActivity(row) : toActivity(row)) as Activity[];
 };

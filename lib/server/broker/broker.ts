@@ -1,6 +1,6 @@
 // The brokerage the app trades through. Each method is one Alpaca Broker API endpoint (named in its comment) with the same
-// request and reply shapes (./types), so the simulator (SimBroker, BROKER=sim) and the real API (AlpacaBroker, BROKER=alpaca)
-// are interchangeable. Routes never compute balances or enforce trading rules themselves: the broker does, and rejects what it
+// request and reply shapes (./types), so the simulator (SimBroker in ./sim, BROKER=sim) and the real API (AlpacaBroker in ./alpaca,
+// BROKER=alpaca) are interchangeable. Routes never compute balances or enforce trading rules themselves: the broker does, and rejects what it
 // doesn't allow with a BrokerError (./errors).
 import type {
     ACHRelationship, Bank, CreateBankRequest, Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, Activity,
@@ -103,9 +103,10 @@ export interface Broker {
 
 export type BrokerMode = "sim" | "alpaca";
 
-// Which broker the app trades through (BROKER, default sim). AlpacaBroker is built last (Phase 11), so alpaca isn't accepted yet.
+// Which broker the app trades through (BROKER, default sim): the simulator, or Alpaca's Broker API (lib/server/broker/alpaca, with
+// the ALPACA_BROKER_* credentials)
 export const brokerMode = (): BrokerMode => {
     const mode = process.env.BROKER ?? "sim";
-    if (mode !== "sim") throw new Error(`BROKER=${mode} isn't supported yet; only the simulator (BROKER=sim) is implemented`);
+    if (mode !== "sim" && mode !== "alpaca") throw new Error(`BROKER must be sim or alpaca, not ${mode}`);
     return mode;
 };

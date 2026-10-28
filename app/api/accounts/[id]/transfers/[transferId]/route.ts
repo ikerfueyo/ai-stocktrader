@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount } from "@/lib/server/brokerAccounts";
+import { forgetBrokerLedger } from "@/lib/server/portfolio";
 
 interface TransferContext {
     params: Promise<{ id: string; transferId: string }>;
@@ -12,5 +13,6 @@ export const DELETE = withUser(async (request, { params }: TransferContext, user
     const { id, transferId } = await params;
     const { account_id } = await findUserAccount(userId, id);
     await getBroker().cancelTransfer(account_id, transferId);
+    forgetBrokerLedger(account_id);
     return new NextResponse(null, { status: 204 });
 });

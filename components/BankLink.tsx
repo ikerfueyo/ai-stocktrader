@@ -8,10 +8,39 @@ import type { AchRelationship } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = { QUEUED: "Verifying…", APPROVED: "Linked", REJECTED: "Not verified", PENDING: "Pending", CANCEL_REQUESTED: "Removing…" };
 
-// The account's bank link (ACH relationship): its status with a Remove button, or a form to link one (the owner must be the account
-// holder). A rejected link shows why, with the form to try another account.
-const BankLink = ({ accountId, holderName, relationships, onChanged }: {
-    accountId: string; holderName: string; relationships: AchRelationship[]; onChanged: () => Promise<void>;
+// Plaid Link's browser script (plaid.com/docs/link/web), loaded only when a bank is linked through Plaid
+const PLAID_SCRIPT = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+interface PlaidHandler {
+    open: () => void;
+    destroy: () => void;
+}
+interface PlaidLink {
+    create: (config: {
+        token: string;
+        onSuccess: (publicToken: string, metadata: { accounts?: { id: string }[]; account_id?: string | null }) => void;
+        onExit: (error: { display_message?: string | null; error_message?: string } | null) => void;
+    }) => PlaidHandler;
+}
+const loadPlaid = () => new Promise<PlaidLink>((resolve, reject) => {
+    const loaded = (window as unknown as { Plaid?: PlaidLink }).Plaid;
+    if (loaded) return resolve(loaded);
+    const script = document.createElement("script");
+    script.src = PLAID_SCRIPT;
+    script.async = true;
+    script.onload = () => {
+        const plaid = (window as unknown as { Plaid?: PlaidLink }).Plaid;
+        if (plaid) resolve(plaid);
+        else reject(new Error("Plaid Link didn't load"));
+    };
+    script.onerror = () => reject(new Error("Plaid Link couldn't be loaded"));
+    document.head.appendChild(script);
+});
+
+// The account's bank link (ACH relationship): its status with a Remove button, or a way to link one (the owner must be the account
+// holder): through Plaid Link when the broker offers it (plaid; the app never sees the bank's numbers), else, or as well, by routing
+// and account number. A rejected link shows why, with the form to try another account.
+const BankLink = ({ accountId, holderName, relationships, onChanged, plaid = false, simulated = true }: {
+    accountId: string; holderName: string; relationships: AchRelationship[]; onChanged: () => Promise<void>; plaid?: boolean; simulated?: boolean;
 }) => {
     const [form, setForm] = useState({ owner: holderName, type: "CHECKING" as "CHECKING" | "SAVINGS", routing: "", account: "", confirm: "", nickname: "" });
     const [showErrors, setShowErrors] = useState(false);
@@ -50,6 +79,40 @@ const BankLink = ({ accountId, holderName, relationships, onChanged }: {
         }
     };
 
+    // Opens Plaid Link with a link token from the server, then links the account picked with its public token
+    const linkWithPlaid = async () => {
+        setBusy(true);
+        setError(null);
+        try {
+            const [{ data: { linkToken } }, Plaid] = await Promise.all([axios.post<{ linkToken: string }>("/api/plaid/link-token"), loadPlaid()]);
+            const handler = Plaid.create({
+                token: linkToken,
+                onSuccess: async (publicToken, metadata) => {
+                    try {
+                        await axios.post(`/api/accounts/${accountId}/ach`, { plaid: { public_token: publicToken, account_id: metadata.accounts?.[0]?.id ?? metadata.account_id } });
+                        await onChanged();
+                    } catch (error) {
+                        logError(error);
+                        setError(apiErrorMessage(error));
+                    } finally {
+                        handler.destroy();
+                        setBusy(false);
+                    }
+                },
+                onExit: exitError => {
+                    if (exitError) setError(exitError.display_message || exitError.error_message || "Plaid Link closed");
+                    handler.destroy();
+                    setBusy(false);
+                }
+            });
+            handler.open();
+        } catch (error) {
+            logError(error);
+            setError(apiErrorMessage(error));
+            setBusy(false);
+        }
+    };
+
     const remove = async (relationshipId: string) => {
         setBusy(true);
         setError(null);
@@ -84,6 +147,12 @@ const BankLink = ({ accountId, holderName, relationships, onChanged }: {
     return (
         <form className="transfer-fields" onSubmit={link} noValidate>
             {rejected && <p className="text-danger mb-0">Your last bank ({rejected.bank_account_number}) couldn&apos;t be linked: {(rejected as AchRelationship & { reason?: string }).reason ?? "not verified"}.</p>}
+            {plaid && (
+                <>
+                    <button type="button" className="btn btn-dark" disabled={busy} onClick={linkWithPlaid}>{busy ? "Linking…" : "Link your bank with Plaid"}</button>
+                    <small className="text-muted">Or enter its routing and account numbers:</small>
+                </>
+            )}
             <label className="transfer-field">
                 <span className="transfer-field-label">Account owner</span>
                 <input className="form-control" value={form.owner} onChange={event => setForm({ ...form, owner: event.target.value })} />
@@ -119,10 +188,12 @@ const BankLink = ({ accountId, holderName, relationships, onChanged }: {
             </label>
             {error && <p className="text-danger mb-0">{error}</p>}
             <button type="submit" className="btn btn-dark" disabled={busy}>{busy ? "Linking…" : "Link bank account"}</button>
-            <small className="text-muted">
-                Simulator: use test numbers, such as routing 011000015 and any account number; one ending in 0000 fails verification.
-                Only its last 4 digits are kept.
-            </small>
+            {simulated ? (
+                <small className="text-muted">
+                    Simulator: use test numbers, such as routing 011000015 and any account number; one ending in 0000 fails verification.
+                    Only its last 4 digits are kept.
+                </small>
+            ) : <small className="text-muted">Only its last 4 digits are kept here.</small>}
         </form>
     );
 };

@@ -549,6 +549,10 @@ export interface FundingTerms {
     instant: number;
     wireFee: number;
     achReturnFee: number;
+    // Banks can be linked through Plaid (Alpaca with PLAID_CLIENT_ID and PLAID_SECRET); otherwise by routing and account number
+    plaid: boolean;
+    // The broker is the simulator, which takes test bank numbers
+    simulated: boolean;
 }
 
 // POST /api/accounts/[id]/transfers: an ACH deposit from the bank link, or a withdrawal by ACH to it or by wire to a recipient bank

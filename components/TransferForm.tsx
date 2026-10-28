@@ -183,7 +183,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
             {(isDeposit || method === "ach") && relationships !== null && accountId && (
                 <section className="transfer-fields">
                     <span className="transfer-field-label">{isDeposit ? "From" : "To"} your linked bank</span>
-                    <BankLink accountId={accountId} holderName={holderName} relationships={relationships} onChanged={reload} />
+                    <BankLink accountId={accountId} holderName={holderName} relationships={relationships} onChanged={reload} plaid={terms?.plaid} simulated={terms?.simulated ?? true} />
                 </section>
             )}
 

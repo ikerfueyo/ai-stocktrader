@@ -1,7 +1,7 @@
 import "server-only";
 import type { Pool, PoolClient } from "pg";
 import pool from "./db";
-import { singleton } from "./cache";
+import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { requestContext } from "./requestContext";
 import { loadCorporateActions } from "./corporateActions";
 import { roundCents, type Dividend, type Split, type Trade } from "./account";
@@ -10,27 +10,67 @@ import { enforceMargin as enforceAccountMargin } from "./broker/sim/calls";
 import { applyCorporateActions, fillsAsTrades, listFills, ledgerState, openLots, postDividends as postAccountDividends } from "./broker/sim/positions";
 import type { SimActivityRow } from "./broker/sim/shapes";
 import { orderReasons } from "./broker/sim/orders";
+import { brokerMode, getBroker } from "./broker";
+import { CASH_ACTIVITY_TYPES, cashRowsOf, ledgerOf, listAllActivities, transactionRowsOf, tradesOf } from "./brokerLedger";
 import type { Order as BrokerOrder } from "./broker/types";
 import type { CashActivityRow, Position, TradeHistoryRow } from "../types";
 
 // The pool, or the client holding a user's account lock (withAccountLock)
 export type Db = Pool | PoolClient;
 
+// With the simulator, the app reads its ledger directly (lib/server/broker/sim); with Alpaca, everything comes through the Broker
+// interface (lib/server/brokerLedger.ts). For testing, BROKER_LEDGER=broker reads the simulator that way too, as the app reads Alpaca.
+export const readsThroughBroker = () => brokerMode() !== "sim" || process.env.BROKER_LEDGER === "broker";
+const throughBroker = readsThroughBroker;
+
+// Alpaca accounts' statuses, kept 30 seconds (every request resolves its account)
+const statusCache = singleton("brokerAccountStatuses", () => new Map<string, CacheEntry<string>>());
+const CLOSED = ["REJECTED", "ACCOUNT_CLOSED"];
+
+// The user's accounts at the broker in use, newest first with closed and rejected ones last, and whether each is open
+const userAccounts = async (userId: string, db: Db): Promise<{ account_id: string; open: boolean }[]> => {
+    if (!throughBroker()) {
+        return (await db.query<{ account_id: string; open: boolean }>(
+            `SELECT b.account_id, s.status NOT IN ('REJECTED', 'ACCOUNT_CLOSED') AS open FROM broker_accounts b JOIN sim_accounts s ON s.id = b.account_id
+             WHERE b.user_id = $1 ORDER BY (s.status IN ('REJECTED', 'ACCOUNT_CLOSED')), b.created_at DESC`,
+            [userId]
+        )).rows;
+    }
+    const { rows } = await db.query<{ account_id: string }>("SELECT account_id FROM broker_accounts WHERE user_id = $1 AND broker = $2 ORDER BY created_at DESC", [userId, brokerMode()]);
+    const statuses = await Promise.all(rows.map(({ account_id }) => cachePromise(statusCache, account_id, 30000, async () => (await getBroker().getAccount(account_id)).status)));
+    const accounts = rows.map(({ account_id }, index) => ({ account_id, open: !CLOSED.includes(statuses[index]) }));
+    return [...accounts.filter(({ open }) => open), ...accounts.filter(({ open }) => !open)];
+};
+
 // The user's account whose ledger the app reads and trades: the one a background job is working on (withLedgerAccount), else the
 // request's active account (the account switcher's cookie) when it's the user's and open, else their newest open account (else their
 // newest). A user can hold an individual account and an IRA of each kind.
 export const ledgerAccountId = async (userId: string, db: Db = pool): Promise<string | null> => {
     const { accountId, activeAccountId } = requestContext();
-    const { rows } = await db.query<{ account_id: string; open: boolean }>(
-        `SELECT b.account_id, s.status NOT IN ('REJECTED', 'ACCOUNT_CLOSED') AS open FROM broker_accounts b JOIN sim_accounts s ON s.id = b.account_id
-         WHERE b.user_id = $1 ORDER BY (s.status IN ('REJECTED', 'ACCOUNT_CLOSED')), b.created_at DESC`,
-        [userId]
-    );
+    const rows = await userAccounts(userId, db);
     if (accountId) return rows.some(row => row.account_id === accountId) ? accountId : null;
     return rows.find(row => row.open && row.account_id === activeAccountId)?.account_id ?? rows[0]?.account_id ?? null;
 };
 
 const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
+
+// An account's ledger through the Broker interface (positions, the trading account, every fill and cash activity, the traded tickers'
+// splits for the replay), kept 5 seconds so one page's requests share it
+const brokerLedgerCache = singleton("brokerLedgers", () => new Map<string, CacheEntry<Awaited<ReturnType<typeof loadBrokerLedger>>>>());
+const loadBrokerLedger = async (accountId: string) => {
+    const broker = getBroker();
+    const [trade, positions, activities] = await Promise.all([
+        broker.getTradeAccount(accountId), broker.listPositions(accountId), listAllActivities(broker, accountId, ["FILL", ...CASH_ACTIVITY_TYPES])
+    ]);
+    const traded = [...new Set(activities.flatMap(activity => (activity as { activity_type?: string; symbol?: string }).activity_type === "FILL" ? [String((activity as { symbol?: string }).symbol).toUpperCase()] : []))];
+    const corporate = await loadCorporateActions(traded, positions.map(({ symbol }) => String(symbol)));
+    return { trade, positions, activities, corporate, ledger: ledgerOf({ trade, positions, activities, splits: corporate.splits }) };
+};
+export const brokerLedger = (accountId: string) => cachePromise(brokerLedgerCache, accountId, 5000, () => loadBrokerLedger(accountId));
+// Drops it after a change (an order, a transfer, a broker event), so the next read sees the change
+export const forgetBrokerLedger = (accountId: string) => {
+    brokerLedgerCache.delete(accountId);
+};
 
 // A user's account from the broker's ledger (lib/server/broker/sim/positions.ts): its fills as trades to replay (for dividends and
 // the history), the traded tickers' splits and dividends (fetching any never fetched and refreshing the held tickers' once a day,
@@ -45,6 +85,15 @@ export const getAccount = async (userId: string, db: Db = pool) => {
         return {
             accountId, transactions: [] as Trade[], splits: [] as Split[], dividends: [] as Dividend[], unsynced: [] as string[], positions: [] as Position[],
             totalCash: 0, realizedPnl: 0, netDividends: 0, pendingTransferOut: 0, unsettledInstant: 0, unsettledProceeds: 0, accruedFees: EMPTY_FEES
+        };
+    }
+    if (throughBroker()) {
+        const { ledger, corporate } = await brokerLedger(accountId);
+        return {
+            accountId, transactions: tradesOf(ledger.fills), splits: corporate.splits, dividends: corporate.dividends, unsynced: corporate.unsynced, positions: ledger.positions,
+            totalCash: ledger.totalCash, realizedPnl: ledger.realizedPnl, netDividends: ledger.netDividends, pendingTransferOut: ledger.pendingTransferOut,
+            // Alpaca's instant credit isn't reported apart, and its accrued fees are one total
+            unsettledInstant: 0, unsettledProceeds: ledger.unsettledProceeds, accruedFees: { ...EMPTY_FEES, REG: ledger.accruedFees }
         };
     }
     await advanceTransfers(accountId);
@@ -65,7 +114,8 @@ export const getPositions = async (userId: string, db: Db = pool) => (await getA
 // The user's fills as trades to replay, oldest first (fillsAsTrades), for the equity history
 export const getTrades = async (userId: string, db: Db = pool): Promise<Trade[]> => {
     const accountId = await ledgerAccountId(userId, db);
-    return accountId ? fillsAsTrades(db, accountId) : [];
+    if (!accountId) return [];
+    return throughBroker() ? tradesOf((await brokerLedger(accountId)).ledger.fills) : fillsAsTrades(db, accountId);
 };
 
 // A fill (a FILL activity) as the pages' TransactionRow, with the P&L it realized against the lots it closed (FIFO)
@@ -80,7 +130,12 @@ export const toTransactionRow = (row: SimActivityRow, userId: string): TradeHist
 // The user's fills, newest first (since a time, if given)
 export const getFills = async (userId: string, { since }: { since?: Date } = {}, db: Db = pool): Promise<TradeHistoryRow[]> => {
     const accountId = await ledgerAccountId(userId, db);
-    return accountId ? (await listFills(db, accountId, { since })).map(row => toTransactionRow(row, userId)) : [];
+    if (!accountId) return [];
+    if (throughBroker()) {
+        const { ledger } = await brokerLedger(accountId);
+        return transactionRowsOf(ledger.fills, ledger.replay, userId).filter(row => !since || new Date(row.date) > since);
+    }
+    return (await listFills(db, accountId, { since })).map(row => toTransactionRow(row, userId));
 };
 
 // The user's cash ledger, oldest first, as CashActivityRows: the broker's cash activities (CSD deposits, CSW withdrawals, FEE fees,
@@ -88,6 +143,7 @@ export const getFills = async (userId: string, { since }: { since?: Date } = {},
 export const loadCashActivity = async (userId: string, db: Db = pool): Promise<CashActivityRow[]> => {
     const accountId = await ledgerAccountId(userId, db);
     if (!accountId) return [];
+    if (throughBroker()) return cashRowsOf((await brokerLedger(accountId)).activities, userId);
     const { rows } = await db.query<{ id: string; activity_type: string; created_at: Date; net_amount: string; description: string; symbol: string | null }>(
         "SELECT id, activity_type, created_at, net_amount, description, symbol FROM sim_activities WHERE account_id = $1 AND (activity_type IN ('CSD', 'CSW', 'FEE', 'DIV', 'INT', 'WH') OR (activity_type IN ('MA', 'CIL') AND net_amount <> 0)) ORDER BY created_at, id",
         [accountId]
@@ -101,9 +157,10 @@ export const loadCashActivity = async (userId: string, db: Db = pool): Promise<C
     }));
 };
 
-// Orders with the reason each one ended, from the broker (the simulator keeps it; Alpaca sends it with the order's trade event)
+// Orders with the reason each one ended, from the broker (the simulator keeps it; Alpaca sends it only with the order's trade event,
+// so its orders have none)
 export const withReasons = async <T extends BrokerOrder>(orders: T[]): Promise<(T & { reason: string | null })[]> => {
-    const reasons = await orderReasons(orders.map(({ id }) => id));
+    const reasons = throughBroker() ? new Map<string, string>() : await orderReasons(orders.map(({ id }) => id));
     return orders.map(order => ({ ...order, reason: reasons.get(order.id) ?? null }));
 };
 
@@ -157,6 +214,8 @@ export const withAccountLock = <T>(userId: string, fn: (db: PoolClient) => Promi
 // Posts the dividends paid since they were last checked to the user's ledger (DIV activities; the broker's postDividends). Call it
 // inside withAccountLock with its client.
 export const postDividends = async (userId: string, label: string, db: PoolClient) => {
+    // Alpaca pays dividends itself
+    if (throughBroker()) return [];
     const { accountId, splits, dividends } = await getAccount(userId, db);
     if (!accountId) return [];
     const posted = await postAccountDividends(db, accountId, { splits, dividends });
@@ -170,6 +229,8 @@ export const postDividends = async (userId: string, label: string, db: PoolClien
 // call past its deadline, or for equity far below the maintenance requirement, during the regular session. It waits while any
 // position's splits couldn't be fetched, since a missed split would misstate the positions. Returns the liquidation orders placed.
 export const enforceMargin = async (userId: string, label: string, db: Db = pool) => {
+    // Alpaca issues and enforces its own margin calls
+    if (throughBroker()) return [];
     const { accountId, positions, unsynced } = await getAccount(userId, db);
     if (!accountId) return [];
     const unsure = positions.filter(({ ticker }) => unsynced.includes(ticker)).map(({ ticker }) => ticker);

@@ -1,14 +1,15 @@
 import "server-only";
 import pool from "../db";
 import { singleton } from "../cache";
-import { getBroker } from "../broker";
+import { brokerMode, getBroker } from "../broker";
 import type { BrokerEvent, BrokerEventStream } from "../broker/broker";
 import { notificationFor } from "../notificationRules";
+import { forgetBrokerLedger } from "../portfolio";
 import { notify, userForAccount } from "../notifications";
 import { reinvestDividend } from "./drip";
 import { addDays, easternParts } from "../../marketHours";
 
-// The app's consumer of the broker's event streams (the simulator's sim_events, Alpaca's SSE later), run in the job leader only:
+// The app's consumer of the broker's event streams (the simulator's sim_events, or Alpaca's SSE streams), run in the job leader only:
 // each event becomes a notification for the account's user (notificationFor), and a cash dividend is reinvested when the position's
 // reinvestment is on. It resumes after the last event it handled (event_checkpoints), so a restart neither repeats nor misses any;
 // notifications and reinvestments are each made once even if an event comes twice.
@@ -19,6 +20,8 @@ const LABEL = "Broker events";
 const state = singleton("eventConsumer", () => ({ stop: null as (() => void) | null }));
 
 export const handleEvent = async (event: BrokerEvent) => {
+    // A fill, transfer or activity the broker made itself changes the account the pages read
+    forgetBrokerLedger(event.accountId);
     const userId = await userForAccount(event.accountId);
     if (userId) {
         const payload = (event.payload ?? {}) as Record<string, unknown>;
@@ -54,7 +57,9 @@ export const startEventConsumer = async () => {
 export const notifyNewDocuments = async (now = new Date(), accountId?: string) => {
     const since = addDays(easternParts(now).dateKey, -7);
     const { rows } = await pool.query<{ user_id: string; account_id: string }>(
-        "SELECT user_id, account_id FROM broker_accounts WHERE account_id IN (SELECT id FROM sim_accounts WHERE status NOT IN ('REJECTED')) AND ($1::uuid IS NULL OR account_id = $1)", [accountId ?? null]
+        // The broker in use's accounts (a rejected application has no documents; Alpaca's are listed, and skipped if refused)
+        `SELECT user_id, account_id FROM broker_accounts WHERE broker = $2 AND ($1::uuid IS NULL OR account_id = $1)
+           AND (broker <> 'sim' OR account_id IN (SELECT id FROM sim_accounts WHERE status NOT IN ('REJECTED')))`, [accountId ?? null, brokerMode()]
     );
     let made = 0;
     for (const { user_id, account_id } of rows) {

@@ -22,6 +22,7 @@ import { notifyNewDocuments, startEventConsumer } from "./automation/events";
 import { runRecurring } from "./automation/recurring";
 import { checkAlerts } from "./automation/alerts";
 import { closeUnexercisable, processExpirations } from "./broker/sim/optionEvents";
+import { brokerMode } from "./broker";
 
 // The background jobs, checked every SIM_ORDER_MATCH_MS (default 5s). Each job is due every ORDER_MATCH_INTERVAL_MS (default 30s),
 // every everyMs of its own, or at daily Eastern times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
@@ -41,6 +42,9 @@ export interface Job {
     everyMs?: number;
     manual?: boolean;
     leaderOnly: boolean;
+    // The simulator's own work (its order engine, reviews, transfers, ledger and documents), which Alpaca does itself: skipped with
+    // BROKER=alpaca
+    simOnly?: boolean;
     run: () => Promise<unknown>;
 }
 
@@ -92,8 +96,9 @@ const updateAccounts = async () => {
 // Corporate actions that have taken effect: applied to every account holding the symbol, their effect on open orders, and watchlists
 // following symbol changes
 const runCorporateActions = async () => {
-    const accounts = await applyDueCorporateActions();
-    const orders = await processCorporateActionOrders();
+    const simulated = brokerMode() === "sim";
+    const accounts = simulated ? await applyDueCorporateActions() : 0;
+    const orders = simulated ? await processCorporateActionOrders() : 0;
     const { rowCount } = await pool.query(
         `UPDATE watchlist w SET ticker = c.new_ticker FROM corporate_actions c
          WHERE c."type" = 'NAME_CHANGE' AND c.ex_date <= $1 AND w.ticker = c.ticker
@@ -114,24 +119,24 @@ const postAllDividends = async () => {
 };
 
 export const JOBS: Job[] = [
-    { name: "accounts", leaderOnly: true, run: updateAccounts },
+    { name: "accounts", simOnly: true, leaderOnly: true, run: updateAccounts },
     // The simulator's order engine: fills, triggers, expiries and leg activations for every working order
-    { name: "sim-orders", leaderOnly: true, everyMs: ORDER_MATCH_MS > 0 ? ORDER_MATCH_MS : INTERVAL_MS, run: () => matchOrders() },
+    { name: "sim-orders", simOnly: true, leaderOnly: true, everyMs: ORDER_MATCH_MS > 0 ? ORDER_MATCH_MS : INTERVAL_MS, run: () => matchOrders() },
     // The simulator's account reviews and options approvals that are due (reading an account advances it too)
-    { name: "sim-accounts", leaderOnly: true, run: () => advanceAccounts() },
+    { name: "sim-accounts", simOnly: true, leaderOnly: true, run: () => advanceAccounts() },
     // The simulator's transfers that are due to clear, complete or come back (reading an account's transfers advances them too)
-    { name: "sim-transfers", leaderOnly: true, run: () => advanceTransfers() },
+    { name: "sim-transfers", simOnly: true, leaderOnly: true, run: () => advanceTransfers() },
     // The end of the trading day: deduct the day's regulatory fees, then keep each account's closing balances (last_equity), issue
     // margin calls, accrue margin interest (posted at month end) and charge hard-to-borrow fees
-    { name: "eod", slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
+    { name: "eod", simOnly: true, slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
     // Corporate actions apply before the pre-market opens (reading an account, and every order match, apply them too)
     { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
     // Options expiring today that the account couldn't exercise are sold in the hour before expiry; after the close, expired options
     // are exercised, assigned or expire, and short calls likely assigned before tomorrow's ex-dates are assigned early
-    { name: "expiring-options", slots: ["15:00"], leaderOnly: true, run: () => closeUnexercisable() },
-    { name: "options-expiration", slots: ["16:45"], leaderOnly: true, run: () => processExpirations() },
+    { name: "expiring-options", simOnly: true, slots: ["15:00"], leaderOnly: true, run: () => closeUnexercisable() },
+    { name: "options-expiration", simOnly: true, slots: ["16:45"], leaderOnly: true, run: () => processExpirations() },
     // Documents that are due: the previous trading day's confirmations, statements after a month's first weekend, 1099s from Feb 15
-    { name: "documents", slots: ["06:30"], leaderOnly: true, run: async () => ({ made: await generateAllDocuments(), notified: await notifyNewDocuments() }) },
+    { name: "documents", slots: ["06:30"], leaderOnly: true, run: async () => ({ made: brokerMode() === "sim" ? await generateAllDocuments() : 0, notified: await notifyNewDocuments() }) },
     // The app's consumer of the broker's events (notifications and dividend reinvestment), started once in the leader
     { name: "events", leaderOnly: true, run: startEventConsumer },
     // Recurring investments due today, placed from 6:45 a.m. ET on trading days for the open
@@ -139,13 +144,16 @@ export const JOBS: Job[] = [
     // Price alerts against the cached quotes, during the regular session
     { name: "alerts", leaderOnly: true, run: () => checkAlerts() },
     // Dividends paid overnight post before the open, for every account with fills (reading an account posts them too)
-    { name: "dividends", slots: ["06:00"], leaderOnly: true, run: postAllDividends },
+    { name: "dividends", simOnly: true, slots: ["06:00"], leaderOnly: true, run: postAllDividends },
     // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar
-    { name: "settle-transfers", leaderOnly: true, manual: true, run: () => fastForwardTransfers() },
+    { name: "settle-transfers", simOnly: true, leaderOnly: true, manual: true, run: () => fastForwardTransfers() },
     // Alpaca refreshes its asset flags 3 times a day, the last at 8:20 a.m. ET
     { name: "assets", slots: ["04:30", "08:30", "16:30"], leaderOnly: true, run: () => syncAssets(LABEL) },
     { name: "calendar", slots: ["03:00"], leaderOnly: false, run: () => syncCalendar(LABEL) }
 ];
+
+// The jobs for the broker in use (BROKER)
+export const brokerJobs = () => brokerMode() === "sim" ? JOBS : JOBS.filter(job => !job.simOnly);
 
 // Runs a job now (the schedule, or POST /api/dev/jobs), unless it's already running; returns false when it was. A failed run isn't
 // recorded, so a daily job is retried on the next check rather than at its next slot. A job whose table doesn't exist yet (a
@@ -171,7 +179,7 @@ const tick = async () => {
     state.running = true;
     try {
         const now = new Date();
-        const due = JOBS.filter(job => !job.manual).filter(job => {
+        const due = brokerJobs().filter(job => !job.manual).filter(job => {
             const last = state.lastRuns.get(job.name) ?? null;
             if (job.slots) return isSlotDue(job.slots, last, now);
             // A little slack, so a job due every check doesn't skip one when the checks drift
@@ -196,5 +204,5 @@ export const startBackgroundJobs = () => {
     setInterval(tick, CHECK_MS).unref();
     // The calendar and the universe load right away rather than after the first interval
     setTimeout(tick, 1000).unref();
-    console.log(`${LABEL}: account upkeep every ${INTERVAL_MS / 1000}s; orders every ${CHECK_MS / 1000}s; ${JOBS.filter(job => job.slots).map(job => `${job.name} at ${job.slots!.join(", ")} ET`).join("; ")}`);
+    console.log(`${LABEL}: account upkeep every ${INTERVAL_MS / 1000}s; orders every ${CHECK_MS / 1000}s; ${brokerJobs().filter(job => job.slots).map(job => `${job.name} at ${job.slots!.join(", ")} ET`).join("; ")}`);
 };

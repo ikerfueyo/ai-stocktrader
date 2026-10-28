@@ -4,9 +4,8 @@ import { requireAccount } from "@/lib/server/brokerAccounts";
 import { getBroker } from "@/lib/server/broker";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { isForeignListing } from "@/lib/server/marketData";
-import { enforceMargin, ledgerAccountId, withAccountLock, withReasons } from "@/lib/server/portfolio";
-import pool from "@/lib/server/db";
-import { positionQty } from "@/lib/server/broker/sim/positions";
+import { enforceMargin, forgetBrokerLedger, ledgerAccountId, withAccountLock, withReasons } from "@/lib/server/portfolio";
+import { isHttpError } from "@/lib/server/httpError";
 import { parseOptionSymbol } from "@/lib/options";
 import type { AppOrder, BrokerOrderRequest } from "@/lib/types";
 
@@ -26,12 +25,17 @@ export const POST = withUser(async (request, context, userId) => {
     // underlying (an mleg order's legs') must be in the universe for an order that opens.
     const legs = Array.isArray((body as { legs?: unknown }).legs) ? (body as { legs: { symbol?: string }[] }).legs : [];
     const contracts = symbol ? [symbol] : legs.map(leg => String(leg?.symbol ?? "").trim().toUpperCase());
+    const held = async (contract: string) => Number((await getBroker().getPosition(accountId, contract).catch(error => {
+        if (isHttpError(error) && error.status === 404) return null;
+        throw error;
+    }))?.qty ?? 0) !== 0;
     for (const contract of contracts) {
-        if (contract && (await positionQty(pool, accountId, contract)) === 0) await requireTradableStock(parseOptionSymbol(contract)?.underlying ?? contract);
+        if (contract && !(await held(contract))) await requireTradableStock(parseOptionSymbol(contract)?.underlying ?? contract);
     }
     const label = `POST /api/orders ${symbol}`;
     const order = await withAccountLock(userId, async db => {
         const placed = await getBroker().createOrder(accountId, { ...body, symbol } as BrokerOrderRequest);
+        forgetBrokerLedger(accountId);
         // The fill is already saved, so a failed margin check is only logged; the next GET /api/account runs it again
         if (Number(placed.filled_qty) > 0) await enforceMargin(userId, label, db).catch(error => console.error(`${label}: margin check: ${error.message}`));
         return placed;
@@ -59,5 +63,7 @@ export const GET = withUser(async (request, context, userId) => {
 export const DELETE = withUser(async (request, context, userId) => {
     const accountId = await ledgerAccountId(userId);
     if (!accountId) return NextResponse.json([]);
-    return NextResponse.json(await withAccountLock(userId, () => getBroker().cancelAllOrders(accountId)));
+    const results = await withAccountLock(userId, () => getBroker().cancelAllOrders(accountId));
+    forgetBrokerLedger(accountId);
+    return NextResponse.json(results);
 });

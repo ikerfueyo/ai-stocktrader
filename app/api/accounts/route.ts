@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
-import { getBroker } from "@/lib/server/broker";
+import { brokerMode, getBroker } from "@/lib/server/broker";
 import { clientIp, FINAL_STATUSES, listAccountRows, listAccounts } from "@/lib/server/brokerAccounts";
 import { validateApplication } from "@/lib/kyc";
 import { easternParts } from "@/lib/marketHours";
@@ -59,8 +59,8 @@ export const POST = withUser(async (request, context, userId) => {
     };
     const account: BrokerAccount = await broker.createAccount(accountRequest);
     await pool.query(
-        "INSERT INTO broker_accounts (account_id, user_id, broker, kind, account_number) VALUES ($1, $2, 'sim', 'individual', $3)",
-        [account.id, userId, account.account_number]
+        "INSERT INTO broker_accounts (account_id, user_id, broker, kind, account_number) VALUES ($1, $2, $3, 'individual', $4)",
+        [account.id, userId, brokerMode(), account.account_number]
     );
     await pool.query(
         `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'w9', $2, $3), ($1, 'form_crs', '{}', $3), ($1, 'privacy_notice', '{}', $3)`,

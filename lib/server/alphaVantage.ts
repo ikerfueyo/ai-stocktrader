@@ -165,6 +165,15 @@ const quoteCache = singleton("quoteCache", () => new Map<string, CacheEntry<Quot
 const lastKnownPrices = singleton("lastKnownPrices", () => new Map<string, number>());
 // For local testing only: PRICE_OVERRIDES='{"TSTA": 120}' fixes those tickers' prices without calling Alpha Vantage
 const PRICE_OVERRIDES: Record<string, number> = JSON.parse(process.env.PRICE_OVERRIDES || "{}");
+// The day's volume an override quotes (none unless set), which sizes the simulator's fills
+const VOLUME_OVERRIDES: Record<string, number> = {};
+
+// For the scenario suite (lib/server/broker/sim/scenarios.sim.ts): fixes or moves an overridden price, optionally with a volume
+export const overridePrice = (ticker: string, price: number, volume?: number) => {
+    if (process.env.NODE_ENV === "production") throw new Error("Price overrides are for local testing only");
+    PRICE_OVERRIDES[ticker.toUpperCase()] = price;
+    if (volume !== undefined) VOLUME_OVERRIDES[ticker.toUpperCase()] = volume;
+};
 
 // Without quoted bid/ask prices, fills use a simulated spread of SIMULATED_SPREAD_BPS basis points of the price (at least a cent,
 // but at most half the price, so a sub-cent stock's bid stays positive), centered on the last price. 0 turns it off, so trades
@@ -320,7 +329,7 @@ export const fetchQuotes = (tickers: string[]): Promise<Quote>[] => {
         if (PRICE_OVERRIDES[ticker] !== undefined) {
             const price = PRICE_OVERRIDES[ticker];
             return Promise.resolve({ ticker, price, previousClose: null, bid: null, ask: null, spread: "none", quoteTime: new Date().toISOString(), delay: "realtime",
-                open: null, high: null, low: null, volume: null, extendedHoursPrice: null
+                open: null, high: null, low: null, volume: VOLUME_OVERRIDES[ticker] ?? null, extendedHoursPrice: null
             });
         }
         return cachePromise(quoteCache, ticker, QUOTE_CACHE_MS, () => loaded.get(ticker) ?? loadQuotes([ticker]).get(ticker)!).then(quote => {

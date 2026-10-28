@@ -19,7 +19,7 @@ const STATUS_LABELS: Record<string, string> = {
 // completed, and what came back. A transfer can be canceled while it's still requested (before the ACH batch or the wire goes).
 const TransfersPage = () => {
     const { refreshAccount } = useAccount();
-    const { accountId, relationships, banks, transfers, holderName, error, reload } = useFunding();
+    const { accountId, relationships, banks, transfers, holderName, terms, error, reload } = useFunding();
     const [actionError, setActionError] = useState<string | null>(null);
 
     const act = async (request: () => Promise<unknown>) => {
@@ -46,7 +46,7 @@ const TransfersPage = () => {
             <section className="settings-section">
                 <h2 className="panel-title">Linked bank (ACH)</h2>
                 {accountId && relationships !== null ? (
-                    <BankLink accountId={accountId} holderName={holderName} relationships={relationships} onChanged={reload} />
+                    <BankLink accountId={accountId} holderName={holderName} relationships={relationships} onChanged={reload} plaid={terms?.plaid} simulated={terms?.simulated ?? true} />
                 ) : <p>Loading...</p>}
             </section>
 
