@@ -2,6 +2,9 @@
 import type { AccountApplication } from "./kyc";
 import type { Order as BrokerOrder } from "./server/broker/types";
 import type { TaxYear as TaxYearFigures } from "./server/broker/sim/tax";
+import type { NotificationKind } from "./server/notificationRules";
+import type { AlertCondition, Frequency } from "./automation";
+export type { NotificationKind };
 
 export type { AccountApplication };
 export type { TaxYearFigures };
@@ -415,6 +418,63 @@ export type TaxReport = TaxYearFigures & {
         washAdjustment: number; marketValue: number | null; unrealized: number | null; term: "short" | "long";
     }[];
 };
+
+// GET /api/notifications: a notification (from a broker event, a price alert, a recurring buy, dividend reinvestment or a document)
+export interface NotificationItem {
+    id: number;
+    kind: NotificationKind;
+    title: string;
+    body: string;
+    link: string | null;
+    createdAt: string;
+    read: boolean;
+}
+
+// Per kind: shown in the app, and as a browser notification
+export type NotificationPreferences = Record<NotificationKind, { inApp: boolean; browser: boolean }>;
+
+export interface NotificationsResponse {
+    items: NotificationItem[];
+    unread: number;
+    preferences: NotificationPreferences;
+}
+
+// GET /api/alerts: a price alert
+export interface PriceAlert {
+    id: string;
+    symbol: string;
+    condition: AlertCondition;
+    threshold: number;
+    rearm: boolean;
+    status: "active" | "triggered" | "cancelled";
+    lastPrice: number | null;
+    triggeredAt: string | null;
+    createdAt: string;
+}
+
+// GET /api/recurring: a recurring investment
+export interface RecurringInvestment {
+    id: string;
+    accountId: string;
+    symbol: string;
+    amount: number;
+    frequency: Frequency;
+    startDate: string;
+    // The next date it's scheduled for, and the trading day that runs on
+    nextDate: string;
+    nextRunDate: string;
+    status: "active" | "paused" | "cancelled";
+    pauseReason: string | null;
+    lastRunDate: string | null;
+}
+
+// GET /api/drip: dividend reinvestment for the active account: its default, each position's choice, and dividends held until $1
+export interface DripSettings {
+    enabled: boolean;
+    positions: { symbol: string; enabled: boolean | null; fractionable: boolean }[];
+    pending: { symbol: string; amount: number }[];
+    recent: { symbol: string; amount: number; outcome: "ordered" | "held" | "skipped" | "failed"; note: string | null; createdAt: string }[];
+}
 
 // GET/POST /api/accounts/[id]/w9: the account's W-9 certification
 export interface W9Certification {

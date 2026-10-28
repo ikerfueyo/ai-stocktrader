@@ -284,6 +284,12 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 - **DRIP:** set per account and per position. On each `DIV` event, place a notional buy for the net amount (fractionable assets only; at least $1, or accumulate).
 - **Price alerts:** price crossing above or below a level, or a percentage change in the day, checked by the job against market data, firing once and then rearming optionally.
 - **Notifications center:** a bell in the header, fed by broker events (fills, cancels, rejects, transfers, calls, corporate actions, documents) plus alerts, with per-type preferences. In-app and browser notifications only; email waits for deployment.
+- **As built (done):** app-level modules in `lib/server/automation/` (`events.ts`, `drip.ts`, `recurring.ts`, `alerts.ts`) with `lib/server/notifications.ts`, the pure rules in `lib/automation.ts` and `lib/server/notificationRules.ts`, and the `/notifications` page (CLAUDE.md has the details). Where it differs from the plan above:
+  - The event consumer runs in the job leader and resumes from `event_checkpoints`. The simulator's event IDs now follow the order events are emitted (they used to be seeded with the activity's own date, so a dividend dated the previous afternoon could sort before the checkpoint and be missed after a restart).
+  - Recurring buys run from 6:45 a.m. ET until the close on trading days; dates missed while the server was down run once, not once each. Any 4xx refusal pauses them (buying power, an account that can't trade, a stock no longer tradable), not only buying power.
+  - DRIP reinvests the dividend less its backup withholding. A refused reinvestment keeps the amount held for the next dividend and notifies.
+  - Price alerts are checked every 30 seconds during the regular session only (not the extended sessions); a level alert must be set on the side the price will cross from.
+  - Documents notify from the documents job (documents aren't events). Notifications for actions the user takes themselves (placing or cancelling an order, requesting a transfer) aren't sent.
 
 ### Phase 9: Options (Alpaca levels 1–3)
 - **Approval:** `max_options_trading_level` and `options_approved_level`, the options agreement and an experience questionnaire.

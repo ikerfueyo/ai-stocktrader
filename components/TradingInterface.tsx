@@ -13,6 +13,7 @@ import EarningsDetails from "./EarningsDetails";
 import CorporateActions from "./CorporateActions";
 import TickerNews from "./TickerNews";
 import WatchlistStar from "./WatchlistStar";
+import Link from "next/link";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { MarketStatus } from "@/lib/marketHours";
 import type { DailyBar, DailySeries, Quote } from "@/lib/types";
@@ -78,6 +79,10 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
             <div className="ticker-title">
                 <h1 className="ticker-header">{ticker}</h1>
                 <WatchlistStar ticker={ticker.toUpperCase()} />
+            </div>
+            <div className="ticker-actions">
+                <Link href={`/notifications?tab=alerts&symbol=${ticker.toUpperCase()}`}>Set a price alert</Link>
+                <Link href={`/notifications?tab=recurring&symbol=${ticker.toUpperCase()}`}>Buy it regularly</Link>
             </div>
             <MarketStatusBadge status={market} />
             <div className="trading-interface-container">

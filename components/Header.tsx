@@ -9,6 +9,7 @@ import TickerSearchBar from "./TickerSearchBar";
 import AccountSummary from "./AccountSummary";
 import MarginBanner from "./MarginBanner";
 import AccountSwitcher from "./AccountSwitcher";
+import NotificationBell from "./NotificationBell";
 
 const Header = () => {
     return (
@@ -33,6 +34,7 @@ const Header = () => {
                     <Link href="/documents" className="text-lg font-semibold mr-4">Documents</Link>
                     <Link href="/deposit" className="header-pill deposit mr-2">Deposit</Link>
                     <Link href="/withdraw" className="header-pill withdraw mr-4">Withdraw</Link>
+                    <NotificationBell />
                     <AccountSwitcher />
                     <UserButton />
                 </nav>

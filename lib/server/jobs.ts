@@ -17,6 +17,9 @@ import { matchOrders, processCorporateActionOrders } from "./broker/sim/orders";
 import { generateAllDocuments } from "./broker/sim/documents";
 import { accountsOnMargin, endOfDayMargin } from "./broker/sim/calls";
 import { postDividends } from "./portfolio";
+import { notifyNewDocuments, startEventConsumer } from "./automation/events";
+import { runRecurring } from "./automation/recurring";
+import { checkAlerts } from "./automation/alerts";
 
 // The background jobs, checked every SIM_ORDER_MATCH_MS (default 5s). Each job is due every ORDER_MATCH_INTERVAL_MS (default 30s),
 // every everyMs of its own, or at daily Eastern times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
@@ -120,7 +123,13 @@ export const JOBS: Job[] = [
     // Corporate actions apply before the pre-market opens (reading an account, and every order match, apply them too)
     { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
     // Documents that are due: the previous trading day's confirmations, statements after a month's first weekend, 1099s from Feb 15
-    { name: "documents", slots: ["06:30"], leaderOnly: true, run: () => generateAllDocuments() },
+    { name: "documents", slots: ["06:30"], leaderOnly: true, run: async () => ({ made: await generateAllDocuments(), notified: await notifyNewDocuments() }) },
+    // The app's consumer of the broker's events (notifications and dividend reinvestment), started once in the leader
+    { name: "events", leaderOnly: true, run: startEventConsumer },
+    // Recurring investments due today, placed from 6:45 a.m. ET on trading days for the open
+    { name: "recurring", leaderOnly: true, run: () => runRecurring() },
+    // Price alerts against the cached quotes, during the regular session
+    { name: "alerts", leaderOnly: true, run: () => checkAlerts() },
     // Dividends paid overnight post before the open, for every account with fills (reading an account posts them too)
     { name: "dividends", slots: ["06:00"], leaderOnly: true, run: postAllDividends },
     // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar

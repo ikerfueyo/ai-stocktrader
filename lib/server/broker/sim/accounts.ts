@@ -19,7 +19,9 @@ const OPTIONS_REVIEW_SECONDS = Number(process.env.SIM_KYC_SECONDS ?? 5);
 
 // Appends an event to one of the simulator's streams (sim_events), like Alpaca's SSE streams
 export const emitEvent = async (accountId: string, stream: BrokerEventStream, payload: Record<string, unknown>, at = new Date(), db: Pick<typeof pool, "query"> = pool) => {
-    const id = nextUlid(at.getTime());
+    // In the order events are emitted, not by the time they're dated (a dividend is dated at its payment date's close), so a
+    // consumer resuming after the last ID it handled can't miss one
+    const id = nextUlid();
     await db.query("INSERT INTO sim_events (id, account_id, stream, at, payload) VALUES ($1, $2, $3, $4, $5)",
         [id, accountId, stream, at, JSON.stringify({ ...payload, event_ulid: id, at: at.toISOString() })]);
     return id;
