@@ -171,14 +171,13 @@ export const positionQty = async (db: Db, accountId: string, symbol: string): Pr
 // contracts an exercise, assignment or expiry closed (likewise), and the trades before a symbol change under the new symbol. Splits are
 // replayed from the stored splits.
 export const fillsAsTrades = async (db: Db, accountId: string): Promise<Trade[]> => {
-    const [{ rows }, renames] = await Promise.all([
-        db.query<{ activity_type: string; activity_sub_type: string | null; symbol: string; side: string | null; price: string | null; qty: string; net_amount: string; created_at: Date }>(
-            `SELECT activity_type, activity_sub_type, symbol, side, price, qty, net_amount, created_at FROM sim_activities
-             WHERE account_id = $1 AND (activity_type = 'FILL' OR (activity_type IN ('MA', 'SPIN', 'REORG', 'CIL', 'OPEXP', 'OPEXC', 'OPASN') AND qty <> 0) OR (activity_type = 'DIV' AND activity_sub_type = 'SDIV'))
-             ORDER BY created_at, id`, [accountId]
-        ),
-        appliedRenames(db, accountId)
-    ]);
+    // One after the other: db may be a pool client, which runs one query at a time (pg@9 rejects overlapping ones)
+    const { rows } = await db.query<{ activity_type: string; activity_sub_type: string | null; symbol: string; side: string | null; price: string | null; qty: string; net_amount: string; created_at: Date }>(
+        `SELECT activity_type, activity_sub_type, symbol, side, price, qty, net_amount, created_at FROM sim_activities
+         WHERE account_id = $1 AND (activity_type = 'FILL' OR (activity_type IN ('MA', 'SPIN', 'REORG', 'CIL', 'OPEXP', 'OPEXC', 'OPASN') AND qty <> 0) OR (activity_type = 'DIV' AND activity_sub_type = 'SDIV'))
+         ORDER BY created_at, id`, [accountId]
+    );
+    const renames = await appliedRenames(db, accountId);
     return rows.map(row => {
         const date = row.created_at;
         let ticker = row.symbol;
@@ -309,22 +308,21 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
 // withdrawals hold and the instant deposit credit not yet settled
 export const ledgerState = async (db: Db, accountId: string, now = new Date()) => {
     const today = dayOf(now);
-    const [lots, { rows: [sums] }, { rows: accruals }, transfers] = await Promise.all([
-        openLots(db, accountId),
-        db.query<{ realized: string; dividends: string; unsettled: string; unsettled_purchases: string }>(
-            `SELECT COALESCE(SUM(realized_pl), 0) AS realized,
-                    COALESCE(SUM(CASE WHEN activity_type = 'DIV' THEN net_amount ELSE 0 END), 0) AS dividends,
-                    COALESCE(SUM(CASE WHEN activity_type = 'FILL' AND net_amount > 0 AND settle_date > $2 THEN net_amount ELSE 0 END), 0) AS unsettled,
-                    COALESCE(SUM(CASE WHEN activity_type = 'FILL' AND net_amount < 0 AND settle_date > $2 THEN -net_amount ELSE 0 END), 0) AS unsettled_purchases
-             FROM sim_activities WHERE account_id = $1`,
-            [accountId, today]
-        ),
-        db.query<{ fee_type: FeeAccrual["type"]; amount: string }>(
-            `SELECT fee_type, SUM(amount) AS amount FROM sim_fee_accruals WHERE account_id = $1 AND deducted_by IS NULL
-             GROUP BY "date", fee_type`, [accountId]
-        ),
-        ledgerCash([accountId])
-    ]);
+    // One after the other, since db may be a pool client (see fillsAsTrades)
+    const lots = await openLots(db, accountId);
+    const { rows: [sums] } = await db.query<{ realized: string; dividends: string; unsettled: string; unsettled_purchases: string }>(
+        `SELECT COALESCE(SUM(realized_pl), 0) AS realized,
+                COALESCE(SUM(CASE WHEN activity_type = 'DIV' THEN net_amount ELSE 0 END), 0) AS dividends,
+                COALESCE(SUM(CASE WHEN activity_type = 'FILL' AND net_amount > 0 AND settle_date > $2 THEN net_amount ELSE 0 END), 0) AS unsettled,
+                COALESCE(SUM(CASE WHEN activity_type = 'FILL' AND net_amount < 0 AND settle_date > $2 THEN -net_amount ELSE 0 END), 0) AS unsettled_purchases
+         FROM sim_activities WHERE account_id = $1`,
+        [accountId, today]
+    );
+    const { rows: accruals } = await db.query<{ fee_type: FeeAccrual["type"]; amount: string }>(
+        `SELECT fee_type, SUM(amount) AS amount FROM sim_fee_accruals WHERE account_id = $1 AND deducted_by IS NULL
+         GROUP BY "date", fee_type`, [accountId]
+    );
+    const transfers = await ledgerCash([accountId]);
     // What the end of day will deduct: each day's total per fee type, rounded up to the cent
     const accruedFees = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
     for (const { fee_type, amount } of accruals) accruedFees[fee_type] = Math.round((accruedFees[fee_type] + roundFeeUp(Number(amount))) * 100) / 100;
