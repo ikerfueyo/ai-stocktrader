@@ -5,6 +5,7 @@ import { UpstreamError } from "./httpError";
 import { rateLimiter } from "./rateLimit";
 import { roundPrice, type Dividend, type Split } from "./account";
 import { easternParts, easternTime, marketStatus, parseEasternTimestamp, sessionOn } from "../marketHours";
+import { isOptionSymbol } from "../options";
 import type { EpsEstimate, NextReport, QuarterResult } from "./earnings";
 import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, MarketMovers, Mover, Quote, QuoteDelay, SymbolMatch } from "../types";
 
@@ -220,7 +221,18 @@ const dailyQuote = async (ticker: string): Promise<Quote> => {
 
 // Quotes for several tickers from the bulk realtime endpoints (100 symbols per call), with quoted bid/ask when the plan has it.
 // A ticker the bulk reply leaves out, or every ticker when the plan lacks the endpoint, falls back to dailyQuote.
-const loadQuotes = (tickers: string[]): Map<string, Promise<Quote>> => {
+const loadQuotes = (requested: string[]): Map<string, Promise<Quote>> => {
+    // Option contracts are quoted by the registered source (./marketData/options.ts)
+    const options = requested.filter(isOptionSymbol);
+    const tickers = requested.filter(ticker => !isOptionSymbol(ticker));
+    if (options.length > 0) {
+        const quoted = loadQuotes(tickers);
+        for (const symbol of options) {
+            quoted.set(symbol, optionQuoteSource.fetch ? optionQuoteSource.fetch(symbol) : Promise.reject(new UpstreamError(`Option quotes aren't available for ${symbol}`)));
+        }
+        return quoted;
+    }
+    if (tickers.length === 0) return new Map();
     if (!isAvailable("REALTIME_BULK_QUOTES")) {
         return new Map(tickers.map(ticker => [ticker, dailyQuote(ticker)]));
     }
@@ -260,6 +272,42 @@ const loadQuotes = (tickers: string[]): Map<string, Promise<Quote>> => {
         }
     }
     return results;
+};
+
+// Where option contracts' quotes come from (./marketData/options.ts registers it when loaded), kept out of this module so it doesn't
+// import the option model, which imports this module
+const optionQuoteSource = singleton("optionQuoteSource", () => ({ fetch: null as ((symbol: string) => Promise<Quote>) | null }));
+export const registerOptionQuotes = (fetch: (symbol: string) => Promise<Quote>) => {
+    optionQuoteSource.fetch = fetch;
+};
+
+// One contract of an option chain as Alpha Vantage gives it (HISTORICAL_OPTIONS: the last session's close; REALTIME_OPTIONS: now)
+export interface OptionChainRow {
+    contractID: string; symbol: string; expiration: string; strike: string; type: "call" | "put"; last: string; mark: string; bid: string; bid_size: string;
+    ask: string; ask_size: string; volume: string; open_interest: string; date: string; implied_volatility?: string; delta?: string; gamma?: string;
+    theta?: string; vega?: string;
+}
+
+const realtimeChainCache = singleton("realtimeOptionChains", () => new Map<string, CacheEntry<OptionChainRow[]>>());
+const historicalChainCache = singleton("historicalOptionChains", () => new Map<string, CacheEntry<OptionChainRow[]>>());
+
+// An underlying's option chain: REALTIME_OPTIONS with Greeks when the plan includes it (the 600-a-minute plans; cached 15s), else
+// HISTORICAL_OPTIONS, the last session's closing chain with implied volatility and Greeks (cached an hour; it changes once a day)
+export const fetchOptionChainRows = async (underlying: string): Promise<{ rows: OptionChainRow[]; realtime: boolean }> => {
+    const symbol = underlying.toUpperCase();
+    if (isAvailable("REALTIME_OPTIONS")) {
+        try {
+            const rows = await cachePromise(realtimeChainCache, symbol, QUOTE_CACHE_MS, async () =>
+                (await fetchAlphaVantage<{ data: OptionChainRow[] }>({ function: "REALTIME_OPTIONS", symbol, require_greeks: "true", ...REALTIME }, "data")).data);
+            return { rows, realtime: true };
+        } catch (error) {
+            markUnavailable("REALTIME_OPTIONS", error);
+            if (!(error instanceof NotEntitledError)) throw error;
+        }
+    }
+    const rows = await cachePromise(historicalChainCache, symbol, 3600000, async () =>
+        (await fetchAlphaVantage<{ data: OptionChainRow[] }>({ function: "HISTORICAL_OPTIONS", symbol }, "data")).data);
+    return { rows, realtime: false };
 };
 
 // The latest quote for each ticker, in order, as promises (one ticker failing doesn't fail the others). Cached tickers are reused;

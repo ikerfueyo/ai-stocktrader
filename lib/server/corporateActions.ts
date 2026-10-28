@@ -1,4 +1,5 @@
 import "server-only";
+import { isOptionSymbol } from "../options";
 import pool from "./db";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { fetchAlpacaCorporateActions, fetchCorporateActions, isAlpacaConfigured } from "./marketData";
@@ -64,7 +65,10 @@ const syncTicker = (ticker: string) => cachePromise(syncs, ticker, 60000, async 
 // The stored splits and cash dividends of these tickers (the other actions are applied to accounts by the broker). Tickers never fetched are fetched first, and so are refreshTickers (the open
 // positions) checked more than a day ago, so a split is in place before the account is valued or traded. A failure is logged and
 // the ticker listed in unsynced (replayed with what's stored, possibly nothing) until a later request succeeds.
-export const loadCorporateActions = async (tickers: string[], refreshTickers: string[] = []): Promise<{ splits: Split[]; dividends: Dividend[]; unsynced: string[] }> => {
+export const loadCorporateActions = async (allTickers: string[], allRefreshTickers: string[] = []): Promise<{ splits: Split[]; dividends: Dividend[]; unsynced: string[] }> => {
+    // Option contracts have no corporate actions of their own (an adjusted contract is a new, non-standard one, which isn't offered)
+    const tickers = allTickers.filter(ticker => !isOptionSymbol(ticker));
+    const refreshTickers = allRefreshTickers.filter(ticker => !isOptionSymbol(ticker));
     if (tickers.length === 0) return { splits: [], dividends: [], unsynced: [] };
     const { rows: checked } = await pool.query<{ ticker: string; checked_at: Date }>(
         "SELECT ticker, checked_at FROM corporate_actions_checked WHERE ticker = ANY($1)", [tickers]

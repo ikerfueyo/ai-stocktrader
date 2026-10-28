@@ -108,6 +108,31 @@ describe("Margin calls and liquidation", () => {
         assert.deepEqual(planLiquidation([position("FRC", 2.5, 100)], 10, { type: "regt", equity: 100 }), [{ symbol: "FRC", side: "sell", qty: 0.21 }]);
     });
 
+    // F at $11.73 (30% maintenance), a $10 put and a $13 call on it, both Nov 20, 2026
+    const option = (symbol: string, qty: number, price: number): MarginPosition => ({ symbol, qty, price, asset: null, multiplier: 100, option: true });
+    const PUT = "F261120P00010000", CALL = "F261120C00013000";
+
+    test("liquidation buys back short options when that releases the most per dollar", () => {
+        // Each short put needs its $1,000 strike and costs $5 to buy back; the shares release 30% of their value
+        const positions = [position("F", 100, 11.73), option(PUT, -2, 0.05)];
+        assert.deepEqual(planLiquidation(positions, 500, { type: "maintenance", equity: 1000 }), [{ symbol: PUT, side: "buy", qty: 1 }], "one contract covers $525");
+        assert.deepEqual(planLiquidation(positions, 1500, { type: "maintenance", equity: 1000 }), [{ symbol: PUT, side: "buy", qty: 2 }]);
+    });
+
+    test("shares covering a short call are only sold after the call is bought back", () => {
+        const covered = [position("F", 100, 11.73), option(CALL, -1, 0.1)];
+        assert.deepEqual(planLiquidation(covered, 300, { type: "maintenance", equity: 1000 }), [
+            { symbol: CALL, side: "buy", qty: 1 }, { symbol: "F", side: "sell", qty: 100 }
+        ]);
+        // Shares beyond what the call needs are sold on their own
+        assert.deepEqual(planLiquidation([position("F", 150, 11.73), option(CALL, -1, 0.1)], 100, { type: "maintenance", equity: 1000 }), [{ symbol: "F", side: "sell", qty: 30 }]);
+    });
+
+    test("with equity gone, short options close first, then everything else", () => {
+        const trades = planLiquidation([position("F", 100, 11.73), option(CALL, -1, 0.1), option(PUT, -1, 0.05)], 10, { type: "maintenance", equity: -5 });
+        assert.deepEqual(trades.map(({ symbol, side }) => `${side} ${symbol}`), [`buy ${CALL}`, `buy ${PUT}`, "sell F"]);
+    });
+
     test("shorting needs the margin agreement, shorting on and $2,000", () => {
         assert.match(shortingBlocked({ hasMarginAgreement: false, noShorting: false, equity: 5000 })!, /margin account/);
         assert.match(shortingBlocked({ hasMarginAgreement: true, noShorting: true, equity: 5000 })!, /turned off/);

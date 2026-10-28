@@ -20,6 +20,7 @@ import { postDividends } from "./portfolio";
 import { notifyNewDocuments, startEventConsumer } from "./automation/events";
 import { runRecurring } from "./automation/recurring";
 import { checkAlerts } from "./automation/alerts";
+import { closeUnexercisable, processExpirations } from "./broker/sim/optionEvents";
 
 // The background jobs, checked every SIM_ORDER_MATCH_MS (default 5s). Each job is due every ORDER_MATCH_INTERVAL_MS (default 30s),
 // every everyMs of its own, or at daily Eastern times (isSlotDue, so a run missed while the server was down happens when it's back). Jobs that write shared data run only in the
@@ -122,6 +123,10 @@ export const JOBS: Job[] = [
     { name: "eod", slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
     // Corporate actions apply before the pre-market opens (reading an account, and every order match, apply them too)
     { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
+    // Options expiring today that the account couldn't exercise are sold in the hour before expiry; after the close, expired options
+    // are exercised, assigned or expire, and short calls likely assigned before tomorrow's ex-dates are assigned early
+    { name: "expiring-options", slots: ["15:00"], leaderOnly: true, run: () => closeUnexercisable() },
+    { name: "options-expiration", slots: ["16:45"], leaderOnly: true, run: () => processExpirations() },
     // Documents that are due: the previous trading day's confirmations, statements after a month's first weekend, 1099s from Feb 15
     { name: "documents", slots: ["06:30"], leaderOnly: true, run: async () => ({ made: await generateAllDocuments(), notified: await notifyNewDocuments() }) },
     // The app's consumer of the broker's events (notifications and dividend reinvestment), started once in the leader

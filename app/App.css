@@ -1726,3 +1726,180 @@ header a.header-pill.withdraw:hover {
     overflow-x: auto;
   }
 }
+
+/* Options: the Trading page's chain, ticket and spread builder, and option positions */
+.options-panel {
+  margin: 16px 0;
+  text-align: left;
+}
+
+.options-toggle {
+  border: none;
+  background: none;
+  font-size: 1.25rem;
+  font-weight: bold;
+  padding: 0;
+  color: #343a40;
+}
+
+.options-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.options-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.options-toolbar select {
+  width: auto;
+}
+
+.options-level,
+.options-source {
+  font-size: 13px;
+  color: #6c757d;
+}
+
+.option-chain-wrapper {
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.option-chain {
+  font-size: 13px;
+  text-align: center;
+  margin: 0;
+}
+
+.option-chain thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+}
+
+.option-chain .chain-side {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #00a5a8;
+}
+
+.option-chain .chain-strike {
+  background: #f1f3f5;
+  font-weight: bold;
+}
+
+.option-chain td.itm {
+  background: #eefafa;
+}
+
+.chain-quote {
+  border: 1px solid transparent;
+  background: none;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chain-quote.bid {
+  color: #dc3545;
+}
+
+.chain-quote.ask {
+  color: #28a745;
+}
+
+.chain-quote:hover,
+.chain-quote.active {
+  border-color: currentColor;
+}
+
+.option-ticket {
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+}
+
+.option-ticket-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.option-ticket-header .btn-link {
+  margin-left: auto;
+}
+
+.option-ticket .order-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.option-ticket .order-entry select {
+  width: auto;
+}
+
+.option-ticket .order-entry label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.option-ticket .order-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.spread-legs td {
+  vertical-align: middle;
+}
+
+.spread-legs select {
+  width: auto;
+}
+
+.option-dte {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #fff3cd;
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.exercise-btn {
+  margin-left: 6px;
+  border: 1px solid #00a5a8;
+  background: #fff;
+  color: #00a5a8;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 13px;
+}
+
+.order-leg-name {
+  font-size: 13px;
+}
+
+.spread-legs .quantity-input {
+  width: 3rem;
+}
+
+.spread-legs td:nth-child(3) {
+  min-width: 10rem;
+}

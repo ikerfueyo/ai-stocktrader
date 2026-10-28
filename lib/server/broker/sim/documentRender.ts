@@ -16,7 +16,7 @@ export interface ConfirmationFill {
     qty: number;
     price: number;
     principal: number;
-    fees: { REG: number; TAF: number; CAT: number };
+    fees: { REG: number; TAF: number; CAT: number; ORF?: number; OCC?: number };
     settleDate: string | null;
     orderId: string | null;
     liquidation: boolean;
@@ -85,7 +85,7 @@ const holderBlock = (holder: Holder) => `
 
 const confirmation = (payload: TradeConfirmationPayload) => {
     const rows = payload.fills.map(fill => {
-        const fees = fill.fees.REG + fill.fees.TAF + fill.fees.CAT;
+        const fees = fill.fees.REG + fill.fees.TAF + fill.fees.CAT + (fill.fees.ORF ?? 0) + (fill.fees.OCC ?? 0);
         return [escape(time(fill.time)), `<strong>${fill.side === "buy" ? "Bought" : "Sold"}</strong>${fill.liquidation ? " <span class=\"muted\">(liquidation)</span>" : ""}`,
             escape(fill.symbol), escape(qty(fill.qty)), escape(price(fill.price)), escape(money(fill.principal)), escape(fees > 0 ? `$${fees.toFixed(6).replace(/0+$/, "")}` : "$0"),
             escape(fill.settleDate ?? ""), escape(fill.orderId ? fill.orderId.slice(0, 8) : "")];

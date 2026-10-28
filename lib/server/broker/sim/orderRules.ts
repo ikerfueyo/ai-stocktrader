@@ -54,6 +54,8 @@ export interface OrderContext {
     // The account's other open orders in the symbol
     openOrders: OpenOrderSummary[];
     configurations: { fractional_trading?: boolean; no_shorting?: boolean };
+    // Long shares that cover short calls (./options.ts sharesCoveringCalls), which can't be sold while they do
+    lockedShares?: number;
 }
 
 const invalid = (message: string) => new BrokerError(422, 40010001, message);
@@ -259,7 +261,7 @@ export const validateOrder = (spec: OrderSpec, context: OrderContext, { groupId 
     // An order can't go through zero: against a position it closes no more than the shares the other open orders don't already hold
     // (a *_to_close order is capped at the position when it fills, so it only needs some to be available)
     if (closesPosition(side, context.position)) {
-        const available = Math.max(0, Math.abs(context.position) - heldByOrders(spec, context));
+        const available = Math.max(0, Math.abs(context.position) - heldByOrders(spec, context) - (side === "sell" ? context.lockedShares ?? 0 : 0));
         const requested = qty ?? (context.price ? notional! / context.price : 0);
         const capped = spec.positionIntent?.endsWith("_to_close");
         if (capped ? available <= 1e-9 : requested > available + 1e-9) {

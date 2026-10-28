@@ -14,6 +14,7 @@ import { applyFill, isLongTerm, positionsFromLots, type Lot } from "./ledger";
 import { applyActionToLots, type CorporateAction, type CorporateActionType, type LotEffect } from "./corporateActions";
 import { FEE_DESCRIPTIONS, feesFor, roundFeeUp, type FeeAccrual } from "./feeSchedule";
 import { assetId, type SimAccountRow, type SimActivityRow } from "./shapes";
+import { contractMultiplier, contractName } from "../../../options";
 import { toAlpacaPosition } from "./tradeAccount";
 import type { Position as AlpacaPosition } from "../types";
 import type { Position, Quote } from "../../../types";
@@ -166,13 +167,14 @@ export const positionQty = async (db: Db, accountId: string, symbol: string): Pr
     positionsFromLots(await openLots(db, accountId, symbol)).find(({ ticker }) => ticker === symbol)?.quantity ?? 0;
 
 // The account's fills as trades to replay (oldest first, quantities as filled), for dividends and the equity history, with the shares
-// corporate actions moved as trades at no cost (shares received as buys, removed as sells; their cash is in the cash ledger) and the
-// trades before a symbol change under the new symbol. Splits are replayed from the stored splits.
+// corporate actions moved as trades at no cost (shares received as buys, removed as sells; their cash is in the cash ledger), option
+// contracts an exercise, assignment or expiry closed (likewise), and the trades before a symbol change under the new symbol. Splits are
+// replayed from the stored splits.
 export const fillsAsTrades = async (db: Db, accountId: string): Promise<Trade[]> => {
     const [{ rows }, renames] = await Promise.all([
         db.query<{ activity_type: string; activity_sub_type: string | null; symbol: string; side: string | null; price: string | null; qty: string; net_amount: string; created_at: Date }>(
             `SELECT activity_type, activity_sub_type, symbol, side, price, qty, net_amount, created_at FROM sim_activities
-             WHERE account_id = $1 AND (activity_type = 'FILL' OR (activity_type IN ('MA', 'SPIN', 'REORG', 'CIL') AND qty <> 0) OR (activity_type = 'DIV' AND activity_sub_type = 'SDIV'))
+             WHERE account_id = $1 AND (activity_type = 'FILL' OR (activity_type IN ('MA', 'SPIN', 'REORG', 'CIL', 'OPEXP', 'OPEXC', 'OPASN') AND qty <> 0) OR (activity_type = 'DIV' AND activity_sub_type = 'SDIV'))
              ORDER BY created_at, id`, [accountId]
         ),
         appliedRenames(db, accountId)
@@ -218,9 +220,12 @@ export interface FillRequest {
     side: "buy" | "sell";
     qty: number;
     price: number;
-    // What the fill pays or receives, rounded to the cent
+    // What the fill pays or receives, rounded to the cent (qty × price × the contract multiplier for an option)
     total: number;
-    reason?: "LIQUIDATION";
+    // LIQUIDATION for orders meeting a margin call; EXERCISE and ASSIGNMENT for the shares an option delivers
+    reason?: "LIQUIDATION" | "EXERCISE" | "ASSIGNMENT";
+    // The price the lots use when it differs from the cash price: the strike with an exercised or assigned option's premium rolled in
+    lotPrice?: number;
     quoteTime?: string | null;
     fillPolicy?: string;
     legacyOrderId?: number;
@@ -248,10 +253,14 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     await applyCorporateActions(db, accountId, [symbol], at);
     const lots = await openLots(db, accountId, symbol);
     const newLotId = randomUUID();
-    const { closings, opened, realized } = applyFill(lots, { side: fill.side, qty: fill.qty, price: fill.price, at: at.toISOString() }, newLotId, symbol);
+    const multiplier = contractMultiplier(symbol);
+    const lotPrice = fill.lotPrice ?? fill.price;
+    const { closings, opened, realized } = applyFill(lots, { side: fill.side, qty: fill.qty, price: lotPrice, at: at.toISOString() }, newLotId, symbol, multiplier);
     const day = dayOf(at);
     const verb = fill.side === "buy" ? "Bought" : "Sold";
-    const description = `${verb} ${parseFloat(fill.qty.toFixed(9))} ${symbol} at $${fill.price}${fill.reason === "LIQUIDATION" ? " (collateral buy-in)" : ""}`;
+    const what = multiplier > 1 ? `${parseFloat(fill.qty.toFixed(9))} ${contractName(symbol)}` : `${parseFloat(fill.qty.toFixed(9))} ${symbol}`;
+    const why = fill.reason === "LIQUIDATION" ? " (margin call liquidation)" : fill.reason === "EXERCISE" ? " (option exercise)" : fill.reason === "ASSIGNMENT" ? " (option assignment)" : "";
+    const description = `${verb} ${what} at $${fill.price}${why}`;
     const { rows: [row] } = await db.query<SimActivityRow>(
         `INSERT INTO sim_activities (id, account_id, activity_type, "date", created_at, net_amount, description, symbol, qty, side, price, leaves_qty, cum_qty,
                                      realized_pl, settle_date, reason, quote_time, fill_policy, legacy_order_id, order_id)
@@ -266,7 +275,7 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
         await db.query("UPDATE sim_lots SET qty = qty - $2 WHERE id = $1", [closing.lotId, closing.qty]);
         await db.query(
             `INSERT INTO sim_lot_closings (account_id, lot_id, fill_id, qty, lot_price, close_price, realized, closed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [accountId, closing.lotId, row.id, closing.qty, lot.price, fill.price, roundCents(closing.realized).toFixed(2), at]
+            [accountId, closing.lotId, row.id, closing.qty, lot.price, lotPrice, roundCents(closing.realized).toFixed(2), at]
         );
     }
     if (opened) {
@@ -277,10 +286,12 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     }
     // Backup withholding on the gross proceeds of the shares it closed (a long's sale price, a short's original sale price)
     if (closings.length > 0) {
-        const proceeds = closings.reduce((sum, closing) => sum + closing.qty * (fill.side === "sell" ? fill.price : lots.find(({ id }) => id === closing.lotId)!.price), 0);
+        const proceeds = closings.reduce((sum, closing) => sum + closing.qty * multiplier * (fill.side === "sell" ? lotPrice : lots.find(({ id }) => id === closing.lotId)!.price), 0);
         await withhold(db, accountId, { amount: roundCents(proceeds), on: "proceeds", symbol, at });
     }
-    for (const { type, amount } of feesFor({ side: fill.side, qty: fill.qty, price: fill.price, date: day })) {
+    // Shares an exercise or assignment delivers aren't an exchange trade, so they pay no transaction fees
+    const fees = fill.reason === "EXERCISE" || fill.reason === "ASSIGNMENT" ? [] : feesFor({ side: fill.side, qty: fill.qty, price: fill.price, date: day, multiplier });
+    for (const { type, amount } of fees) {
         await db.query(`INSERT INTO sim_fee_accruals (account_id, "date", fee_type, amount, fill_id) VALUES ($1, $2, $3, $4, $5)`, [accountId, day, type, amount, row.id]);
     }
     if (!fill.orderId) {
@@ -315,7 +326,7 @@ export const ledgerState = async (db: Db, accountId: string, now = new Date()) =
         ledgerCash([accountId])
     ]);
     // What the end of day will deduct: each day's total per fee type, rounded up to the cent
-    const accruedFees = { REG: 0, TAF: 0, CAT: 0 };
+    const accruedFees = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
     for (const { fee_type, amount } of accruals) accruedFees[fee_type] = Math.round((accruedFees[fee_type] + roundFeeUp(Number(amount))) * 100) / 100;
     return {
         positions: positionsFromLots(lots),
@@ -371,7 +382,7 @@ export const listLots = async (accountId: string, symbol?: string) => {
     );
     return rows.map(row => ({
         id: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty), originalQty: Number(row.original_qty), price: Number(row.price),
-        costBasis: roundCents(Number(row.qty) * Number(row.price)), acquiredAt: row.acquired_at.toISOString(), longTerm: isLongTerm(row.acquired_at.toISOString(), now)
+        costBasis: roundCents(Number(row.qty) * Number(row.price) * contractMultiplier(row.symbol)), acquiredAt: row.acquired_at.toISOString(), longTerm: isLongTerm(row.acquired_at.toISOString(), now)
     }));
 };
 

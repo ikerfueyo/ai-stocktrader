@@ -306,6 +306,14 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - Manual exercise endpoint.
 - **UI:** an option chain on the Trading page (expiry picker, calls and puts, Greeks), an option ticket and spread builder, option positions with days to expiration (DTE) and exercise, and options lines on 1099-B.
 
+- **As built (done):** `lib/options.ts`, `lib/server/broker/sim/options.ts` (rules), `optionOrders.ts` (orders), `optionEvents.ts` (exercise, assignment, expiration), `lib/server/marketData/options.ts` (chains and quotes), and the Trading page's `OptionsPanel` (CLAUDE.md has the details). Where it differs from the plan above:
+  - Data: the Alpha Vantage plan lacks `REALTIME_OPTIONS` (it needs the 600-a-minute plan) and no Alpaca keys are set, so the chain is Alpha Vantage's `HISTORICAL_OPTIONS` (the last close, with implied volatility and Greeks) and each quote is modeled now: the closing mark moved by Black-Scholes at the contract's implied volatility as the stock moves, the closing spread around it. `REALTIME_OPTIONS` is used as is when the plan includes it. Alpaca's indicative feed isn't wired in.
+  - Orders: market, limit, stop and stop limit, day or GTC, whole contracts; mleg orders market or limit, 2 to 4 legs of one underlying, every opening short leg covered within the order, filled all at once at each leg's quote. Option orders fill in full (no liquidity cap). Mleg orders can't be replaced. Expiring contracts take no orders after 3:15 p.m. ET.
+  - Buying power: the universal spread rule per underlying (long shares cover calls); options buying power is non-marginable buying power; long options are paid in full. A cash account's buying power is cash less the option requirement.
+  - Expiration: in-the-money longs the account can't exercise are sold at 3:00 p.m. ET; after the close (4:45 p.m.) contracts are exercised, assigned or expire at the stock's price then; a long put without the shares expires. Positions that missed their run are settled at the stock's current price. Short calls are assigned early when their time value is below the next day's dividend.
+  - Fees: ORF $0.015 and OCC $0.025 per contract, the options TAF and CAT are from reports of Alpaca's Oct 12, 2026 schedule, not yet confirmed. Adjusted (non-standard) contracts after corporate actions aren't offered.
+  - A liquidation weighs each close by the requirement it releases on the whole account (short options' requirement is their underlying's), buys back short calls before selling the shares covering them, and closes short options first when equity is gone.
+
 ### Phase 10: IRAs (traditional and Roth)
 - Verify Alpaca's IRA docs first (they appeared recently and their details aren't confirmed).
 - **Account kind:** a separate account per IRA with its own application (beneficiaries, IRA agreement).

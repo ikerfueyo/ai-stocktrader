@@ -31,8 +31,9 @@ export interface Closing {
 
 // Applies a fill to a symbol's open lots, oldest first: a buy closes short lots and a sell long ones, FIFO, and whatever's left
 // opens a new lot on the fill's side (newLotId). Returns the open lots after the fill, what it closed, the lot it opened, and the
-// P&L it realized. A symbol has lots on one side only.
-export const applyFill = (lots: Lot[], fill: FillInput, newLotId: string, symbol: string): { lots: Lot[]; closings: Closing[]; opened: Lot | null; realized: number } => {
+// P&L it realized (in dollars: × multiplier, the contract's shares, for an option whose qty is in contracts and prices per share). A
+// symbol has lots on one side only.
+export const applyFill = (lots: Lot[], fill: FillInput, newLotId: string, symbol: string, multiplier = 1): { lots: Lot[]; closings: Closing[]; opened: Lot | null; realized: number } => {
     const closingSide = fill.side === "buy" ? "short" : "long";
     const ordered = [...lots].sort((a, b) => a.acquiredAt.localeCompare(b.acquiredAt) || a.id.localeCompare(b.id));
     const remaining: Lot[] = [];
@@ -44,7 +45,7 @@ export const applyFill = (lots: Lot[], fill: FillInput, newLotId: string, symbol
             continue;
         }
         const qty = Math.min(lot.qty, left);
-        const realized = (lot.side === "long" ? fill.price - lot.price : lot.price - fill.price) * qty;
+        const realized = (lot.side === "long" ? fill.price - lot.price : lot.price - fill.price) * qty * multiplier;
         closings.push({ lotId: lot.id, qty: round9(qty), price: lot.price, realized });
         left = round9(left - qty);
         const rest = round9(lot.qty - qty);

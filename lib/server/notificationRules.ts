@@ -2,6 +2,7 @@
 // Alpaca's shapes (the simulator's sim_events, Alpaca's SSE later). Pure, so it can be unit tested; lib/server/notifications.ts stores
 // them. Events the user caused and sees at once (an order placed or cancelled, a deposit requested) and routine ones (regulatory
 // fees, each step of a transfer) don't notify.
+import { contractName, parseOptionSymbol } from "../options";
 
 export const NOTIFICATION_KINDS = ["orders", "transfers", "account", "margin", "dividends", "corporate_actions", "documents", "alerts", "recurring"] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -30,7 +31,7 @@ export interface BrokerEventLike {
 const money = (value: unknown) => `$${Math.abs(Number(value)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const shares = (value: unknown) => Number(value).toLocaleString("en-US", { maximumFractionDigits: 6 });
 
-type OrderLike = { id?: string; client_order_id?: string; side?: string; symbol?: string; qty?: string | null; notional?: string | null; filled_qty?: string; filled_avg_price?: string | null; type?: string; limit_price?: string | null; stop_price?: string | null };
+type OrderLike = { id?: string; client_order_id?: string; order_class?: string; legs?: OrderLike[] | null; ratio_qty?: string; side?: string; symbol?: string; qty?: string | null; notional?: string | null; filled_qty?: string; filled_avg_price?: string | null; type?: string; limit_price?: string | null; stop_price?: string | null };
 
 // Which kind an order's events are: the simulator's own liquidations, recurring buys and reinvested dividends by their client order ID
 const orderKind = (order: OrderLike): NotificationKind => {
@@ -40,8 +41,19 @@ const orderKind = (order: OrderLike): NotificationKind => {
     return "orders";
 };
 
+// A stock's symbol, or an option contract's name
+const nameOf = (symbol: string | undefined) => symbol ? contractName(symbol) : "";
+
+// An mleg order: its underlying and legs ("F spread: buy 1 F Nov 20 2026 12 Call, sell 1 F Nov 20 2026 13 Call")
+const spreadLabel = (order: OrderLike) => {
+    const legs = order.legs ?? [];
+    const underlying = parseOptionSymbol(legs[0]?.symbol ?? "")?.underlying ?? "Option";
+    return `${underlying} spread: ${legs.map(leg => `${leg.side} ${leg.ratio_qty ?? 1} ${nameOf(leg.symbol)}`).join(", ")}`;
+};
+
 const orderLabel = (order: OrderLike) => {
-    const size = order.qty ? `${shares(order.qty)} ${order.symbol}` : order.notional ? `${money(order.notional)} of ${order.symbol}` : order.symbol ?? "";
+    if (order.order_class === "mleg") return `${spreadLabel(order)} × ${shares(order.qty)}`;
+    const size = order.qty ? `${shares(order.qty)} ${nameOf(order.symbol)}` : order.notional ? `${money(order.notional)} of ${order.symbol}` : order.symbol ?? "";
     const price = order.type === "limit" ? ` limit ${money(order.limit_price)}` : order.type === "stop" ? ` stop ${money(order.stop_price)}` : order.type === "stop_limit" ? ` stop ${money(order.stop_price)} limit ${money(order.limit_price)}` : "";
     return `${order.side === "sell" ? "Sell" : "Buy"} ${size}${price}`;
 };
@@ -66,10 +78,14 @@ export const notificationFor = (event: BrokerEventLike): NotificationDraft | nul
         switch (payload.event) {
             case "fill":
             case "partial_fill": {
+                if (order.order_class === "mleg") {
+                    const net = Number(payload.price);
+                    return { kind, title: `Spread filled at ${money(net)} ${net >= 0 ? "debit" : "credit"}`, body: `${spreadLabel(order)}, × ${shares(payload.qty)}`, link: "/transactions?tab=trades", dedupeKey };
+                }
                 const partial = payload.event === "partial_fill";
                 const verb = order.side === "sell" ? "Sold" : "Bought";
-                const title = kind === "margin" ? `Liquidated to meet a margin call: ${verb.toLowerCase()} ${shares(payload.qty)} ${order.symbol}`
-                    : `${partial ? "Partly filled: " : ""}${verb} ${shares(payload.qty)} ${order.symbol} at ${money(payload.price)}`;
+                const title = kind === "margin" ? `Liquidated to meet a margin call: ${verb.toLowerCase()} ${shares(payload.qty)} ${nameOf(order.symbol)}`
+                    : `${partial ? "Partly filled: " : ""}${verb} ${shares(payload.qty)} ${nameOf(order.symbol)} at ${money(payload.price)}`;
                 const body = kind === "recurring" ? (order.client_order_id?.startsWith("drip-") ? "Dividend reinvested." : "Your recurring buy filled.")
                     : partial ? `${shares(order.filled_qty)} of ${shares(order.qty)} filled so far.` : "";
                 return { kind, title, body, link: "/transactions?tab=trades", dedupeKey };
@@ -118,13 +134,20 @@ export const notificationFor = (event: BrokerEventLike): NotificationDraft | nul
             ? { kind: "dividends", title: `Dividend received: ${money(amount)} from ${symbol}`, body: description, link: "/transactions?tab=cash", dedupeKey }
             : { kind: "dividends", title: `Dividend charged on your ${symbol} short: ${money(amount)}`, body: description, link: "/transactions?tab=cash", dedupeKey };
     }
+    // Options leaving the account: exercised, assigned or expired
+    if (type === "OPEXC" || type === "OPASN" || type === "OPEXP") {
+        const name = nameOf(symbol);
+        return type === "OPEXC" ? { kind: "orders", title: `Option exercised: ${name}`, body: "The shares were traded at the strike.", link: "/portfolio", dedupeKey }
+            : type === "OPASN" ? { kind: "orders", title: `Option assigned: ${name}`, body: "Your short contracts were assigned: the shares were delivered at the strike.", link: "/portfolio", dedupeKey }
+                : { kind: "orders", title: `Option expired: ${name}`, body: "It expired out of the money, worthless.", link: "/transactions?tab=activity", dedupeKey };
+    }
     if (type === "INT") return { kind: "dividends", title: `Margin interest charged: ${money(amount)}`, body: description, link: "/transactions?tab=cash", dedupeKey };
     if (type === "WH") return { kind: "dividends", title: `Backup withholding: ${money(amount)}`, body: description, link: "/settings", dedupeKey };
     if (type === "SPLIT" || type === "MA" || type === "SPIN" || type === "REORG" || type === "CIL" || (type === "DIV" && subType === "SDIV")) {
         return { kind: "corporate_actions", title: `Corporate action: ${description}`, body: "", link: "/transactions?tab=activity", dedupeKey };
     }
     // Fees other than the regulatory pass-throughs (wire, ACH return, locate and borrow fees)
-    if (type === "FEE" && !["REG", "TAF", "CAT"].includes(String(subType))) {
+    if (type === "FEE" && !["REG", "TAF", "CAT", "ORF", "OCC"].includes(String(subType))) {
         return { kind: "transfers", title: `Fee charged: ${money(amount)}`, body: description, link: "/transactions?tab=cash", dedupeKey };
     }
     return null;

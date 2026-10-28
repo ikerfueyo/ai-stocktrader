@@ -63,6 +63,19 @@ describe("Notifications from broker events", () => {
         assert.equal(trade({ event: "fill", qty: "0.5", price: "10", order: { side: "buy", symbol: "F", client_order_id: "drip-abc" } })!.body, "Dividend reinvested.");
     });
 
+    test("options: contracts by name, spreads, exercises, assignments and expiries", () => {
+        assert.equal(trade({ event: "fill", qty: "2", price: "0.4", order: { side: "buy", symbol: "F261120C00012000", client_order_id: "x" } })!.title, "Bought 2 F Nov 20 2026 12 Call at $0.40");
+        const spread = trade({ event: "fill", qty: "1", price: "-0.37", order: { order_class: "mleg", qty: "1", legs: [
+            { side: "buy", ratio_qty: "1", symbol: "F261120C00012000" }, { side: "sell", ratio_qty: "1", symbol: "F261120C00013000" }
+        ] } })!;
+        assert.equal(spread.title, "Spread filled at $0.37 credit");
+        assert.equal(spread.body, "F spread: buy 1 F Nov 20 2026 12 Call, sell 1 F Nov 20 2026 13 Call, × 1");
+        const nta = (payload: Record<string, unknown>) => notificationFor({ id: "n", stream: "nta", payload });
+        assert.equal(nta({ activity_type: "OPASN", symbol: "F261120P00010000", qty: "1" })!.title, "Option assigned: F Nov 20 2026 10 Put");
+        assert.equal(nta({ activity_type: "OPEXP", symbol: "F261120C00013000", qty: "-1" })!.title, "Option expired: F Nov 20 2026 13 Call");
+        assert.equal(nta({ activity_type: "FEE", activity_sub_type: "ORF", net_amount: "-0.02" }), null, "option regulatory fees don't notify");
+    });
+
     test("account status, margin calls, transfers and activities", () => {
         assert.equal(notificationFor({ id: "a", stream: "accounts", payload: { status_from: "APPROVED", status_to: "ACTIVE" } })!.title, "Your account is open");
         assert.equal(notificationFor({ id: "a", stream: "accounts", payload: { status_from: "", status_to: "SUBMITTED" } }), null);

@@ -11,6 +11,8 @@ import { ledgerState } from "./positions";
 import { computeMargin, effectiveMultiplier, shortingBlocked, type MarginPosition, type MarginState, type Session } from "./margin";
 import { reservedForOrders } from "./matching";
 import { toTradeAccount } from "./tradeAccount";
+import { totalOptionRequirement } from "./options";
+import { contractMultiplier, isOptionSymbol } from "../../../options";
 import type { SimAccountRow, SimOrderRow } from "./shapes";
 import type { AssetRow } from "../../universe";
 import type { TradeAccount } from "../types";
@@ -74,10 +76,20 @@ export interface MarginSnapshot {
     withdrawable: number;
 }
 
-// What the account's open orders hold back from buying power (reservedForOrders), leaving out exceptIds
+// What the account's open orders hold back from buying power (reservedForOrders), leaving out exceptIds. Option orders hold what was
+// worked out when they were placed (buying_power_held: the requirement they add plus any debit), for the part still to fill; an mleg
+// order's legs hold nothing of their own.
 export const reservedCash = async (db: Db, accountId: string, { positions, multiplier, exceptIds = [] }: { positions: { ticker: string; quantity: number }[]; multiplier: number; exceptIds?: string[] }): Promise<number> => {
     const { rows } = await db.query<SimOrderRow>("SELECT * FROM sim_orders WHERE account_id = $1 AND status = ANY($2)", [accountId, OPEN_ORDER_STATUSES]);
-    const open = rows.filter(({ id }) => !exceptIds.includes(id));
+    const kept = rows.filter(({ id, parent_id }) => !exceptIds.includes(id) && !(parent_id && exceptIds.includes(parent_id)));
+    const optionHeld = kept.filter(row => row.order_class === "mleg" || isOptionSymbol(row.symbol)).reduce((sum, row) => {
+        if (row.group_role === "leg" || row.buying_power_held === null || row.buying_power_held === undefined) return sum;
+        const qty = Number(row.qty ?? 0);
+        const left = qty > 0 ? Math.max(0, qty - Number(row.filled_qty)) / qty : 1;
+        return sum + Math.max(0, Number(row.buying_power_held)) * left;
+    }, 0);
+    const open = kept.filter(row => row.order_class !== "mleg" && !isOptionSymbol(row.symbol));
+    if (open.length === 0) return optionHeld;
     if (open.length === 0) return 0;
     const symbols = [...new Set(open.map(({ symbol }) => symbol))];
     const unpriced = [...new Set(open.filter(row => row.limit_price === null && row.stop_price === null && row.notional === null).map(({ symbol }) => symbol))];
@@ -86,7 +98,7 @@ export const reservedCash = async (db: Db, accountId: string, { positions, multi
         Promise.all(symbols.map(async symbol => [symbol, (await findAsset(symbol))?.marginable ?? null] as const))
     ]);
     const num = (value: string | null) => value === null ? null : Number(value);
-    return reservedForOrders(
+    return optionHeld + reservedForOrders(
         open.map(row => ({
             symbol: row.symbol, side: row.side, limitPrice: num(row.limit_price), stopPrice: num(row.stop_price), qty: num(row.qty), notional: num(row.notional),
             filledQty: Number(row.filled_qty), filledNotional: Number(row.filled_notional), held: row.status === "held"
@@ -113,14 +125,16 @@ export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds
     const assets = Object.fromEntries(assetList);
     const positions: MarginPosition[] = ledger.positions.map(({ ticker, quantity, avgCost }) => ({
         symbol: ticker, qty: quantity, price: prices[ticker] ?? avgCost,
-        asset: assets[ticker] ? { marginable: assets[ticker]!.marginable, marginRequirementLong: assets[ticker]!.marginRequirementLong, marginRequirementShort: assets[ticker]!.marginRequirementShort } : null
+        asset: assets[ticker] ? { marginable: assets[ticker]!.marginable, marginRequirementLong: assets[ticker]!.marginRequirementLong, marginRequirementShort: assets[ticker]!.marginRequirementShort } : null,
+        ...(isOptionSymbol(ticker) ? { multiplier: contractMultiplier(ticker), option: true } : {})
     }));
+    const optionRequirement = totalOptionRequirement(ledger.positions.map(({ ticker, quantity }) => ({ symbol: ticker, qty: quantity })));
     const cash = roundCents(ledger.cash - ledger.pendingTransferOut);
     const sessionNow = session ?? (market!.session as Session);
     const maxMultiplier = maxMultiplierOf(row);
-    const unreserved = computeMargin({ cash, positions, maxMultiplier, session: sessionNow });
+    const unreserved = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, optionRequirement });
     const reserved = await reservedCash(db, accountId, { positions: ledger.positions, multiplier: unreserved.multiplier, exceptIds: exceptOrderIds });
-    const state = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, reserved });
+    const state = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, reserved, optionRequirement });
     // Withdrawable: settled cash (less instant credit and sale proceeds not yet settled), no more than the excess over Reg T initial
     // margin less what open orders hold, and nothing during a margin call
     const settledCash = cash - ledger.unsettledInstant - ledger.unsettledProceeds;

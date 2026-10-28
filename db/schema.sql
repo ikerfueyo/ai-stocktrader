@@ -273,7 +273,7 @@ CREATE TABLE sim_orders (
     side VARCHAR(4) NOT NULL CHECK (side IN ('buy', 'sell')),
     "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('market', 'limit', 'stop', 'stop_limit', 'trailing_stop')),
     time_in_force VARCHAR(4) NOT NULL CHECK (time_in_force IN ('day', 'gtc', 'opg', 'cls', 'ioc', 'fok')),
-    order_class VARCHAR(8) NOT NULL DEFAULT 'simple' CHECK (order_class IN ('simple', 'bracket', 'oco', 'oto')),
+    order_class VARCHAR(8) NOT NULL DEFAULT 'simple' CHECK (order_class IN ('simple', 'bracket', 'oco', 'oto', 'mleg')),
     position_intent VARCHAR(16),
     qty NUMERIC(18, 9),
     notional NUMERIC(14, 2),
@@ -291,7 +291,11 @@ CREATE TABLE sim_orders (
     -- Bracket, OCO and OTO orders: the legs' parent, the group they share and each one's role
     parent_id UUID REFERENCES sim_orders(id),
     group_id UUID,
-    group_role VARCHAR(12) CHECK (group_role IN ('entry', 'take_profit', 'stop_loss')),
+    group_role VARCHAR(12) CHECK (group_role IN ('entry', 'take_profit', 'stop_loss', 'leg')),
+    -- An mleg order's leg: contracts per unit of the order
+    ratio_qty INTEGER,
+    -- What an option order holds back from buying power while open (its requirement plus any debit)
+    buying_power_held NUMERIC(14, 2),
     replaces UUID REFERENCES sim_orders(id),
     replaced_by UUID REFERENCES sim_orders(id),
     stop_triggered_at TIMESTAMPTZ,
@@ -388,7 +392,7 @@ CREATE TABLE sim_fee_accruals (
     id SERIAL PRIMARY KEY,
     account_id UUID NOT NULL REFERENCES sim_accounts(id),
     "date" DATE NOT NULL,
-    fee_type VARCHAR(4) NOT NULL CHECK (fee_type IN ('REG', 'TAF', 'CAT')),
+    fee_type VARCHAR(4) NOT NULL CHECK (fee_type IN ('REG', 'TAF', 'CAT', 'ORF', 'OCC')),
     amount NUMERIC(18, 8) NOT NULL,
     fill_id VARCHAR(64) NOT NULL REFERENCES sim_activities(id),
     deducted_by VARCHAR(64) REFERENCES sim_activities(id)
@@ -602,3 +606,12 @@ CREATE TABLE price_alerts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX price_alerts_active_idx ON price_alerts (status, symbol);
+
+-- Phase 9 (migration 021_options.sql): do-not-exercise instructions for long option contracts at expiration
+CREATE TABLE sim_option_instructions (
+    account_id UUID NOT NULL REFERENCES sim_accounts(id),
+    symbol VARCHAR(32) NOT NULL,
+    instruction VARCHAR(16) NOT NULL CHECK (instruction IN ('do_not_exercise')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, symbol)
+);

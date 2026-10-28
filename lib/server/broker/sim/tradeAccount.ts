@@ -3,6 +3,7 @@
 import type { AccountConfigurations, Position as AlpacaPosition, TradeAccount } from "../types";
 import type { Position } from "../../../types";
 import type { MarginState } from "./margin";
+import { contractMultiplier } from "../../../options";
 
 const money = (value: number) => (Math.round(value * 100) / 100).toFixed(2);
 const decimal = (value: number) => String(Math.round(value * 1e6) / 1e6);
@@ -17,7 +18,7 @@ export interface TradeAccountInput {
     multiplier: number;
     shortingEnabled: boolean;
     withdrawable: number;
-    accruedFees: { REG: number; TAF: number; CAT: number };
+    accruedFees: { REG: number; TAF: number; CAT: number; ORF?: number; OCC?: number };
     pendingTransferOut: number;
     // The last end-of-day snapshot (null before the first; its margin figures null before Phase 5's)
     last: {
@@ -30,7 +31,7 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
     const { account, state } = input;
     const { cash, longMarketValue, shortMarketValue } = state;
     const equity = cash + longMarketValue - shortMarketValue;
-    const accrued = input.accruedFees.REG + input.accruedFees.TAF + input.accruedFees.CAT;
+    const accrued = input.accruedFees.REG + input.accruedFees.TAF + input.accruedFees.CAT + (input.accruedFees.ORF ?? 0) + (input.accruedFees.OCC ?? 0);
     return {
         id: account.id,
         account_number: account.account_number,
@@ -61,7 +62,8 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
         multiplier: String(input.multiplier),
         shorting_enabled: input.shortingEnabled,
         options_approved_level: account.options_approved_level as TradeAccount["options_approved_level"],
-        options_trading_level: (account.configurations.max_options_trading_level ?? 0) as TradeAccount["options_trading_level"],
+        // The effective level: the lower of the approved one and the account's own maximum
+        options_trading_level: Math.min(account.options_approved_level, account.configurations.max_options_trading_level ?? 0) as TradeAccount["options_trading_level"],
         trading_blocked: account.trading_blocked,
         transfers_blocked: account.transfers_blocked,
         account_blocked: account.account_blocked,
@@ -80,20 +82,22 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
 };
 
 // A position as Alpaca returns it, from the lots' position, its asset and quote (price null without a current one: valued at cost)
+// (an option's quantity in contracts, its prices per share and its values × 100)
 export const toAlpacaPosition = (position: Position, asset: { id: string; exchange: string; marginable: boolean }, quote: { price: number | null; previousClose: number | null }): AlpacaPosition => {
     const qty = Math.abs(position.quantity);
     const sign = position.quantity < 0 ? -1 : 1;
+    const multiplier = contractMultiplier(position.ticker);
     const price = quote.price ?? position.avgCost;
     const lastday = quote.previousClose ?? price;
-    const costBasis = sign * qty * position.avgCost;
-    const marketValue = sign * qty * price;
+    const costBasis = sign * qty * position.avgCost * multiplier;
+    const marketValue = sign * qty * price * multiplier;
     const unrealized = marketValue - costBasis;
-    const intraday = sign * qty * (price - lastday);
+    const intraday = sign * qty * (price - lastday) * multiplier;
     return {
         asset_id: asset.id,
         symbol: position.ticker,
         exchange: asset.exchange,
-        asset_class: "us_equity",
+        asset_class: multiplier > 1 ? "us_option" : "us_equity",
         asset_marginable: asset.marginable,
         qty: decimal(sign * qty),
         qty_available: decimal(sign * qty),
@@ -104,7 +108,7 @@ export const toAlpacaPosition = (position: Position, asset: { id: string; exchan
         unrealized_pl: money(unrealized),
         unrealized_plpc: decimal(costBasis !== 0 ? unrealized / Math.abs(costBasis) : 0),
         unrealized_intraday_pl: money(intraday),
-        unrealized_intraday_plpc: decimal(lastday > 0 ? intraday / (qty * lastday) : 0),
+        unrealized_intraday_plpc: decimal(lastday > 0 ? intraday / (qty * lastday * multiplier) : 0),
         current_price: decimal(price),
         lastday_price: decimal(lastday),
         change_today: decimal(lastday > 0 ? price / lastday - 1 : 0)

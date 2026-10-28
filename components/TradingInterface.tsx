@@ -13,6 +13,7 @@ import EarningsDetails from "./EarningsDetails";
 import CorporateActions from "./CorporateActions";
 import TickerNews from "./TickerNews";
 import WatchlistStar from "./WatchlistStar";
+import OptionsPanel from "./OptionsPanel";
 import Link from "next/link";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { MarketStatus } from "@/lib/marketHours";
@@ -100,6 +101,7 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
                                 <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
                             ) : null}
                             <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
+                            <OptionsPanel ticker={ticker.toUpperCase()} />
                             <QuoteDetails ticker={ticker.toUpperCase()} data={data} quote={quote} />
                             <EarningsDetails ticker={ticker.toUpperCase()} />
                             <CorporateActions ticker={ticker.toUpperCase()} />

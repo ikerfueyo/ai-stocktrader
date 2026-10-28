@@ -5,6 +5,7 @@ import { BrokerError } from "../errors";
 import { fetchQuotes } from "../../marketData";
 import { positionsAt, roundCents, type Split } from "../../account";
 import { addDays, easternParts } from "../../../marketHours";
+import { contractMultiplier } from "../../../options";
 import { getAccount } from "./accounts";
 import { fillsAsTrades } from "./positions";
 import { subjectToBackupWithholding } from "./withholding";
@@ -64,13 +65,13 @@ const confirmationPayload = async (accountId: string, holder: Holder, day: strin
         `SELECT id, created_at, side, symbol, qty, price, net_amount, settle_date::text, order_id, reason FROM sim_activities WHERE account_id = $1 AND activity_type = 'FILL' AND "date" = $2 ORDER BY created_at, id`,
         [accountId, day]
     );
-    const { rows: fees } = await pool.query<{ fill_id: string; fee_type: "REG" | "TAF" | "CAT"; amount: string }>(
+    const { rows: fees } = await pool.query<{ fill_id: string; fee_type: "REG" | "TAF" | "CAT" | "ORF" | "OCC"; amount: string }>(
         "SELECT fill_id, fee_type, amount FROM sim_fee_accruals WHERE fill_id = ANY($1)", [rows.map(({ id }) => id)]
     );
     return {
         holder, tradeDate: day,
         fills: rows.map(row => {
-            const accrued = { REG: 0, TAF: 0, CAT: 0 };
+            const accrued = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
             for (const fee of fees.filter(({ fill_id }) => fill_id === row.id)) accrued[fee.fee_type] += Number(fee.amount);
             return {
                 time: row.created_at.toISOString(), side: row.side, symbol: row.symbol, qty: Number(row.qty), price: Number(row.price), principal: Math.abs(Number(row.net_amount)),
@@ -112,7 +113,7 @@ const statementPayload = async (accountId: string, holder: Holder, start: string
             realized: roundCents(activities.reduce((total, row) => total + Number(row.realized_pl ?? 0), 0))
         },
         activities: activities.map(row => ({ date: row.date, type: row.activity_type, description: row.description, amount: Number(row.net_amount) })),
-        positions: held.map(({ ticker, quantity, avgCost }) => ({ symbol: ticker, qty: quantity, avgCost, costBasis: roundCents(Math.abs(quantity) * avgCost) }))
+        positions: held.map(({ ticker, quantity, avgCost }) => ({ symbol: ticker, qty: quantity, avgCost, costBasis: roundCents(Math.abs(quantity) * avgCost * contractMultiplier(ticker)) }))
     };
 };
 
@@ -121,7 +122,8 @@ const taxInputs = async (accountId: string) => {
     const [{ rows: closings }, { rows: lots }, { rows: cash }] = await Promise.all([
         pool.query<{ id: number; lot_id: string; qty: string; lot_price: string; close_price: string; closed_at: Date; side: "long" | "short"; acquired_at: Date; activity_type: string; symbol: string }>(
             `SELECT c.id, c.lot_id, c.qty, c.lot_price, c.close_price, c.closed_at, l.side, l.acquired_at, a.activity_type, COALESCE(a.symbol, l.symbol) AS symbol
-             FROM sim_lot_closings c JOIN sim_lots l ON l.id = c.lot_id JOIN sim_activities a ON a.id = c.fill_id WHERE c.account_id = $1 AND c.qty > 0`, [accountId]
+             FROM sim_lot_closings c JOIN sim_lots l ON l.id = c.lot_id JOIN sim_activities a ON a.id = c.fill_id
+             WHERE c.account_id = $1 AND c.qty > 0 AND a.activity_type NOT IN ('OPEXC', 'OPASN')`, [accountId]
         ),
         // Purchases (lots a fill opened) can replace shares sold at a loss; lots a corporate action opened can't
         pool.query<{ id: string; symbol: string; side: "long" | "short"; qty: string; price: string; acquired_at: Date }>(
@@ -132,11 +134,13 @@ const taxInputs = async (accountId: string) => {
         )
     ]);
     const kinds: Record<string, Disposal["kind"]> = { FILL: "sale", MA: "merger", CIL: "cash_in_lieu", REORG: "worthless" };
+    // Option contracts are counted in shares (× 100), as their prices are per share; an exercised or assigned contract isn't a
+    // disposal (its premium is in the shares' basis or proceeds), and an expired one is reported as sold for nothing
     const disposals: Disposal[] = closings.map(row => ({
-        id: String(row.id), lotId: row.lot_id, symbol: row.symbol, side: row.side, qty: Number(row.qty), lotPrice: Number(row.lot_price), price: Number(row.close_price),
+        id: String(row.id), lotId: row.lot_id, symbol: row.symbol, side: row.side, qty: Number(row.qty) * contractMultiplier(row.symbol), lotPrice: Number(row.lot_price), price: Number(row.close_price),
         acquiredAt: row.acquired_at.toISOString(), closedAt: row.closed_at.toISOString(), kind: kinds[row.activity_type] ?? "sale"
     }));
-    const acquisitions: Acquisition[] = lots.map(row => ({ lotId: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty), acquiredAt: row.acquired_at.toISOString() }));
+    const acquisitions: Acquisition[] = lots.map(row => ({ lotId: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty) * contractMultiplier(row.symbol), acquiredAt: row.acquired_at.toISOString() }));
     return {
         disposals, acquisitions,
         dividends: cash.filter(row => row.activity_type === "DIV" && row.activity_sub_type !== "SDIV").map(row => ({ date: row.date, amount: Number(row.net_amount) })),
@@ -165,11 +169,12 @@ export const unrealizedLots = async (accountId: string) => {
     const now = new Date().toISOString();
     return rows.map(row => {
         const qty = Number(row.qty);
+        const shares = qty * contractMultiplier(row.symbol);
         const adjustment = adjustments.get(row.id);
         const wash = adjustment ? adjustment.basis * qty / Number(row.original_qty) : 0;
-        const basis = roundCents(qty * Number(row.price) + wash);
+        const basis = roundCents(shares * Number(row.price) + wash);
         const price = prices.get(row.symbol) ?? null;
-        const value = price === null ? null : roundCents(qty * price);
+        const value = price === null ? null : roundCents(shares * price);
         const dateAcquired = adjustment ? new Date(row.acquired_at.getTime() - adjustment.carriedDays * 86400000).toISOString() : row.acquired_at.toISOString();
         return {
             id: row.id, symbol: row.symbol, side: row.side, qty, acquiredAt: row.acquired_at.toISOString(), dateAcquired, price: Number(row.price), costBasis: basis,

@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { contractMultiplier } from "@/lib/options";
 import axios from "axios";
 import PortfolioRow, { type Status } from "./PortfolioRow";
 import { apiErrorMessage, logError } from "@/lib/apiError";
@@ -84,13 +85,13 @@ const PortfolioList = () => {
     }
 
     const priced = positions.filter((position): position is PortfolioPosition & { price: number } => position.price !== null);
-    const totalGain = priced.reduce((sum, { price, avgCost, quantity }) => sum + (price - avgCost) * quantity, 0);
-    const totalCost = priced.reduce((sum, { avgCost, quantity }) => sum + avgCost * Math.abs(quantity), 0);
+    const totalGain = priced.reduce((sum, { ticker, price, avgCost, quantity }) => sum + (price - avgCost) * quantity * contractMultiplier(ticker), 0);
+    const totalCost = priced.reduce((sum, { ticker, avgCost, quantity }) => sum + avgCost * Math.abs(quantity) * contractMultiplier(ticker), 0);
     const totalPercent = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
     const isPositive = totalGain >= 0;
     // Today's change on the positions held now, against the previous close (signed quantity, so a short gains when the price falls)
     const dayPriced = priced.filter((position): position is typeof position & { previousClose: number } => position.previousClose !== null);
-    const dayChange = dayPriced.reduce((sum, { price, previousClose, quantity }) => sum + (price - previousClose) * quantity, 0);
+    const dayChange = dayPriced.reduce((sum, { ticker, price, previousClose, quantity }) => sum + (price - previousClose) * quantity * contractMultiplier(ticker), 0);
 
     return (
         <Fragment>

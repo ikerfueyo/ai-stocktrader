@@ -64,12 +64,15 @@ export interface Broker {
     listLocates(accountId: string, query?: { status?: string; symbol?: string; limit?: number }): Promise<ListLocatesResponse>;
     getLocate(accountId: string, locateId: string): Promise<Locate>;
 
-    // Options: exercise (POST /positions/{symbol}/exercise), approval (POST /v1/accounts/{id}/options/approval), contracts
-    exerciseOption(accountId: string, symbol: string): Promise<void>;
+    // Options: exercise (POST .../positions/{symbol}/exercise, all contracts or qty) and do-not-exercise (POST .../do-not-exercise),
+    // approval (POST /v1/accounts/{id}/options/approval), contracts (GET /v1/options/contracts and /{symbol_or_id})
+    exerciseOption(accountId: string, symbol: string, request?: { qty?: string }): Promise<{ qty_exercised: string; qty_remaining: string }>;
+    doNotExercise(accountId: string, symbol: string): Promise<void>;
     requestOptionsApproval(accountId: string, request: OptionsApprovalRequest): Promise<OptionsApprovalResponse>;
     // GET /v1/accounts/options/approvals?account_id=, newest first
     listOptionsApprovals(accountId: string): Promise<OptionsApprovalResponse[]>;
-    listOptionContracts(query: { underlying_symbols?: string; expiration_date_gte?: string; expiration_date_lte?: string; type?: "call" | "put" }): Promise<OptionContract[]>;
+    listOptionContracts(query: { underlying_symbols?: string; expiration_date?: string; expiration_date_gte?: string; expiration_date_lte?: string; type?: "call" | "put"; strike_price_gte?: string; strike_price_lte?: string; limit?: number }): Promise<OptionContract[]>;
+    getOptionContract(symbol: string): Promise<OptionContract>;
 
     // The ledger: GET /v1/accounts/activities?account_id=
     listActivities(accountId: string, query?: ListActivitiesQuery): Promise<Activity[]>;

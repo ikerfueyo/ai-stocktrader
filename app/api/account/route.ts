@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/server/db";
 import { withUser } from "@/lib/server/errors";
-import { valueAccount } from "@/lib/server/account";
+import { roundCents, valueAccount } from "@/lib/server/account";
 import { getAccount, getFills, withAccountLock } from "@/lib/server/portfolio";
 import { updateAccount } from "@/lib/server/upkeep";
 import { marginSnapshot } from "@/lib/server/broker/sim/marginAccount";
 import { accruedInterest, MARGIN_RATE } from "@/lib/server/broker/sim/calls";
 import { needsImmediateLiquidation } from "@/lib/server/broker/sim/margin";
+import { totalOptionRequirement } from "@/lib/server/broker/sim/options";
 import type { Account } from "@/lib/types";
 
 const LIQUIDATION_RATIO = Number(process.env.SIM_LIQUIDATION_RATIO ?? 0.75);
@@ -21,12 +22,12 @@ export const GET = withUser(async (request, context, userId) => {
     const liquidations = (await getFills(userId, { since: new Date(Date.now() - 7 * 86400000) })).filter(({ reason }) => reason === "LIQUIDATION").slice(0, 20);
     const ledger = {
         realizedPnl, netDividends, pendingTransferOut, unsettledProceeds, liquidations,
-        accruedFees: Math.round((accruedFees.REG + accruedFees.TAF + accruedFees.CAT) * 100) / 100,
+        accruedFees: Math.round(Object.values(accruedFees).reduce((sum, amount) => sum + amount, 0) * 100) / 100,
         positions: positions.map(({ ticker, quantity }) => ({ ticker, quantity }))
     };
     if (!accountId) {
         return NextResponse.json<Account>({
-            ...ledger, totalCash, buyingPower: 0, regtBuyingPower: 0, nonMarginableBuyingPower: 0, reservedCash: 0, multiplier: 1, maxMultiplier: 1, equity: totalCash,
+            ...ledger, totalCash, optionsBuyingPower: 0, optionRequirement: 0, optionsLevel: 0, optionsApprovedLevel: 0, buyingPower: 0, regtBuyingPower: 0, nonMarginableBuyingPower: 0, reservedCash: 0, multiplier: 1, maxMultiplier: 1, equity: totalCash,
             longMarketValue: 0, shortMarketValue: 0, initialMargin: 0, maintenanceMargin: 0, excessLiquidity: totalCash, sma: 0, debitBalance: 0, marginRate: MARGIN_RATE,
             accruedInterest: 0, marginStatus: "ok", marginCalls: [], shortingEnabled: false, shortingBlockedReason: "Open an account first", unrealizedPnl: 0,
             missingPrices: [], withdrawableCash: 0
@@ -40,6 +41,10 @@ export const GET = withUser(async (request, context, userId) => {
     return NextResponse.json<Account>({
         ...ledger,
         totalCash: snapshot.cash,
+        optionsBuyingPower: state.nonMarginableBuyingPower,
+        optionRequirement: roundCents(totalOptionRequirement(snapshot.positions)),
+        optionsLevel: Math.min(snapshot.row.options_approved_level, Number(snapshot.row.configurations?.max_options_trading_level ?? 0)),
+        optionsApprovedLevel: snapshot.row.options_approved_level,
         buyingPower: state.buyingPower,
         regtBuyingPower: state.regtBuyingPower,
         nonMarginableBuyingPower: state.nonMarginableBuyingPower,

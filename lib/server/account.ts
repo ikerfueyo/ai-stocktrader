@@ -2,6 +2,7 @@
 // power and calls are the broker's (lib/server/broker/sim/margin.ts). Kept apart from the route handlers and lib/server/portfolio.ts
 // (which connect to Postgres) so it can be unit tested.
 import { easternParts } from "../marketHours";
+import { contractMultiplier } from "../options";
 import type { FillPolicy, Position, Quote, TradeType } from "../types";
 
 // A trade as it's replayed: a transactions row (pg returns DECIMAL/NUMERIC columns as strings) or a new trade (numbers).
@@ -187,7 +188,7 @@ export const planDividends = ({ transactions, splits, dividends, posted, asOf = 
 // The account's value at current prices (prices maps ticker to price; a position missing from it is valued at its average cost):
 //   equity         = total cash + long market value - short market value
 //   unrealized P&L = (long market value - long cost basis) + (short-sale proceeds - short market value)
-// With average cost, a position's cost basis (or a short's original proceeds) is avgCost x shares. Tickers in staleTickers (priced
+// With average cost, a position's cost basis (or a short's original proceeds) is avgCost x shares (an option's contracts x 100). Tickers in staleTickers (priced
 // from a last known price) or missing from prices (priced at average cost) are listed in missingPrices.
 export const valueAccount = ({ positions, totalCash, prices, staleTickers = [] }: AccountState) => {
     let longValue = 0;
@@ -196,7 +197,7 @@ export const valueAccount = ({ positions, totalCash, prices, staleTickers = [] }
     let shortValue = 0;
     for (const { ticker, quantity, avgCost } of positions) {
         const price = prices[ticker] ?? avgCost;
-        const shares = Math.abs(quantity);
+        const shares = Math.abs(quantity) * contractMultiplier(ticker);
         if (quantity > 0) {
             longValue += shares * price;
             longCostBasis += shares * avgCost;

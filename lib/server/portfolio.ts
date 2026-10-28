@@ -25,7 +25,7 @@ export const ledgerAccountId = async (userId: string, db: Db = pool): Promise<st
     return row?.account_id ?? null;
 };
 
-const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0 };
+const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
 
 // A user's account from the broker's ledger (lib/server/broker/sim/positions.ts): its fills as trades to replay (for dividends and
 // the history), the traded tickers' splits and dividends (fetching any never fetched and refreshing the held tickers' once a day,

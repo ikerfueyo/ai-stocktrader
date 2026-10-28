@@ -6,12 +6,15 @@ import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
 import { accountActivityKey, useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
-import { describeOrderSize, describeOrderType, formatPrice, formatShares, orderStatusLabel, TIME_IN_FORCE_LABELS } from "@/lib/orders";
+import { describeOrderSize, describeOrderType, formatPrice, formatShares, orderStatusLabel, orderSymbolLabel, TIME_IN_FORCE_LABELS } from "@/lib/orders";
+import { contractName, isOptionSymbol, parseOptionSymbol } from "@/lib/options";
 import type { AppOrder, BrokerOrder, BrokerOrderUpdate, OrderDetails } from "@/lib/types";
 
 interface OpenOrdersProps {
     // Only this ticker's orders (the Trading page); all of them otherwise (the Portfolio page)
     ticker?: string;
+    // Only the option orders (contracts and spreads) on this stock (the Trading page's options section)
+    optionsOf?: string;
     // Changing it reloads the list, such as after placing an order
     refreshKey?: number;
 }
@@ -31,13 +34,17 @@ interface Edit {
 
 const formatTime = (iso: string) => new Date(iso).toLocaleString("en-US", { dateStyle: "short", timeStyle: "medium" });
 
-// A notional or fractional order can't be replaced, nor one that has started filling
+// The stock an option order trades contracts of (an mleg order's legs'), or null for a stock order
+const underlyingOf = (order: Pick<BrokerOrder, "symbol" | "order_class" | "legs">) =>
+    parseOptionSymbol(order.order_class === "mleg" ? order.legs?.[0]?.symbol ?? "" : order.symbol ?? "")?.underlying ?? null;
+
+// A notional or fractional order can't be replaced, nor one that has started filling, nor an mleg order or its legs
 const replaceable = (order: ListedOrder) =>
-    order.notional === null && Number.isInteger(Number(order.qty)) && Number(order.filled_qty ?? 0) === 0 && ["new", "accepted", "held"].includes(order.status!);
+    order.order_class !== "mleg" && order.notional === null && Number.isInteger(Number(order.qty)) && Number(order.filled_qty ?? 0) === 0 && ["new", "accepted", "held"].includes(order.status!);
 
 // The user's open orders, with bracket, OCO and OTO legs under their entry: modify (a replace), cancel, cancel all, and the details of
 // each (its timeline of fills and status changes). Renders nothing when there are none.
-const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
+const OpenOrders = ({ ticker, optionsOf, refreshKey = 0 }: OpenOrdersProps) => {
     const [orders, setOrders] = useState<AppOrder[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState<string | null>(null);
@@ -52,7 +59,7 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
         const getOrders = async () => {
             try {
                 const response = await axios.get<AppOrder[]>(`/api/orders?status=open${ticker ? `&symbols=${encodeURIComponent(ticker.toUpperCase())}` : ""}`);
-                setOrders(response.data);
+                setOrders(optionsOf ? response.data.filter(order => underlyingOf(order) === optionsOf.toUpperCase()) : response.data);
                 setError(null);
             } catch (error) {
                 logError(error);
@@ -60,7 +67,7 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
             }
         };
         getOrders();
-    }, [ticker, refreshKey, version, activity]);
+    }, [ticker, optionsOf, refreshKey, version, activity]);
 
     const run = async (id: string, action: () => Promise<unknown>) => {
         setBusy(id);
@@ -116,12 +123,14 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
     if (orders.length === 0) return error ? <p className="text-danger">Couldn&apos;t load open orders: {error}</p> : null;
 
     const listed: ListedOrder[] = orders.flatMap(order => [order, ...(order.legs ?? []).map(leg => ({ ...leg, leg: true as const }))]);
-    const columns = ticker ? 7 : 8;
+    // The contract column shows on the Portfolio page and in the options section; the Trading page's own orders are its ticker's
+    const showSymbol = !ticker;
+    const columns = showSymbol ? 8 : 7;
 
     return (
         <div className="open-orders">
             <div className="open-orders-header">
-                <h2 className="open-orders-title">Open orders</h2>
+                <h2 className="open-orders-title">{optionsOf ? "Open option orders" : "Open orders"}</h2>
                 {orders.length > 1 && (
                     <button type="button" className="btn btn-sm btn-outline-danger" onClick={onCancelAll} disabled={busy !== null}>
                         {busy === "all" ? "Cancelling…" : "Cancel all"}
@@ -132,7 +141,7 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
             <table className="table table-sm text-center">
                 <thead>
                     <tr>
-                        {!ticker && <th scope="col">Ticker</th>}
+                        {showSymbol && <th scope="col">{optionsOf ? "Contract" : "Ticker"}</th>}
                         <th scope="col">Side</th>
                         <th scope="col">Type</th>
                         <th scope="col">Size</th>
@@ -150,11 +159,12 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
                         return (
                             <Fragment key={order.id}>
                                 <tr className={leg ? "order-leg" : undefined}>
-                                    {!ticker && <td>{leg ? "↳" : <Link href={`/trading/${order.symbol}`}>{order.symbol}</Link>}</td>}
+                                    {showSymbol && <td>{leg ? (isOptionSymbol(order.symbol ?? "") ? <span className="order-leg-name">↳ {contractName(order.symbol!)}</span> : "↳") : <Link href={`/trading/${parseOptionSymbol(order.symbol ?? "")?.underlying ?? (order.order_class === "mleg" ? parseOptionSymbol(order.legs?.[0]?.symbol ?? "")?.underlying : order.symbol)}`}>{orderSymbolLabel(order)}</Link>}</td>}
                                     <td className={order.side === "buy" ? "text-success" : "text-danger"}><strong>{leg && ticker ? "↳ " : ""}{order.side?.toUpperCase()}</strong></td>
                                     <td>
                                         {describeOrderType(order)}
-                                        {order.order_class && order.order_class !== "simple" && <span className="fill-detail">{leg ? order.group_role?.replace("_", " ") : `${order.order_class.toUpperCase()} ${order.group_role === "entry" ? "entry" : order.group_role?.replace("_", " ") ?? ""}`}</span>}
+                                        {order.order_class === "mleg" ? (leg ? <span className="fill-detail">ratio {(order as Leg & { ratio_qty?: string }).ratio_qty ?? 1}</span> : <span className="fill-detail">{order.legs?.length ?? 0} legs</span>)
+                                            : order.order_class && order.order_class !== "simple" && <span className="fill-detail">{leg ? order.group_role?.replace("_", " ") : `${order.order_class.toUpperCase()} ${order.group_role === "entry" ? "entry" : order.group_role?.replace("_", " ") ?? ""}`}</span>}
                                     </td>
                                     <td>
                                         {describeOrderSize(order)}
@@ -181,7 +191,7 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
                                     <tr className="order-edit">
                                         <td colSpan={columns}>
                                             <div className="order-entry">
-                                                <label>Shares <QuantityStepper value={edit.qty} setValue={qty => setEdit({ ...edit, qty })} decimals={0} /></label>
+                                                <label>{isOptionSymbol(order.symbol ?? "") ? "Contracts" : "Shares"} <QuantityStepper value={edit.qty} setValue={qty => setEdit({ ...edit, qty })} decimals={0} /></label>
                                                 {(order.type === "stop" || order.type === "stop_limit") && <label>Stop <QuantityStepper value={edit.stopPrice} setValue={stopPrice => setEdit({ ...edit, stopPrice })} decimals={2} prefix="$" /></label>}
                                                 {(order.type === "limit" || order.type === "stop_limit") && <label>Limit <QuantityStepper value={edit.limitPrice} setValue={limitPrice => setEdit({ ...edit, limitPrice })} decimals={2} prefix="$" /></label>}
                                                 {order.type === "trailing_stop" && <label>Trail <QuantityStepper value={edit.trail} setValue={trail => setEdit({ ...edit, trail })} decimals={2} prefix={order.trail_price ? "$" : ""} />{order.trail_percent ? "%" : ""}</label>}

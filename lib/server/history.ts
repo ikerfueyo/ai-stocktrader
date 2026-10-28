@@ -1,6 +1,7 @@
 // The account's daily equity and time-weighted return, rebuilt from the trade history, the cash ledger and daily closes. Pure, so
 // it can be unit tested; GET /api/portfolio/history supplies the data.
 import { computePositions, roundCents, type Split, type Trade } from "./account";
+import { contractMultiplier } from "../options";
 import { addDays, easternParts } from "../marketHours";
 
 // A cash_activity entry: amount is signed (+ in, - out). external marks deposits and withdrawals, which move equity without being
@@ -66,7 +67,7 @@ export const equityHistory = ({ trades, cash, splits = [], closes, dates }: {
         const netCash = activity.reduce((sum, { amount }) => sum + amount, 0);
         const netDeposits = activity.filter(({ external }) => external).reduce((sum, { amount }) => sum + amount, 0);
         const todaysFlows = activity.filter(({ day, external }) => external && day > previousDate).reduce((sum, { amount }) => sum + amount, 0);
-        const holdings = positions.reduce((sum, { ticker, quantity, avgCost }) => sum + quantity * (prices[ticker]?.[date] ?? avgCost), 0);
+        const holdings = positions.reduce((sum, { ticker, quantity, avgCost }) => sum + quantity * contractMultiplier(ticker) * (prices[ticker]?.[date] ?? avgCost), 0);
         const equity = tradeCash + netCash + holdings;
         const defined = previousEquity > 0 && equity - todaysFlows > 0;
         if (defined) growth *= (equity - todaysFlows) / previousEquity;

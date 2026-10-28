@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { contractMultiplier, contractName } from "@/lib/options";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
@@ -15,19 +16,22 @@ const FILTERS = [
     { label: "Interest", types: "INT" },
     { label: "Withholding", types: "WH" },
     { label: "Dividends", types: "DIV" },
-    { label: "Corporate actions", types: "SPLIT,MA,SPIN,REORG,CIL" }
+    { label: "Corporate actions", types: "SPLIT,MA,SPIN,REORG,CIL" },
+    { label: "Option exercises & expirations", types: "OPEXC,OPASN,OPEXP" }
 ];
-const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split", INT: "Interest", MA: "Merger", SPIN: "Spinoff", REORG: "Removal", CIL: "Cash in lieu", WH: "Withholding" };
+const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split", INT: "Interest", MA: "Merger", SPIN: "Spinoff", REORG: "Removal", CIL: "Cash in lieu", WH: "Withholding",
+    OPEXC: "Option exercise", OPASN: "Option assignment", OPEXP: "Option expiration" };
 
 // The fields the feed shows, from either a trade activity or a non-trade one
 const describe = (activity: BrokerActivity) => {
     const fill = activity as BrokerActivity & { transaction_time?: string; side?: string; qty?: string; price?: string; symbol?: string };
     const other = activity as BrokerActivity & { created_at?: string; date?: string; description?: string; net_amount?: string };
     if (activity.activity_type === "FILL") {
-        const amount = Number(fill.qty) * Number(fill.price);
+        // An option's contracts are 100 shares each
+        const amount = Number(fill.qty) * Number(fill.price) * contractMultiplier(fill.symbol ?? "");
         return {
             date: fill.transaction_time ?? "", type: TYPE_LABELS.FILL,
-            details: `${fill.side === "buy" ? "Bought" : "Sold"} ${formatShares(Number(fill.qty))} ${fill.symbol} at ${formatCurrency(Number(fill.price))}`,
+            details: `${fill.side === "buy" ? "Bought" : "Sold"} ${formatShares(Number(fill.qty))} ${contractName(fill.symbol ?? "")} at ${formatCurrency(Number(fill.price))}`,
             amount: fill.side === "buy" ? -amount : amount
         };
     }

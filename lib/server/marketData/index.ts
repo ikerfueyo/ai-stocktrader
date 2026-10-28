@@ -8,6 +8,8 @@ import type { Quote } from "../../types";
 // the market status. Alpaca's free data (./alpaca) adds what Alpha Vantage lacks: asset flags, the calendar and clock, and the top
 // of book with sizes. Import from here rather than from a provider, so a data type can move to another provider in one place.
 export * from "../alphaVantage";
+// Loading ./options registers the option contracts' quotes with fetchQuotes
+export { fetchOptionChain, fetchOptionContract, type ChainEntry, type OptionChain, type OptionQuoteSource } from "./options";
 export { ALPACA_DATA_FEED, fetchAlpacaAssets, fetchAlpacaCalendar, fetchAlpacaClock, fetchAlpacaCorporateActions, isAlpacaConfigured } from "./alpaca";
 
 // A ticker's quote with Alpaca's top of book (book is null without Alpaca keys, or when the book can't be fetched: it's only

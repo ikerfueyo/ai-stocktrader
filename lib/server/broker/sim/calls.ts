@@ -68,11 +68,17 @@ const liquidate = async (snapshot: MarginSnapshot, deficiency: number, type: Cal
     if (trades.length === 0) return [];
     await cancelAllOrders(accountId);
     const placed = [];
+    // In the plan's order (a covered call's calls are bought back before its shares are sold); one refused order doesn't stop the rest,
+    // and what's still short is planned again on the next check
     for (const trade of trades) {
-        placed.push(await createOrder(accountId, {
-            symbol: trade.symbol, side: trade.side, type: "market", time_in_force: "day", qty: String(trade.qty),
-            position_intent: trade.side === "sell" ? "sell_to_close" : "buy_to_close", client_order_id: `liquidation-${randomUUID()}`
-        }, { liquidation: true }));
+        try {
+            placed.push(await createOrder(accountId, {
+                symbol: trade.symbol, side: trade.side, type: "market", time_in_force: "day", qty: String(trade.qty),
+                position_intent: trade.side === "sell" ? "sell_to_close" : "buy_to_close", client_order_id: `liquidation-${randomUUID()}`
+            }, { liquidation: true }));
+        } catch (error) {
+            console.error(`${LABEL}: liquidating ${trade.side} ${trade.qty} ${trade.symbol} for ${accountId}: ${error instanceof Error ? error.message : error}`);
+        }
     }
     console.log(`${LABEL}: liquidated for ${accountId} (${why}): ${trades.map(({ side, qty, symbol }) => `${side} ${qty} ${symbol}`).join(", ")}`);
     return placed;
