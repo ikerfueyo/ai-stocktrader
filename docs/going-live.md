@@ -1,6 +1,6 @@
 # Going live with Alpaca
 
-`AlpacaBroker` (`lib/server/broker/alpaca/`) implements the same `Broker` interface as the simulator, and `BROKER=alpaca` with the Broker API's OAuth client credentials selects it. Nothing has connected to Alpaca yet: the adapter is unit-tested against mocked HTTP, and the shared scenario suite has run only against `SimBroker`. With `BROKER=alpaca` the app reads accounts only through `Broker`; the last section lists what that path still lacks.
+`AlpacaBroker` (`lib/server/broker/alpaca/`) implements the same `Broker` interface as the simulator, and `BROKER=alpaca` with the Broker API's OAuth client credentials selects it. The adapter is unit-tested against mocked HTTP, and the shared scenario suite has run against Alpaca's Broker API sandbox (results below) as well as `SimBroker`. With `BROKER=alpaca` the app reads accounts only through `Broker`; the last section lists what that path still lacks.
 
 This document lists what's left before real accounts and real money. Most of it isn't code. The code that's left is in its own section at the end.
 
@@ -10,13 +10,28 @@ This document lists what's left before real accounts and real money. Most of it 
 2. Put them in `.env.local` as `ALPACA_BROKER_CLIENT_ID` and `ALPACA_BROKER_CLIENT_SECRET`, with `ALPACA_BROKER_ENV=sandbox` (the default).
 3. Run `npm run test:scenarios:sandbox` while the market is open. It refuses production credentials. Each run opens new sandbox accounts with fake identities. It moves only sandbox money.
 4. Optionally set `SCENARIO_OPTION_CONTRACT` (an OCC symbol listed in the sandbox) to include the option trade.
+5. Set `SCENARIO_PATIENCE=180` (15 minutes at the default 5s wait). The sandbox completes ACH deposits on a 10-minute cycle (at :00, :10, :20 and so on), so the default 5 minutes misses about half of them. A full run then takes well over an hour; `SCENARIO=<part of a name>` runs one scenario, and several can run at once as separate processes, each opening its own accounts.
+
+### Results on 2026-10-29
+
+5 passed (onboard, fund, buy, cancel, replace), 9 were skipped as simulator-only, and 11 failed. Support has been asked to enable options, IRAs, margin and withdrawals for the sandbox correspondent, which 10 of the failures wait on:
+- options (options approval, option trade, options added later) and the IRA, refused by the correspondent (below);
+- short, close position and margin upgrade, since accounts stay at 1x without shorting;
+- withdraw, wire and close, since withdrawals are refused.
+
+The eleventh, the ledger scenario, now allows for fees taken from cash before their FEE activity posts (below). What the run showed:
+- **Withdrawals.** `cash_withdrawable` stays 0 after an ACH deposit completes, still a day later ($10,000 on account 407381006). An outgoing ACH transfer or wire is then refused with `forbidden.` (403, 40310000). Whether production holds deposits the same way, and for how long, is open. The app should show the hold rather than offer a withdrawal Alpaca will refuse.
+- **Fees.** Alpaca takes regulatory fees from cash at the trade and posts the FEE activity later. Three fills on 2026-10-29 left cash $0.04 below the fills' net, exactly the simulator's SEC fee ($0.0288) and CAT fee ($0.000017), each rounded up to the cent. Until the FEE activity posts, the activity ledger and Alpaca's `cash` differ by the day's fees; the simulator deducts them only at the end of the day.
+- **Lag.** Right after a fill or a cancel, the activities and the open-orders list can be behind. A fill was missing from the activities (6 shares in the replayed lots against 9 in the position), and a cancelled order was still listed as open, though `getOrder` already said `canceled`. Neither recurred on a rerun.
+- **Sandbox and TLS.** Inside Claude Code's Bash sandbox, Node can't read the macOS certificate trust settings, so every call to Alpaca fails with `fetch failed`. Run the suite outside it.
 
 The run settles these questions, which the docs and the vendored specs leave open:
 - **Stream resumption.** Do `since_id` (trades, funding) and `since_ulid` (accounts, NTAs) accept a synthetic ULID? The adapter starts each stream 10 minutes before the app's checkpoint (`resumeId`).
 - **Event shapes.** Which `entry_type` values arrive on the NTA stream, and does a sub-type ever come with them? Do funding events use the `entity_type` `Transfer`?
 - **Configurations.** The vendored spec has no GET for trading configurations, so `getConfigurations` reads the trading account's `user_configurations`, which is null until something is set.
-- **Options in the sandbox.** As of 2026-10-28 the sandbox correspondent doesn't have options: adding the options agreement fails with `us_options not enabled for correspondent` (422) and an approval request with `options are not enabled for this correspondent` (403). Ask Alpaca to enable them, then run the options scenarios. They settle whether approval turns on `us_option` in `enabled_assets` or the app must PATCH it (on 2026-10-28 a PATCH of it was accepted and ignored). Alpaca does return the suitability answers in `identity` once they're set, which the options route checks.
-- **The upgrade to margin.** On an unfunded sandbox account, Alpaca accepts the margin agreement by PATCH, then refuses `max_margin_multiplier` 2 with `exceeds the current limit 1` (422). Alpaca's docs make 2x the default from $2,000 of equity. The margin upgrade scenario funds $10,000 first: it shows whether the limit then rises, and whether it does by itself. If 2x is refused below $2,000, Settings should sign the agreement and leave 2x for later instead of failing.
+- **Options in the sandbox.** As of 2026-10-29 the sandbox correspondent doesn't have options: creating an account with them fails with `us_option is not enabled for correspondent` (403, 40310000), adding the options agreement to an existing account with `us_options not enabled for correspondent` (422, 40010001), and an approval request with `options are not enabled for this correspondent` (403). Ask Alpaca to enable them, then run the options scenarios. They settle whether approval turns on `us_option` in `enabled_assets` or the app must PATCH it (on 2026-10-28 a PATCH of it was accepted and ignored). Alpaca does return the suitability answers in `identity` once they're set, which the options route checks.
+- **IRAs in the sandbox.** As of 2026-10-29 the correspondent can't open them: `IRA accounts are not allowed for this correspondent` (40010001). Support has been asked to enable traditional and Roth IRAs.
+- **The upgrade to margin.** Alpaca accepts the margin agreement by PATCH, then refuses `max_margin_multiplier` 2 with `max_margin_multiplier provided 2 exceeds the current limit 1` (422). On 2026-10-29 that was still the case after funding $10,000 first. Accounts opened with the margin agreement (408790998, 408934916) also stay at `multiplier` 1 with `shorting_enabled` false at $10,000, with no configuration set. Alpaca's docs make 2x the default from $2,000 of equity, so this looks like the sandbox correspondent's limit, and support has been asked. Settings should still sign the agreement and leave 2x for later when it's refused, instead of failing.
 - **Plaid processor tokens.** Is an ACH relationship request with only `processor_token` enough, or does Alpaca still want `account_owner_name` and `bank_account_type`?
 - **Error codes.** Alpaca's codes and messages for the refusals the pages explain: buying power, PDT, wash trades, shorting, insufficient qty.
 - **Documents.** Does the download redirect to a pre-signed link? What content type comes back?

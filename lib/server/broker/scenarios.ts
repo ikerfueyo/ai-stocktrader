@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Broker } from "./broker";
 import type { Account, AccountCreationRequest, Order, Transfer } from "./types";
 import { accountSummary, CASH_ACTIVITY_TYPES, cashRowsOf, ledgerOf, listAllActivities, taxLotsOf } from "../brokerLedger";
+import { feesFor, roundFeeUp } from "./sim/feeSchedule";
 import { closeAccountProblem } from "../../accounts";
 import { nextTradingDay } from "../../marketHours";
 
@@ -472,7 +473,18 @@ export const SCENARIOS: Scenario[] = [
             assert.equal(cashRowsOf(activities, "").filter(({ type }) => type === "DEPOSIT").reduce((sum, { amount }) => sum + Number(amount), 0), 10000);
             const summary = accountSummary({ trade, positions, configurations, ledger, marginRate: 0 });
             assert.equal(summary.equity, Math.round(Number(trade.equity) * 100) / 100);
-            assert.ok(Math.abs(summary.totalCash - (10000 - buyPrice * 10 + sellPrice * 4 - againPrice * 3)) < 0.011, `cash ${summary.totalCash}`);
+            // Regulatory fees: the simulator accrues them and deducts them at the end of the day as FEE activities; Alpaca takes the same
+            // amounts (each type's total rounded up) from cash at once and posts the FEE activity later
+            const accrued: Record<string, number> = {};
+            for (const [order, qty] of [[buy, 10], [sell, 4], [again, 3]] as const) {
+                for (const { type, amount } of feesFor({ side: order.side as "buy" | "sell", qty, price: Number(order.filled_avg_price), date: String(order.filled_at).slice(0, 10) })) {
+                    accrued[type] = (accrued[type] ?? 0) + amount;
+                }
+            }
+            const fees = Object.values(accrued).reduce((sum, amount) => sum + roundFeeUp(amount), 0);
+            const posted = (activities as { activity_type?: string; net_amount?: string }[]).filter(({ activity_type }) => activity_type === "FEE").reduce((sum, { net_amount }) => sum + Number(net_amount), 0);
+            const fromFills = 10000 - buyPrice * 10 + sellPrice * 4 - againPrice * 3;
+            assert.ok([fromFills + posted, fromFills - fees].some(expected => Math.abs(summary.totalCash - expected) < 0.011), `cash ${summary.totalCash}, ${fromFills} from the fills, fees ${fees}`);
             assert.deepEqual(summary.positions, [{ ticker: h.symbols.stock, quantity: 9 }]);
         }
     },
