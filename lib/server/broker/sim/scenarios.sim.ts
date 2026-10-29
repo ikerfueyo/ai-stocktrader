@@ -136,8 +136,9 @@ const makeHarness = async (): Promise<ScenarioHarness> => {
         },
         intradayMargin: {
             async endOfDay(accountId, day) {
-                // At the eod job's time, or now if that's later today, so what the scenario did today came before it
-                await calls.endOfDayAccount(accountId, new Date(Math.max(Date.now(), easternTime(day, "20:15").getTime())));
+                // Today's now, so what the scenario did today came before it and what it does next comes after (a deposit made after a
+                // deficit's day ended meets it only once it's later than the deficit's issue); a later day's at the eod job's time
+                await calls.endOfDayAccount(accountId, day === today() ? new Date() : new Date(Math.max(Date.now(), easternTime(day, "20:15").getTime())));
             },
             async status(accountId) {
                 const { deficits, restrictedUntil } = await marginAccount.intradayStatus(pool, accountId, today());
