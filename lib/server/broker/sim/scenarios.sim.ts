@@ -93,17 +93,21 @@ const makeHarness = async (): Promise<ScenarioHarness> => {
         },
         async corporateAction(action) {
             await pool.query(
-                `INSERT INTO corporate_actions (ticker, "type", ex_date, payment_date, factor, amount) VALUES ($1, $2, $3, $3, $4, $5)
-                 ON CONFLICT (ticker, "type", ex_date) DO UPDATE SET factor = EXCLUDED.factor, amount = EXCLUDED.amount`,
-                [action.symbol, action.type, today(), action.type === "SPLIT" ? action.factor : null, action.type === "DIVIDEND" ? action.amount : null]
+                `INSERT INTO corporate_actions (ticker, "type", ex_date, payment_date, factor, amount, new_ticker) VALUES ($1, $2, $3, $3, $4, $5, $6)
+                 ON CONFLICT (ticker, "type", ex_date) DO UPDATE SET factor = EXCLUDED.factor, amount = EXCLUDED.amount, new_ticker = EXCLUDED.new_ticker`,
+                [action.symbol, action.type, today(), action.type === "DIVIDEND" ? null : action.factor, action.type === "DIVIDEND" ? action.amount : null, action.type === "SPINOFF" ? action.newSymbol : null]
             );
-            if (action.type === "SPLIT") {
+            if (action.type !== "DIVIDEND") {
                 await positions.applyDueCorporateActions();
                 return;
             }
             const { rows } = await pool.query<{ account_id: string }>("SELECT DISTINCT account_id FROM sim_lots WHERE symbol = $1 AND qty > 0", [action.symbol]);
             const corporate = await loadCorporateActions([action.symbol]);
             for (const { account_id } of rows) await positions.postDividends(pool, account_id, corporate);
+        },
+        // The corporate-actions job's true-up as it runs the next morning, with the current (overridden) prices as today's closes
+        async basisTrueUp() {
+            await positions.trueUpBasisAllocations(new Date(Date.now() + 86400000));
         },
         // As POST /api/accounts does: the account's user (a made-up one) and a W-9 certifying it isn't subject to backup withholding
         async onboarded(account) {

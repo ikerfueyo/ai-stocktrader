@@ -1,6 +1,7 @@
 // Alpaca's corporate actions (GET /v1/corporate-actions in the Market Data API) as the app stores them in corporate_actions. Pure, so
 // it can be unit tested. Splits and cash dividends come from Alpha Vantage, so only the rest is taken: stock dividends, cash, stock
-// and mixed mergers, spinoffs, symbol changes and worthless removals. Unit splits, redemptions and rights aren't for common stocks.
+// and mixed mergers, spinoffs, symbol changes and worthless removals. Unit splits, redemptions and rights aren't taken: units aren't in
+// the universe, Alpaca's redemptions are fixed income, and rights are rare for common stocks and need voluntary actions.
 import type { components } from "./generated/marketDataApi";
 
 type Schemas = components["schemas"];

@@ -28,8 +28,10 @@ export interface ScenarioHarness {
     setPrice?(symbol: string, price: number): Promise<void>;
     // Moves the account's fills and lots back that many days, as if its positions had been held since then
     backdate?(accountId: string, days: number): Promise<void>;
-    // A split or cash dividend of the symbol taking effect today, then applied to the accounts holding it
-    corporateAction?(action: { type: "SPLIT"; symbol: string; factor: number } | { type: "DIVIDEND"; symbol: string; amount: number }): Promise<void>;
+    // A split, cash dividend or spinoff of the symbol taking effect today, then applied to the accounts holding it
+    corporateAction?(action: { type: "SPLIT"; symbol: string; factor: number } | { type: "DIVIDEND"; symbol: string; amount: number } | { type: "SPINOFF"; symbol: string; newSymbol: string; factor: number }): Promise<void>;
+    // The broker's true-up of today's spinoffs' basis with today's closes (the current prices), as it runs once the session is over
+    basisTrueUp?(): Promise<void>;
     // The broker's margin check now (in the regular session: liquidation when equity is far below maintenance)
     enforceMargin?(accountId: string): Promise<void>;
     // FINRA Rule 4210(d)(2) intraday margin, which Alpaca applies on its side: the broker's end of day for the account at day's close (a
@@ -58,7 +60,7 @@ export interface ScenarioHarness {
     close?(): Promise<void>;
 }
 
-type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "enforceMargin" | "intradayMargin" | "transferSteps" | "optionContract";
+type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "basisTrueUp" | "enforceMargin" | "intradayMargin" | "transferSteps" | "optionContract";
 
 const STOCKS = 4;
 const roundCents = (value: number) => Math.round(value * 100) / 100;
@@ -380,6 +382,39 @@ export const SCENARIOS: Scenario[] = [
             const after = await h.broker.getPosition(accountId, h.symbols.other);
             assert.equal(Number(after.qty), 8);
             assert.ok(Math.abs(Number(after.avg_entry_price) - Number(before) / 2) < 0.0001, `${after.avg_entry_price} against ${before}`);
+        }
+    },
+    {
+        name: "spinoff: the new company's shares take a share of the basis, trued up with the day's closes",
+        needs: ["backdate", "corporateAction", "basisTrueUp", "setPrice", "appLedger"],
+        async run(h) {
+            const accountId = await fundedAccount(h, 5000);
+            const source = h.symbols.other;
+            const spun = `${source}S`;
+            await h.setPrice!(source, 50);
+            await filled(h, accountId, await placed(h, accountId, { symbol: source, side: "buy", qty: "10" }));
+            const cost = Number((await h.broker.getPosition(accountId, source)).cost_basis);
+            await h.backdate!(accountId, 3);
+            // Applied at the open, at the quotes then: the source's $50 still includes the new company's $10, so it gets only a sixth
+            await h.setPrice!(spun, 10);
+            await h.corporateAction!({ type: "SPINOFF", symbol: source, newSymbol: spun, factor: 1 });
+            const applied = Number((await h.broker.getPosition(accountId, spun)).avg_entry_price);
+            assert.ok(Math.abs(applied - cost / 10 / 6) < 0.0001, `applied at ${applied}`);
+            // 2 of the new shares sold the first day at $10
+            await filled(h, accountId, await placed(h, accountId, { symbol: spun, side: "sell", qty: "2" }));
+            // The sale is the only $20 fill
+            const realized = async () => (await h.appLedger!(accountId, false)).fills.find(({ total }) => Math.abs(Number(total) - 20) < 0.01)?.realized_pnl ?? null;
+            assert.ok(Math.abs(Number(await realized()) - 2 * (10 - applied)) < 0.02, `realized ${await realized()} before the true-up`);
+            // The day's closes, $40 and $10: the new shares take 10 / 50 of the basis
+            await h.setPrice!(source, 40);
+            await h.basisTrueUp!();
+            const [kept, received] = await Promise.all([h.broker.getPosition(accountId, source), h.broker.getPosition(accountId, spun)]);
+            const share = 10 / 50;
+            assert.ok(Math.abs(Number(kept.avg_entry_price) - cost / 10 * (1 - share)) < 0.0001, `source at ${kept.avg_entry_price}`);
+            assert.ok(Math.abs(Number(received.avg_entry_price) - cost / 10 * share) < 0.0001, `new shares at ${received.avg_entry_price}`);
+            // Nothing lost: the source's basis, the new shares' and the 2 sold add up to the cost
+            assert.ok(Math.abs(Number(kept.cost_basis) + Number(received.cost_basis) + 2 * cost / 10 * share - cost) < 0.02);
+            assert.ok(Math.abs(Number(await realized()) - 2 * (10 - cost / 10 * share)) < 0.02, `realized ${await realized()} after the true-up`);
         }
     },
     {

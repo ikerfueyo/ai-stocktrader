@@ -38,6 +38,17 @@ describe("Buying power", () => {
         assert.equal(buyingPowerCost(1000, { marginable: true, multiplier: 2 }), 1000);
     });
 
+    test("a delisted holding (non-marginable) adds nothing to borrow against, whatever price it's valued at", () => {
+        // $5,000 of cash and a delisted stock still valued at its $10,000 cost
+        const cashOnly = computeMargin({ cash: 5000, positions: [], maxMultiplier: 2, session: "after-hours" });
+        const held = computeMargin({ cash: 5000, positions: [position("DLST", 1000, 10, { marginable: false })], maxMultiplier: 2, session: "after-hours" });
+        assert.equal(held.equity, 15000);
+        assert.deepEqual([held.buyingPower, held.excessLiquidity], [cashOnly.buyingPower, cashOnly.excessLiquidity]);
+        // Marginable, the same holding would have lent another $10,000
+        const marginable = computeMargin({ cash: 5000, positions: [position("DLST", 1000, 10)], maxMultiplier: 2, session: "after-hours" });
+        assert.equal(marginable.buyingPower, 20000);
+    });
+
     test("a short's proceeds stay in cash but its Reg T requirement holds back buying power", () => {
         // $10,000 of cash, then $4,000 shorted: cash $14,000, equity unchanged
         const shorted = computeMargin({ cash: 14000, positions: [position("SHT", -40, 100)], maxMultiplier: 2, session: "regular" });

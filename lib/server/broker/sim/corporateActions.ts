@@ -63,6 +63,21 @@ export interface LotEffect {
     // The net cash the action moves (positive received) and the P&L it realizes
     cash: number;
     realized: number;
+    // A spinoff's or mixed merger's basis allocation, at the prices it was applied with, so trueUpBasis can redo it with the effective
+    // date's closes
+    allocation?: { share: number | null; lots: AllocatedLot[] };
+}
+
+// A source lot's basis before the action (originalPrice) and as allocated: price is the lot's own price after it (the source's for a
+// spinoff, the acquirer's shares' for a mixed merger); a spinoff's new lot (openedIndex, into opened) at newPrice; a mixed merger's
+// cash closing at cashBasis a share
+export interface AllocatedLot {
+    lotId: string;
+    originalPrice: number;
+    price: number;
+    openedIndex?: number;
+    newPrice?: number;
+    cashBasis?: number;
 }
 
 const round9 = (value: number) => Math.round(value * 1e9) / 1e9;
@@ -75,6 +90,19 @@ export interface ActionPrices {
     symbol: number | null;
     newSymbol: number | null;
 }
+
+// The share of the basis that moves to the new shares, by market value: a spinoff's to the spun-off company's shares (against the
+// source's own price, which no longer includes them once it trades ex), a mixed merger's to the acquirer's shares (against the cash).
+// null without the prices it needs.
+export const basisShare = (action: Pick<CorporateAction, "type" | "factor" | "cash">, prices: ActionPrices): number | null => {
+    if (prices.newSymbol === null) return null;
+    const newValue = (action.factor ?? 1) * prices.newSymbol;
+    const other = action.type === "SPINOFF" ? prices.symbol : action.cash ?? 0;
+    return other !== null && newValue + other > 0 ? newValue / (newValue + other) : null;
+};
+
+export const spinoffDescription = (symbol: string, spun: string, factor: number, share: number) =>
+    `${spun} spun off from ${symbol}: ${factor} per share${share > 0 ? `, with ${(share * 100).toFixed(2)}% of the basis` : ""}`;
 
 const ratioLabel = (factor: number) => factor >= 1 ? `${parseFloat(factor.toFixed(6))}-for-1` : `1-for-${parseFloat((1 / factor).toFixed(6))}`;
 
@@ -156,8 +184,7 @@ export const applyActionToLots = (lots: Lot[], action: CorporateAction, { prices
             // The basis splits between the new shares and the cash by market value; without the acquirer's price, the cash first
             // returns basis
             const acquirer = action.newSymbol!;
-            const stockValue = prices.newSymbol !== null ? factor * prices.newSymbol : null;
-            const stockShare = stockValue !== null && stockValue + cash > 0 ? stockValue / (stockValue + cash) : null;
+            const stockShare = basisShare(action, prices);
             const proceeds = cents(sign * cash * total);
             activity({ tag: "removed", type: "MA", subType: "SCMA", symbol, qty: -sign * total, netAmount: 0, description: `${symbol} merged into ${acquirer}: shares removed` });
             let realized = 0;
@@ -174,6 +201,10 @@ export const applyActionToLots = (lots: Lot[], action: CorporateAction, { prices
             const original = held.map(lot => ({ ...lot }));
             held.forEach((lot, index) => { lot.price = lot.price * keep[index]; });
             const received = reshape(acquirer, factor);
+            effect.allocation = {
+                share: stockShare,
+                lots: original.map((lot, index) => ({ lotId: lot.id, originalPrice: lot.price, price: effect.updates[index].price, cashBasis: lot.price * (1 - keep[index]) }))
+            };
             held.splice(0, held.length, ...original);
             activity({ tag: "received", type: "MA", subType: "SCMA", symbol: acquirer, qty: sign * received, netAmount: 0, description: `${acquirer} received for ${symbol}: ${factor} per share` });
             activity({ tag: "cash", type: "MA", subType: "SCMA", symbol, qty: 0, netAmount: proceeds, description: `${symbol} merger cash: $${cash} per share` });
@@ -194,11 +225,18 @@ export const applyActionToLots = (lots: Lot[], action: CorporateAction, { prices
         case "SPINOFF": {
             // The basis moves to the new company's shares in proportion to market value (none without both prices)
             const spun = action.newSymbol!;
-            const newValue = prices.newSymbol !== null ? factor * prices.newSymbol : null;
-            const share = newValue !== null && prices.symbol !== null && newValue + prices.symbol > 0 ? newValue / (newValue + prices.symbol) : 0;
+            const known = basisShare(action, prices);
+            const share = known ?? 0;
             for (const lot of held) effect.updates.push({ id: lot.id, symbol, qty: lot.qty, price: round6(lot.price * (1 - share)) });
             const received = reshape(spun, factor, share, "open");
-            activity({ tag: "spin", type: "SPIN", subType: null, symbol: spun, qty: sign * received, netAmount: 0, description: `${spun} spun off from ${symbol}: ${factor} per share${share > 0 ? `, with ${(share * 100).toFixed(2)}% of the basis` : ""}` });
+            effect.allocation = {
+                share: known,
+                lots: held.map((lot, index) => {
+                    const openedIndex = effect.opened.findIndex(({ sourceLotId }) => sourceLotId === lot.id);
+                    return { lotId: lot.id, originalPrice: lot.price, price: effect.updates[index].price, ...(openedIndex >= 0 ? { openedIndex, newPrice: effect.opened[openedIndex].price } : {}) };
+                })
+            };
+            activity({ tag: "spin", type: "SPIN", subType: null, symbol: spun, qty: sign * received, netAmount: 0, description: spinoffDescription(symbol, spun, factor, share) });
             break;
         }
         case "NAME_CHANGE":
@@ -208,6 +246,57 @@ export const applyActionToLots = (lots: Lot[], action: CorporateAction, { prices
     for (const post of afterwards) post();
     effect.cash = cents(effect.cash);
     return effect;
+};
+
+// A recorded allocation, with the new lots' IDs in place of their indexes
+export interface StoredAllocation {
+    type: "SPINOFF" | "MIXED_MERGER";
+    side: "long" | "short";
+    factor: number;
+    // The mixed merger's cash activity, whose closings are at the cash basis
+    cashFillId: string | null;
+    lots: (Omit<AllocatedLot, "openedIndex"> & { newLotId?: string })[];
+}
+
+// A closing of an allocated lot (the action's own, or a fill's since)
+export interface AllocatedClosing {
+    id: string;
+    lotId: string;
+    fillId: string;
+    qty: number;
+    lotPrice: number;
+    realized: number;
+}
+
+export interface BasisTrueUp {
+    lots: { id: string; price: number }[];
+    closings: { id: string; fillId: string; lotPrice: number; realized: number; change: number }[];
+}
+
+// Redoes an allocation at share (from the effective date's closes, basisShare): each lot's price from its basis before the action,
+// and each closing of those lots at its lot's new price (a mixed merger's cash closing at the new cash basis), with what that changes in
+// its realized P&L
+export const trueUpBasis = (allocation: StoredAllocation, share: number, closings: AllocatedClosing[]): BasisTrueUp => {
+    const sign = allocation.side === "long" ? 1 : -1;
+    const lots: BasisTrueUp["lots"] = [];
+    const cashBases = new Map<string, number>();
+    for (const lot of allocation.lots) {
+        if (allocation.type === "SPINOFF") {
+            lots.push({ id: lot.lotId, price: round6(lot.originalPrice * (1 - share)) });
+            if (lot.newLotId) lots.push({ id: lot.newLotId, price: round6(lot.originalPrice * share / allocation.factor) });
+        } else {
+            lots.push({ id: lot.lotId, price: round6(lot.originalPrice * share / allocation.factor) });
+            cashBases.set(lot.lotId, lot.originalPrice * (1 - share));
+        }
+    }
+    const prices = new Map(lots.map(({ id, price }) => [id, price]));
+    const changed = closings.flatMap(closing => {
+        const lotPrice = closing.fillId === allocation.cashFillId && cashBases.has(closing.lotId) ? cashBases.get(closing.lotId)! : prices.get(closing.lotId);
+        if (lotPrice === undefined) return [];
+        const change = sign * (closing.lotPrice - lotPrice) * closing.qty;
+        return [{ id: closing.id, fillId: closing.fillId, lotPrice, realized: closing.realized + change, change }];
+    });
+    return { lots, closings: changed };
 };
 
 export interface AdjustableOrder {

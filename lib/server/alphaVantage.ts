@@ -175,6 +175,9 @@ export const overridePrice = (ticker: string, price: number, volume?: number) =>
     if (volume !== undefined) VOLUME_OVERRIDES[ticker.toUpperCase()] = volume;
 };
 
+// The overridden price of a ticker (PRICE_OVERRIDES or overridePrice), if any
+export const priceOverride = (ticker: string): number | undefined => PRICE_OVERRIDES[ticker.toUpperCase()];
+
 // Without quoted bid/ask prices, fills use a simulated spread of SIMULATED_SPREAD_BPS basis points of the price (at least a cent,
 // but at most half the price, so a sub-cent stock's bid stays positive), centered on the last price. 0 turns it off, so trades
 // fill at the last price.

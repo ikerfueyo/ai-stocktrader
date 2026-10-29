@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { adjustOrder, applyActionToLots, roundDownToTick, type AdjustableOrder, type CorporateAction } from "./corporateActions";
+import { adjustOrder, applyActionToLots, basisShare, roundDownToTick, trueUpBasis, type AdjustableOrder, type CorporateAction, type StoredAllocation } from "./corporateActions";
 import { fromAlpacaCorporateActions } from "../../marketData/corporateActions";
 import type { Lot } from "./ledger";
 
@@ -85,6 +85,70 @@ describe("Corporate actions on lots", () => {
 
     test("cash dividends post on their payment date instead", () => {
         assert.deepEqual(applyActionToLots([lot("a", 10, 40)], action({ type: "DIVIDEND", cash: 0.5 }), { prices: noPrices }).activities, []);
+    });
+});
+
+describe("Basis allocation trued up with the effective date's closes", () => {
+    const spinoff = action({ type: "SPINOFF", newSymbol: "SPN", factor: 0.5 });
+    const merger = action({ type: "MIXED_MERGER", newSymbol: "NEW", factor: 1, cash: 10 });
+
+    test("basisShare: a spinoff against the source's price, a mixed merger against the cash; null without the prices", () => {
+        close(basisShare(spinoff, { symbol: 90, newSymbol: 20 })!, 0.1);
+        close(basisShare(merger, { symbol: null, newSymbol: 30 })!, 0.75);
+        assert.equal(basisShare(spinoff, { symbol: 90, newSymbol: null }), null);
+        assert.equal(basisShare(spinoff, { symbol: null, newSymbol: 20 }), null);
+        assert.equal(basisShare(merger, noPrices), null);
+    });
+
+    test("a spinoff applied without the new company's price gives it no basis, then the closes move its share over", () => {
+        const effect = applyActionToLots([lot("a", 10, 100), lot("b", 4, 50, "2026-02-01")], spinoff, { prices: { symbol: 100, newSymbol: null } });
+        assert.equal(effect.allocation!.share, null);
+        assert.deepEqual(effect.opened.map(({ price }) => price), [0, 0]);
+        assert.deepEqual(effect.allocation!.lots, [
+            { lotId: "a", originalPrice: 100, price: 100, openedIndex: 0, newPrice: 0 },
+            { lotId: "b", originalPrice: 50, price: 50, openedIndex: 1, newPrice: 0 }
+        ]);
+        const stored: StoredAllocation = {
+            type: "SPINOFF", side: "long", factor: 0.5, cashFillId: null,
+            lots: [{ lotId: "a", originalPrice: 100, price: 100, newLotId: "a2", newPrice: 0 }, { lotId: "b", originalPrice: 50, price: 50, newLotId: "b2", newPrice: 0 }]
+        };
+        // Ex-date closes $72 and $16: 0.5 × 16 = 8 against 72, so the new shares take 10%; 2 of a2's 5 shares sold at $16 the first day
+        const share = basisShare(spinoff, { symbol: 72, newSymbol: 16 })!;
+        const result = trueUpBasis(stored, share, [{ id: "1", lotId: "a2", fillId: "sale", qty: 2, lotPrice: 0, realized: 32 }]);
+        assert.deepEqual(result.lots, [{ id: "a", price: 90 }, { id: "a2", price: 20 }, { id: "b", price: 45 }, { id: "b2", price: 10 }]);
+        // The basis is kept in all: 10 × 90 + 5 × 20 = 10 × 100, 4 × 45 + 2 × 10 = 4 × 50
+        close(10 * 90 + 5 * 20, 1000);
+        close(4 * 45 + 2 * 10, 200);
+        assert.equal(result.closings.length, 1);
+        close(result.closings[0].lotPrice, 20);
+        close(result.closings[0].realized, 2 * (16 - 20));
+        close(result.closings[0].change, -40);
+    });
+
+    test("a mixed merger's true-up moves basis between the cash closing and the new shares, keeping the total", () => {
+        // Applied at the acquirer's $30: 75% in the shares ($15 a share), $5 against the $10 cash
+        const effect = applyActionToLots([lot("a", 100, 20)], merger, { prices: { symbol: null, newSymbol: 30 } });
+        assert.deepEqual(effect.allocation, { share: 0.75, lots: [{ lotId: "a", originalPrice: 20, price: 15, cashBasis: 5 }] });
+        const stored: StoredAllocation = { type: "MIXED_MERGER", side: "long", factor: 1, cashFillId: "cash", lots: [{ lotId: "a", originalPrice: 20, price: 15, cashBasis: 5 }] };
+        // The acquirer closed at $40 that day: 80% in the shares, $16 a share, $4 against the cash
+        const result = trueUpBasis(stored, basisShare(merger, { symbol: null, newSymbol: 40 })!, [
+            { id: "1", lotId: "a", fillId: "cash", qty: 100, lotPrice: 5, realized: 500 },
+            { id: "2", lotId: "a", fillId: "sale", qty: 30, lotPrice: 15, realized: 30 * (41 - 15) }
+        ]);
+        assert.deepEqual(result.lots, [{ id: "a", price: 16 }]);
+        close(result.closings[0].lotPrice, 4);
+        close(result.closings[0].realized, 600);
+        close(result.closings[1].lotPrice, 16);
+        close(result.closings[1].realized, 30 * (41 - 16));
+        // 100 × $4 against the cash and 100 × $16 in the shares: the original $2,000
+        close(100 * 4 + 100 * 16, 2000);
+    });
+
+    test("a short's closings change the other way", () => {
+        const stored: StoredAllocation = { type: "SPINOFF", side: "short", factor: 1, cashFillId: null, lots: [{ lotId: "s", originalPrice: 50, price: 50, newLotId: "s2", newPrice: 0 }] };
+        // A short spun-off lot bought back at $10: sold at $0 provisionally (realized -10), at $5 once trued up (realized -5)
+        const result = trueUpBasis(stored, 0.1, [{ id: "1", lotId: "s2", fillId: "cover", qty: 1, lotPrice: 0, realized: -10 }]);
+        close(result.closings[0].realized, -5);
     });
 });
 

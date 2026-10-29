@@ -13,7 +13,7 @@ import { isSlotDue } from "./schedule";
 import { easternParts } from "../marketHours";
 import { advanceAccounts } from "./broker/sim/accounts";
 import { advanceTransfers, fastForwardTransfers } from "./broker/sim/transfers";
-import { applyDueCorporateActions, endOfDay } from "./broker/sim/positions";
+import { applyDueCorporateActions, endOfDay, trueUpBasisAllocations } from "./broker/sim/positions";
 import { matchOrders, processCorporateActionOrders } from "./broker/sim/orders";
 import { generateAllDocuments } from "./broker/sim/documents";
 import { accountsOnMargin, endOfDayMargin } from "./broker/sim/calls";
@@ -98,6 +98,8 @@ const updateAccounts = async () => {
 const runCorporateActions = async () => {
     const simulated = brokerMode() === "sim";
     const accounts = simulated ? await applyDueCorporateActions() : 0;
+    // Spinoffs and mixed mergers that took effect on an earlier day, with that day's closes
+    const basis = simulated ? await trueUpBasisAllocations() : 0;
     const orders = simulated ? await processCorporateActionOrders() : 0;
     const { rowCount } = await pool.query(
         `UPDATE watchlist w SET ticker = c.new_ticker FROM corporate_actions c
@@ -105,7 +107,7 @@ const runCorporateActions = async () => {
            AND NOT EXISTS (SELECT 1 FROM watchlist o WHERE o.user_id = w.user_id AND o.ticker = c.new_ticker)`,
         [easternParts(new Date()).dateKey]
     );
-    return { accounts, orders, watchlist: rowCount ?? 0 };
+    return { accounts, basis, orders, watchlist: rowCount ?? 0 };
 };
 
 // Posts due dividends for every account with fills, each under its user's account lock

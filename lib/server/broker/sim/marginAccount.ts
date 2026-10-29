@@ -116,18 +116,27 @@ export const reservedCash = async (db: Db, accountId: string, { positions, multi
 
 type Ledger = Awaited<ReturnType<typeof ledgerState>>;
 
+// A position's margin flags from its asset. A stock that has left the universe (null: delisted, moved to OTC as liquidation-only, as
+// Alpaca handles it) is non-marginable, so whatever price it's valued at can't be borrowed against; while the universe has never been
+// synced (undefined), nothing is known.
+const marginAssetOf = (symbol: string, asset: AssetRow | null | undefined): MarginPosition["asset"] => {
+    if (asset) return { marginable: asset.marginable, marginRequirementLong: asset.marginRequirementLong, marginRequirementShort: asset.marginRequirementShort };
+    return asset === null && !isOptionSymbol(symbol) ? { marginable: false, marginRequirementLong: null, marginRequirementShort: null } : null;
+};
+
 // The ledger's positions at current quotes (a position without one at its last known price, or its cost), with their assets' margin
 // flags
 const valuePositions = async (ledger: Ledger) => {
     const symbols = ledger.positions.map(({ ticker }) => ticker);
     const [{ quotes, prices, staleTickers }, assetList] = await Promise.all([
         symbols.length > 0 ? fetchPrices(symbols, LABEL) : { quotes: {} as Record<string, Quote>, prices: {} as Record<string, number>, staleTickers: [] as string[] },
-        Promise.all(symbols.map(async symbol => [symbol, (await findAsset(symbol)) ?? null] as const))
+        Promise.all(symbols.map(async symbol => [symbol, await findAsset(symbol)] as const))
     ]);
-    const assets = Object.fromEntries(assetList);
+    const assets = Object.fromEntries(assetList.map(([symbol, asset]) => [symbol, asset ?? null]));
+    const found = Object.fromEntries(assetList);
     const positions: MarginPosition[] = ledger.positions.map(({ ticker, quantity, avgCost }) => ({
         symbol: ticker, qty: quantity, price: prices[ticker] ?? avgCost,
-        asset: assets[ticker] ? { marginable: assets[ticker]!.marginable, marginRequirementLong: assets[ticker]!.marginRequirementLong, marginRequirementShort: assets[ticker]!.marginRequirementShort } : null,
+        asset: marginAssetOf(ticker, found[ticker]),
         ...(isOptionSymbol(ticker) ? { multiplier: contractMultiplier(ticker), option: true } : {})
     }));
     const optionRequirement = totalOptionRequirement(ledger.positions.map(({ ticker, quantity }) => ({ symbol: ticker, qty: quantity })));
