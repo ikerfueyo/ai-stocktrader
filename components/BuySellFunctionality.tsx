@@ -124,8 +124,12 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
     const shortProblem = !account ? null : !account.shortingEnabled ? account.shortingBlockedReason
         : asset?.shortable === false ? `${ticker} can't be sold short` : null;
     const pastPosition = (side: Side, shares: number) => side === "sell" ? held > 0 && shares > held + 1e-9 : held < 0 && shares > -held + 1e-9;
-    const buyBlocked = account !== null && (held < 0 ? pastPosition("buy", buyOrder.quantity) : marginCall || bpCost(buyOrder.total) > buyingPower);
-    const sellBlocked = account !== null && (held > 0 ? pastPosition("sell", sellOrder.quantity) : shortProblem !== null || marginCall || bpCost(sellOrder.total) > buyingPower);
+    // Shorts are whole shares: a fractional or $ order can't sell short, nor cover one
+    const fractionalCover = held < 0 && fractional;
+    const fractionalShort = held <= 0 && fractional;
+    const buyBlocked = account !== null && (held < 0 ? fractionalCover || pastPosition("buy", buyOrder.quantity) : marginCall || bpCost(buyOrder.total) > buyingPower);
+    const sellBlocked = account !== null && (held > 0 ? pastPosition("sell", sellOrder.quantity)
+        : fractionalShort || shortProblem !== null || marginCall || bpCost(sellOrder.total) > buyingPower);
     const needsLocate = held <= 0 && hardToBorrow && shortProblem === null;
     const locateShares = Math.max(100, Math.ceil(sellOrder.quantity / 100) * 100);
 
@@ -312,7 +316,8 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
                     {held > 0 && pastPosition("sell", sellOrder.quantity) && <p className="text-danger">You hold {formatShares(held)} {ticker}: an order can&apos;t sell past the position. Sell it first, then short.</p>}
                     {held >= 0 && buyBlocked && <p className="text-danger">Insufficient buying power: this order needs {formatCurrency(bpCost(buyOrder.total))}. <Link href="/deposit">Deposit</Link></p>}
                     {held <= 0 && shortProblem && <p className="text-muted">Shorting: {shortProblem}{account?.shortingEnabled === false ? " (Settings)" : ""}.</p>}
-                    {held <= 0 && !shortProblem && sellBlocked && <p className="text-danger">Insufficient buying power to short: this order needs {formatCurrency(bpCost(sellOrder.total))}. <Link href="/deposit">Deposit</Link></p>}
+                    {account && (fractionalCover || (fractionalShort && !shortProblem)) && <p className="text-muted">Shorts are whole shares: {held < 0 ? "cover" : "sell short"} in whole shares, not fractions or dollars.</p>}
+                    {held <= 0 && !shortProblem && !fractionalShort && sellBlocked && <p className="text-danger">Insufficient buying power to short: this order needs {formatCurrency(bpCost(sellOrder.total))}. <Link href="/deposit">Deposit</Link></p>}
                     {needsLocate && (
                         <p className={located >= sellOrder.quantity ? "text-muted" : "text-warning"}>
                             {ticker} is hard to borrow: a short sale needs a locate first, and holding the short costs a daily borrow fee. {located > 0 ? `${located} shares located today. ` : ""}

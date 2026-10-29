@@ -56,9 +56,12 @@ describe("order validation", () => {
         rejects(() => check({ type: "stop" }), 422, /stop_price is required/);
     });
 
-    test("fractional and notional orders are day orders, never short, on fractionable assets", () => {
+    test("fractional and notional orders are day orders, never short or covering one, on fractionable assets", () => {
         rejects(() => check({ qty: "1.5", time_in_force: "gtc" }), 422, /must be day orders/);
         rejects(() => check({ qty: "1.5", side: "sell" }), 403, /can't be sold short/);
+        rejects(() => check({ qty: "1.5", position_intent: "buy_to_close" }, { position: -3 }), 403, /can't cover a short/);
+        rejects(() => check({ qty: undefined, notional: "50" }, { position: -3 }), 403, /can't cover a short/);
+        check({ qty: "2", position_intent: "buy_to_close" }, { position: -3 });
         rejects(() => check({ qty: "1.5" }, { asset: { tradable: true, fractionable: false, shortable: true, attributes: [] } }), 422, /not fractionable/);
         rejects(() => check({ qty: undefined, notional: "50", type: "stop", stop_price: "101" }), 422, /notional orders must be market or limit/);
         rejects(() => check({ qty: "1.5" }, { configurations: { fractional_trading: false } }), 403, /fractional trading is disabled/);

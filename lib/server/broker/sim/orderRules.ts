@@ -204,7 +204,8 @@ export const validateOrder = (spec: OrderSpec, context: OrderContext, { groupId 
         if (orderClass !== "simple") throw invalid("extended hours orders can't be bracket, oco or oto orders");
     }
 
-    // Fractional and notional orders: day orders, simple, on fractionable assets, never sold short
+    // Fractional and notional orders: day orders, simple, on fractionable assets, never sold short, and never covering a short, since
+    // shorts are whole shares and a part cover would leave a fractional one (Alpaca doesn't document covers; this is the simulator's)
     const fractional = notional !== null || (qty !== null && !isWhole(qty));
     if (fractional) {
         if (context.configurations.fractional_trading === false) throw forbidden("fractional trading is disabled for this account");
@@ -215,6 +216,7 @@ export const validateOrder = (spec: OrderSpec, context: OrderContext, { groupId 
         if (type === "trailing_stop") throw invalid("fractional orders can't be trailing stops");
         if (spec.extendedHours && !context.asset?.attributes.includes("fractional_eh_enabled")) throw invalid(`fractional orders on ${spec.symbol} can't trade in extended hours`);
         if (side === "sell" && !(context.position > 0)) throw forbidden("fractional orders can't be sold short");
+        if (side === "buy" && context.position < 0) throw forbidden("fractional orders can't cover a short position; cover whole shares");
     }
     if (replacing) return;
 

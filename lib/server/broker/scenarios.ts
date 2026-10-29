@@ -193,6 +193,32 @@ export const SCENARIOS: Scenario[] = [
         }
     },
     {
+        name: "close position: a long is sold in part by dollars then in full, and a short covered, as the Portfolio page closes them",
+        async run(h) {
+            const accountId = await fundedAccount(h, 10000, { margin: true });
+            await waitFor(h, "shorting to be enabled", async () => (await h.broker.getTradeAccount(accountId)).shorting_enabled);
+            const qtyOf = async (symbol: string) => (await h.broker.listPositions(accountId)).find(position => position.symbol === symbol)?.qty ?? "0";
+            // The row's orders: day market orders with a closing intent, by dollars (a part of a long) or the shares held
+            const close = (symbol: string, side: "buy" | "sell", size: { qty: string } | { notional: string }) =>
+                placed(h, accountId, { symbol, side, ...size, position_intent: side === "sell" ? "sell_to_close" : "buy_to_close" });
+
+            await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.stock, side: "buy", qty: String(STOCKS) }));
+            const part = await filled(h, accountId, await close(h.symbols.stock, "sell", { notional: "10.00" }));
+            assert.ok(Number(part.filled_qty) > 0 && Number(part.filled_qty) < STOCKS, `sold ${part.filled_qty}`);
+            const left = await qtyOf(h.symbols.stock);
+            assert.ok(Math.abs(Number(left) - (STOCKS - Number(part.filled_qty))) < 1e-6, `left ${left}`);
+            await filled(h, accountId, await close(h.symbols.stock, "sell", { qty: left }));
+            assert.equal(await positionQty(h, accountId, h.symbols.stock), 0);
+
+            await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.other, side: "sell", qty: "3" }));
+            assert.equal(Number(await qtyOf(h.symbols.other)), -3);
+            await filled(h, accountId, await close(h.symbols.other, "buy", { qty: "3" }));
+            assert.equal(await positionQty(h, accountId, h.symbols.other), 0);
+            // A closing order with nothing left to close is refused rather than opening the other side
+            await assert.rejects(close(h.symbols.other, "buy", { qty: "1" }), (error: { status?: number }) => error.status === 403 || error.status === 422);
+        }
+    },
+    {
         name: "partial fill: a large order fills in parts, then completely",
         needs: ["thinlyTraded"],
         async run(h) {

@@ -202,6 +202,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - Replacing a partially filled order isn't simulated (cancel it and submit the rest). Replace and cancel run synchronously, so `pending_replace` and `pending_cancel` only appear as events.
   - Buys are checked and reserved at their limit, stop or the ask (no buffer); short sales at the higher of the limit and 3% above the ask, under the cash-collateral model until Phase 5.
   - An order can't go through zero either way (a buy past a short is refused like a sell past a long).
+  - Fractional and notional buys can't cover a short (shorts are whole shares, so a part cover would leave a fractional short). Alpaca documents only that fractional orders can't sell short, so this is the simulator's rule until checked against the sandbox.
   - Bracket and OTO legs report `held` until their entry fills, as Alpaca does, though the spec's `OrderStatus` enum leaves it out.
   - Orders don't carry why they ended; the routes add the simulator's `reason`, which Alpaca sends with the order's trade event.
   - The order engine runs every 5s (`SIM_ORDER_MATCH_MS`), outside the overnight close.

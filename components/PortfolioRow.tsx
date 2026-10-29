@@ -60,7 +60,9 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
     // A partial sell can leave the stepper above what's left of the position
     const stepperValue = Math.min(tradeValue, maxValue);
     const sized = toOrder({ mode, value: stepperValue, price: tradePrice, maxShares: shares });
-    const closeQuantity = contract ? Math.floor(sized.quantity) : sized.quantity;
+    // Contracts close in whole contracts, and shorts are covered in whole shares, since a fractional cover is refused
+    const wholeOnly = contract !== null || !isLong;
+    const closeQuantity = wholeOnly ? Math.floor(sized.quantity) : sized.quantity;
     const total = roundCents(sized.total * multiplier);
     // quantity is signed, so a short gains when the price falls
     const gain = hasPrice ? (price - avgCost) * quantity * multiplier : null;
@@ -171,10 +173,10 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
                 </td>
                 <td>
                     <div className="portfolio-trade">
-                        {!contract && <TradeModeToggle mode={mode} setMode={onModeChange} disabled={!hasPrice} />}
+                        {!wholeOnly && <TradeModeToggle mode={mode} setMode={onModeChange} disabled={!hasPrice} />}
                         <div className="order-size">
                             <QuantityStepper value={stepperValue} setValue={setTradeValue} max={maxValue}
-                                decimals={contract ? 0 : mode === "dollars" ? 2 : 6} prefix={mode === "dollars" ? "$" : ""} />
+                                decimals={wholeOnly ? 0 : mode === "dollars" ? 2 : 6} prefix={mode === "dollars" ? "$" : ""} />
                             {mode === "dollars" && <span className="order-preview">≈ {formatShares(closeQuantity)} shares</span>}
                         </div>
                         <button className={isLong ? "sell-btn" : "buy-btn"} onClick={onClosePosition} disabled={submitting || !hasPrice || closeQuantity <= 0}
