@@ -217,6 +217,8 @@ export const accountSummary = ({ trade, positions, configurations, ledger, margi
         accruedInterest: 0,
         marginStatus: "ok",
         marginCalls: [],
+        intradayDeficits: [],
+        marginRestrictedUntil: null,
         shortingEnabled: trade.shorting_enabled === true,
         shortingBlockedReason: trade.shorting_enabled ? null : "Short selling isn't enabled for this account",
         unrealizedPnl: roundCents(unrealized),

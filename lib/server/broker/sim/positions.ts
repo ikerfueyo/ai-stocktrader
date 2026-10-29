@@ -321,7 +321,7 @@ export const ledgerState = async (db: Db, accountId: string, now = new Date()) =
         `SELECT fee_type, SUM(amount) AS amount FROM sim_fee_accruals WHERE account_id = $1 AND deducted_by IS NULL
          GROUP BY "date", fee_type`, [accountId]
     );
-    const transfers = await ledgerCash([accountId]);
+    const transfers = await ledgerCash([accountId], db);
     // What the end of day will deduct: each day's total per fee type, rounded up to the cent
     const accruedFees = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
     for (const { fee_type, amount } of accruals) accruedFees[fee_type] = Math.round((accruedFees[fee_type] + roundFeeUp(Number(amount))) * 100) / 100;

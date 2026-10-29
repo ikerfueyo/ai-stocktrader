@@ -9,6 +9,7 @@ import { contractName, intrinsicValue, parseOptionSymbol } from "../../../option
 import { lockAccount, openLots, recordFill } from "./positions";
 import { postActivity } from "./transfers";
 import { marginSnapshot } from "./marginAccount";
+import { trackMarginLevel } from "./intradayDeficits";
 import { createOrder } from "./orders";
 import { deliveryFor, earlyAssignmentLikely, expirationOutcome, OPTION_MULTIPLIER, sharesCoveringCalls } from "./options";
 import type { Lot } from "./ledger";
@@ -80,10 +81,10 @@ const deliver = async (db: Db, accountId: string, symbol: string, contracts: num
         );
     }
     const delivery = deliveryFor({ type: contract.type, strike: contract.strike, qty: long ? taken : -taken, premium });
-    await recordFill(db, accountId, {
+    await trackMarginLevel(db, accountId, () => recordFill(db, accountId, {
         symbol: contract.underlying, side: delivery.side, qty: delivery.shares, price: delivery.cashPrice, total: roundCents(delivery.shares * delivery.cashPrice),
         lotPrice: delivery.lotPrice, reason: kind === "exercise" ? "EXERCISE" : "ASSIGNMENT", at
-    });
+    }), { symbol: contract.underlying, at });
     return { activity, taken };
 };
 

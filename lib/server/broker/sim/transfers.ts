@@ -376,16 +376,15 @@ export const listActivities = async (accountId: string, query: ListActivitiesQue
 
 // For ledgerState (positions.ts): the accounts' ledger cash, what their queued withdrawals hold back before they're debited, and
 // the instant deposit credit not yet settled (it can be traded with but not withdrawn)
-export const ledgerCash = async (accountIds: string[]): Promise<{ cash: number; pendingOut: number; unsettledInstant: number }> => {
+export const ledgerCash = async (accountIds: string[], db: PoolClient | typeof pool = pool): Promise<{ cash: number; pendingOut: number; unsettledInstant: number }> => {
     if (accountIds.length === 0) return { cash: 0, pendingOut: 0, unsettledInstant: 0 };
-    const [{ rows: [ledger] }, { rows: [pending] }] = await Promise.all([
-        pool.query<{ cash: string }>("SELECT COALESCE(SUM(net_amount), 0) AS cash FROM sim_activities WHERE account_id = ANY($1)", [accountIds]),
-        pool.query<{ out: string; instant: string }>(
-            `SELECT COALESCE(SUM(CASE WHEN direction = 'OUTGOING' AND status = 'QUEUED' THEN amount + fee ELSE 0 END), 0) AS out,
-                    COALESCE(SUM(CASE WHEN direction = 'INCOMING' AND status IN ('QUEUED', 'SENT_TO_CLEARING') THEN instant_amount ELSE 0 END), 0) AS instant
-             FROM sim_transfers WHERE account_id = ANY($1)`, [accountIds]
-        )
-    ]);
+    // One after the other, since db may be a pool client
+    const { rows: [ledger] } = await db.query<{ cash: string }>("SELECT COALESCE(SUM(net_amount), 0) AS cash FROM sim_activities WHERE account_id = ANY($1)", [accountIds]);
+    const { rows: [pending] } = await db.query<{ out: string; instant: string }>(
+        `SELECT COALESCE(SUM(CASE WHEN direction = 'OUTGOING' AND status = 'QUEUED' THEN amount + fee ELSE 0 END), 0) AS out,
+                COALESCE(SUM(CASE WHEN direction = 'INCOMING' AND status IN ('QUEUED', 'SENT_TO_CLEARING') THEN instant_amount ELSE 0 END), 0) AS instant
+         FROM sim_transfers WHERE account_id = ANY($1)`, [accountIds]
+    );
     return { cash: Number(ledger.cash), pendingOut: Number(pending.out), unsettledInstant: Number(pending.instant) };
 };
 

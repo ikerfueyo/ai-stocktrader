@@ -23,6 +23,8 @@ const SYMBOLS = { stock: `ZS${suffix}`, other: `ZT${suffix}`, thin: `ZU${suffix}
 const USER = "user_scenarios";
 Object.assign(process.env, {
     DB_NAME: database, MARKET_HOURS_OVERRIDE: "open", SIM_KYC_SECONDS: "0", SIM_KYC_REVIEW_SECONDS: "0", BACKGROUND_JOBS: "off",
+    // One missed deficit makes a practice, so the intraday margin scenario's restriction comes from its one deficit
+    SIM_INTRADAY_PRACTICE_MISSES: "1",
     PRICE_OVERRIDES: JSON.stringify({ [SYMBOLS.stock]: 100, [SYMBOLS.other]: 50, [SYMBOLS.thin]: 20 })
 });
 
@@ -56,9 +58,10 @@ const prepareDatabase = async () => {
 const makeHarness = async (): Promise<ScenarioHarness> => {
     await prepareDatabase();
     // Loaded after the environment is set, since the modules read it when they load
-    const [{ SimBroker }, { default: pool }, accounts, transfers, orders, positions, calls, { overridePrice }, { loadCorporateActions }, portfolio, { withLedgerAccount }, { TRANSFER_FEES }] = await Promise.all([
+    const [{ SimBroker }, { default: pool }, accounts, transfers, orders, positions, calls, { overridePrice }, { loadCorporateActions }, portfolio, { withLedgerAccount }, { TRANSFER_FEES }, marginAccount, { easternTime }] = await Promise.all([
         import("./index"), import("../../db"), import("./accounts"), import("./transfers"), import("./orders"), import("./positions"), import("./calls"),
-        import("../../alphaVantage"), import("../../corporateActions"), import("../../portfolio"), import("../../requestContext"), import("./funding")
+        import("../../alphaVantage"), import("../../corporateActions"), import("../../portfolio"), import("../../requestContext"), import("./funding"), import("./marginAccount"),
+        import("../../../marketHours")
     ]);
     // Their corporate actions count as fetched, so none is looked up at Alpha Vantage
     await pool.query(
@@ -126,6 +129,16 @@ const makeHarness = async (): Promise<ScenarioHarness> => {
         },
         async enforceMargin(accountId) {
             await calls.enforceMargin(accountId);
+        },
+        intradayMargin: {
+            async endOfDay(accountId, day) {
+                // At the eod job's time, or now if that's later today, so what the scenario did today came before it
+                await calls.endOfDayAccount(accountId, new Date(Math.max(Date.now(), easternTime(day, "20:15").getTime())));
+            },
+            async status(accountId) {
+                const { deficits, restrictedUntil } = await marginAccount.intradayStatus(pool, accountId, today());
+                return { deficits: deficits.map(row => ({ date: row.date, amount: Number(row.amount), deMinimis: row.de_minimis, restrictOn: row.restrict_on })), restrictedUntil };
+            }
         },
         close: () => pool.end()
     };

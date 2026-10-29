@@ -9,6 +9,7 @@ import { roundCents } from "../../account";
 import { easternParts } from "../../../marketHours";
 import { ledgerState } from "./positions";
 import { computeMargin, effectiveMultiplier, shortingBlocked, type MarginPosition, type MarginState, type Session } from "./margin";
+import { intradayMarginLevel, restrictionActive } from "./intradayMargin";
 import { reservedForOrders } from "./matching";
 import { toTradeAccount } from "./tradeAccount";
 import { totalOptionRequirement } from "./options";
@@ -23,6 +24,7 @@ import type { Quote } from "../../../types";
 
 type Db = PoolClient | typeof pool;
 const LABEL = "Sim margin";
+const dayOf = (date: Date) => easternParts(date).dateKey;
 
 // Orders still open, which hold back buying power (held legs don't, but are listed)
 export const OPEN_ORDER_STATUSES = ["new", "accepted", "partially_filled", "held", "pending_new", "pending_cancel", "pending_replace"];
@@ -59,7 +61,7 @@ export const maxMultiplierOf = (row: Pick<SimAccountRow, "agreements" | "configu
 
 export interface MarginSnapshot {
     row: SimAccountRow;
-    ledger: Awaited<ReturnType<typeof ledgerState>>;
+    ledger: Ledger;
     // Cash less queued withdrawals, which are held from the moment they're requested
     cash: number;
     positions: MarginPosition[];
@@ -74,6 +76,9 @@ export interface MarginSnapshot {
     // Why the account can't open shorts now, or null
     shortingBlocked: string | null;
     withdrawable: number;
+    // Intraday margin deficits still outstanding, and the last day of a 90-day restriction in force (null if none)
+    intradayDeficits: IntradayDeficitRow[];
+    restrictedUntil: string | null;
 }
 
 // What the account's open orders hold back from buying power (reservedForOrders), leaving out exceptIds. Option orders hold what was
@@ -109,18 +114,15 @@ export const reservedCash = async (db: Db, accountId: string, { positions, multi
     );
 };
 
-// The account's margin now: its ledger valued at current quotes (a position without one at its last known price, or its cost), with
-// its assets' margin flags, the buying power its open orders hold back (but exceptOrderIds) and its open calls. session defaults to
-// the market's now.
-export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds = [], session, now = new Date() }: { exceptOrderIds?: string[]; session?: Session; now?: Date } = {}): Promise<MarginSnapshot> => {
-    const row = await accountRow(db, accountId);
-    const ledger = await ledgerState(db, accountId, now);
+type Ledger = Awaited<ReturnType<typeof ledgerState>>;
+
+// The ledger's positions at current quotes (a position without one at its last known price, or its cost), with their assets' margin
+// flags
+const valuePositions = async (ledger: Ledger) => {
     const symbols = ledger.positions.map(({ ticker }) => ticker);
-    const [{ quotes, prices, staleTickers }, assetList, market, calls] = await Promise.all([
+    const [{ quotes, prices, staleTickers }, assetList] = await Promise.all([
         symbols.length > 0 ? fetchPrices(symbols, LABEL) : { quotes: {} as Record<string, Quote>, prices: {} as Record<string, number>, staleTickers: [] as string[] },
-        Promise.all(symbols.map(async symbol => [symbol, (await findAsset(symbol)) ?? null] as const)),
-        session ? null : getMarketStatus(),
-        openCalls(db, accountId, now)
+        Promise.all(symbols.map(async symbol => [symbol, (await findAsset(symbol)) ?? null] as const))
     ]);
     const assets = Object.fromEntries(assetList);
     const positions: MarginPosition[] = ledger.positions.map(({ ticker, quantity, avgCost }) => ({
@@ -129,9 +131,53 @@ export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds
         ...(isOptionSymbol(ticker) ? { multiplier: contractMultiplier(ticker), option: true } : {})
     }));
     const optionRequirement = totalOptionRequirement(ledger.positions.map(({ ticker, quantity }) => ({ symbol: ticker, qty: quantity })));
-    const cash = roundCents(ledger.cash - ledger.pendingTransferOut);
+    return { symbols, quotes, prices, staleTickers, assets, positions, optionRequirement, cash: roundCents(ledger.cash - ledger.pendingTransferOut) };
+};
+
+// The account's intraday margin level now (FINRA Rule 4210(a)(17)): equity less the maintenance requirement at current quotes, or
+// null for an account that isn't a margin account (cash accounts and IRAs, which the rule leaves out)
+export const marginLevel = async (db: Db, accountId: string, now = new Date()): Promise<number | null> => {
+    if (maxMultiplierOf(await accountRow(db, accountId)) <= 1) return null;
+    const { positions, optionRequirement, cash } = await valuePositions(await ledgerState(db, accountId, now));
+    return intradayMarginLevel(computeMargin({ cash, positions, maxMultiplier: 1, session: "closed", optionRequirement }));
+};
+
+export interface IntradayDeficitRow {
+    id: string; account_id: string; date: string; amount: string; equity: string; start_level: string; de_minimis: boolean; restrict_on: string; expire_on: string;
+    issued_at: Date; status: "open" | "met" | "expired"; met_at: Date | null; missed: boolean; restricted_until: string | null; created_at: Date;
+}
+
+export const DEFICIT_COLUMNS = `*, "date"::text AS "date", restrict_on::text AS restrict_on, expire_on::text AS expire_on, restricted_until::text AS restricted_until`;
+
+// The account's intraday margin deficits still outstanding, and the last day of a 90-day restriction in force on dateKey (null if none)
+export const intradayStatus = async (db: Db, accountId: string, dateKey: string) => {
+    const { rows } = await db.query<IntradayDeficitRow>(
+        `SELECT ${DEFICIT_COLUMNS} FROM sim_intraday_deficits WHERE account_id = $1 AND met_at IS NULL AND (status = 'open' OR restricted_until >= $2) ORDER BY sim_intraday_deficits."date"`,
+        [accountId, dateKey]
+    );
+    const restrictedUntil = rows.filter(row => restrictionActive({ restrictedUntil: row.restricted_until, metAt: row.met_at }, dateKey))
+        .map(({ restricted_until }) => restricted_until!).sort().at(-1) ?? null;
+    return { deficits: rows.filter(({ status }) => status === "open"), restrictedUntil };
+};
+
+// Why the account can't borrow more or short now under a 90-day intraday margin restriction
+export const restrictionReason = (restrictedUntil: string) =>
+    `An intraday margin deficit went unmet past its 5th business day, so until ${restrictedUntil} new short sales and borrowing aren't allowed (FINRA Rule 4210(d)(2))`;
+
+// The account's margin now: its ledger valued at current quotes (a position without one at its last known price, or its cost), with
+// its assets' margin flags, the buying power its open orders hold back (but exceptOrderIds) and its open calls. session defaults to
+// the market's now. Under a 90-day intraday margin restriction the account trades at 1x and can't short.
+export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds = [], session, now = new Date() }: { exceptOrderIds?: string[]; session?: Session; now?: Date } = {}): Promise<MarginSnapshot> => {
+    const row = await accountRow(db, accountId);
+    const ledger = await ledgerState(db, accountId, now);
+    const [{ symbols, quotes, prices, staleTickers, assets, positions, optionRequirement, cash }, market, calls] = await Promise.all([
+        valuePositions(ledger),
+        session ? null : getMarketStatus(),
+        openCalls(db, accountId, now)
+    ]);
+    const intraday = await intradayStatus(db, accountId, dayOf(now));
     const sessionNow = session ?? (market!.session as Session);
-    const maxMultiplier = maxMultiplierOf(row);
+    const maxMultiplier = intraday.restrictedUntil ? 1 : maxMultiplierOf(row);
     const unreserved = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, optionRequirement });
     const reserved = await reservedCash(db, accountId, { positions: ledger.positions, multiplier: unreserved.multiplier, exceptIds: exceptOrderIds });
     const state = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, reserved, optionRequirement });
@@ -143,8 +189,9 @@ export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds
         row, ledger, cash, positions, assets, quotes, staleTickers: staleTickers.filter(ticker => symbols.includes(ticker)).concat(symbols.filter(symbol => prices[symbol] === undefined)),
         reserved, state, calls, session: sessionNow,
         shortingBlocked: row.account_type === "ira" ? "IRAs can't sell short"
+            : intraday.restrictedUntil ? restrictionReason(intraday.restrictedUntil)
             : shortingBlocked({ hasMarginAgreement: hasMarginAgreement(row), noShorting: row.configurations?.no_shorting === true, equity: state.equity }),
-        withdrawable
+        withdrawable, intradayDeficits: intraday.deficits, restrictedUntil: intraday.restrictedUntil
     };
 };
 
@@ -163,8 +210,6 @@ export const withdrawalError = (snapshot: MarginSnapshot, amount: number): { sta
     }
     return null;
 };
-
-const dayOf = (date: Date) => easternParts(date).dateKey;
 
 // GET /v1/trading/accounts/{id}/account: the margin snapshot in Alpaca's shape, with the last end-of-day balances as the last_* fields
 export const getTradeAccount = async (accountId: string): Promise<TradeAccount> => {

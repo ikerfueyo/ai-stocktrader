@@ -113,6 +113,21 @@ export const notificationFor = (event: BrokerEventLike): NotificationDraft | nul
             const body = payload.event === "margin_call" && call.due_at ? `Due ${new Date(call.due_at).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" })} ET: deposit or close positions.` : "";
             return { kind: "margin", title, body, link: "/portfolio", dedupeKey };
         }
+        if (payload.event === "intraday_margin_deficit" || payload.event === "intraday_margin_deficit_met" || payload.event === "intraday_margin_restriction") {
+            const deficit = (payload.intraday_margin_deficit ?? {}) as { amount?: string; date?: string; restrict_on?: string; restricted_until?: string };
+            const what = `intraday margin deficit of ${money(deficit.amount)}${deficit.date ? ` on ${deficit.date}` : ""}`;
+            if (payload.event === "intraday_margin_deficit") {
+                return {
+                    kind: "margin", title: `An ${what}`, link: "/portfolio", dedupeKey,
+                    body: `Your trades took the account below its maintenance requirement during the day. Deposit it${deficit.restrict_on ? ` by the close on ${deficit.restrict_on}` : ""}; repeated misses restrict borrowing and short sales for 90 days.`
+                };
+            }
+            if (payload.event === "intraday_margin_deficit_met") return { kind: "margin", title: `Your ${what} is met`, body: "", link: "/portfolio", dedupeKey };
+            return {
+                kind: "margin", title: "Borrowing and short sales are restricted", link: "/portfolio", dedupeKey,
+                body: `Your ${what} went unmet past its 5th business day${deficit.restricted_until ? `: until ${deficit.restricted_until}, or until it's met,` : ","} new short sales and borrowing aren't allowed.`
+            };
+        }
         const status = payload.status_to as string | undefined;
         if (!status || status === payload.status_from) return null;
         const message = ACCOUNT_STATUS[status];

@@ -6,7 +6,7 @@ import { brokerLedger, forgetBrokerLedger, getAccount, getFills, ledgerAccountId
 import { getBroker } from "@/lib/server/broker";
 import { accountSummary } from "@/lib/server/brokerLedger";
 import { updateAccount } from "@/lib/server/upkeep";
-import { marginSnapshot } from "@/lib/server/broker/sim/marginAccount";
+import { marginSnapshot, maxMultiplierOf } from "@/lib/server/broker/sim/marginAccount";
 import { accruedInterest, MARGIN_RATE } from "@/lib/server/broker/sim/calls";
 import { needsImmediateLiquidation } from "@/lib/server/broker/sim/margin";
 import { totalOptionRequirement } from "@/lib/server/broker/sim/options";
@@ -42,7 +42,7 @@ export const GET = withUser(async (request, context, userId) => {
         return NextResponse.json<Account>({
             ...ledger, totalCash, optionsBuyingPower: 0, optionRequirement: 0, optionsLevel: 0, optionsApprovedLevel: 0, buyingPower: 0, regtBuyingPower: 0, nonMarginableBuyingPower: 0, reservedCash: 0, multiplier: 1, maxMultiplier: 1, equity: totalCash,
             longMarketValue: 0, shortMarketValue: 0, initialMargin: 0, maintenanceMargin: 0, excessLiquidity: totalCash, sma: 0, debitBalance: 0, marginRate: MARGIN_RATE,
-            accruedInterest: 0, marginStatus: "ok", marginCalls: [], shortingEnabled: false, shortingBlockedReason: "Open an account first", unrealizedPnl: 0,
+            accruedInterest: 0, marginStatus: "ok", marginCalls: [], intradayDeficits: [], marginRestrictedUntil: null, shortingEnabled: false, shortingBlockedReason: "Open an account first", unrealizedPnl: 0,
             missingPrices: [], withdrawableCash: 0
         });
     }
@@ -63,7 +63,8 @@ export const GET = withUser(async (request, context, userId) => {
         nonMarginableBuyingPower: state.nonMarginableBuyingPower,
         reservedCash: snapshot.reserved,
         multiplier: state.multiplier,
-        maxMultiplier: state.maxMultiplier,
+        // The account's own, which a 90-day intraday margin restriction holds at 1x for now
+        maxMultiplier: maxMultiplierOf(snapshot.row),
         equity: state.equity,
         longMarketValue: state.longMarketValue,
         shortMarketValue: state.shortMarketValue,
@@ -78,6 +79,10 @@ export const GET = withUser(async (request, context, userId) => {
         marginCalls: snapshot.calls.map(call => ({
             id: call.id, type: call.type, amount: Number(call.amount), date: call.date, issuedAt: call.issued_at.toISOString(), dueAt: call.due_at.toISOString()
         })),
+        intradayDeficits: snapshot.intradayDeficits.map(deficit => ({
+            id: deficit.id, date: deficit.date, amount: Number(deficit.amount), deMinimis: deficit.de_minimis, missed: deficit.missed, restrictOn: deficit.restrict_on, expireOn: deficit.expire_on
+        })),
+        marginRestrictedUntil: snapshot.restrictedUntil,
         shortingEnabled: snapshot.shortingBlocked === null,
         shortingBlockedReason: snapshot.shortingBlocked,
         unrealizedPnl,

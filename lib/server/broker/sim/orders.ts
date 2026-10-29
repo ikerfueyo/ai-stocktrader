@@ -15,6 +15,7 @@ import { ledgerState, listFills, lockAccount, positionQty, recordFill, toAction,
 import { adjustOrder, describe, type OrderAdjustment } from "./corporateActions";
 import { buyingPowerCost } from "./margin";
 import { hardToBorrow, marginSnapshot, OPEN_ORDER_STATUSES } from "./marginAccount";
+import { trackMarginLevel } from "./intradayDeficits";
 import { locatedShares, consumeLocates } from "./locates";
 import { applyReplace, orderExpiry, parseOrderRequest, validateOrder, type OpenOrderSummary, type OrderSpec } from "./orderRules";
 import { evaluateOrder, reservationPrice, trailingStop, tradesIn, type LiveOrder, type MatchContext, type MatchFill, type Session } from "./matching";
@@ -405,10 +406,10 @@ const fillOrder = async (db: PoolClient, row: SimOrderRow, fill: MatchFill, quot
     const cumQty = Number(row.filled_qty) + qty;
     const complete = row.notional !== null || capped || cumQty >= Number(row.qty) - 1e-9;
     const leavesQty = complete ? 0 : Number(row.qty) - cumQty;
-    const activity = await recordFill(db, row.account_id, {
+    const activity = await trackMarginLevel(db, row.account_id, () => recordFill(db, row.account_id, {
         symbol: row.symbol, side: row.side, qty, price: fill.price, total, quoteTime: quote.quoteTime, fillPolicy: fill.fillPolicy, orderId: row.id, cumQty, leavesQty,
         reason: row.liquidation ? "LIQUIDATION" : undefined
-    });
+    }), { symbol: row.symbol });
     const filledNotional = roundCents(Number(row.filled_notional) + total);
     const now = new Date();
     const updated = await updateOrder(db, row.id, {

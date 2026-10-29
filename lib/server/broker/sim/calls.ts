@@ -11,6 +11,8 @@ import { postActivity } from "./transfers";
 import { borrowFee, deficiencies, marginInterest, needsImmediateLiquidation, planLiquidation, type CallType } from "./margin";
 import { hardToBorrow, marginSnapshot, type MarginSnapshot } from "./marginAccount";
 import { cancelAllOrders, createOrder } from "./orders";
+import { endOfDayIntraday } from "./intradayDeficits";
+import { intradayMarginLevel } from "./intradayMargin";
 
 // Margin calls, liquidation, margin interest and hard-to-borrow fees in the simulator, as Alpaca runs them:
 //   At each close (the eod job), an account below its maintenance requirement, or below Reg T initial margin after a day that opened
@@ -141,80 +143,93 @@ export const accountsOnMargin = async (): Promise<string[]> =>
 // The margin end of day (the eod job, after the fee deductions), for every open account after the close on a trading day: keeps the
 // closing balances (the trading account's last_* fields), issues the calls the close shows, accrues the night's margin interest on
 // the settlement-date debit and charges hard-to-borrow shorts their borrow fee, then posts the month's interest after its last trading
-// day. Each step is kept once per account and day, so running it again does nothing new.
+// day, and runs the intraday margin rule (./intradayDeficits.ts). Each step is kept once per account and day, so running it again does
+// nothing new.
 export const endOfDayMargin = async (now = new Date()) => {
-    const today = dayOf(now);
-    if (!isTradingDay(today) || marketStatus(now).open) return { balances: 0, calls: 0, interest: 0, borrowFees: 0 };
+    const result = { balances: 0, calls: 0, interest: 0, borrowFees: 0, intradayDeficits: 0, intradayRestrictions: 0 };
+    if (!isTradingDay(dayOf(now)) || marketStatus(now).open) return result;
     const { rows: accounts } = await pool.query<{ id: string }>("SELECT id FROM sim_accounts WHERE status IN ('ACTIVE', 'ACCOUNT_UPDATED')");
-    const result = { balances: 0, calls: 0, interest: 0, borrowFees: 0 };
-    const days = carryDays(today);
-    const issueDay = nextTradingDay(today);
-    let dueDay = issueDay;
-    for (let i = 1; i < CALL_DAYS; i++) dueDay = nextTradingDay(dueDay);
     for (const { id } of accounts) {
         try {
-            const snapshot = await marginSnapshot(pool, id, { session: "closed", now });
-            const { state, ledger } = snapshot;
-            await pool.query(
-                `INSERT INTO sim_daily_balances (account_id, "date", equity, cash, long_market_value, short_market_value, maintenance_margin, initial_margin, buying_power, regt_buying_power)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                 ON CONFLICT (account_id, "date") DO UPDATE SET equity = EXCLUDED.equity, cash = EXCLUDED.cash, long_market_value = EXCLUDED.long_market_value,
-                     short_market_value = EXCLUDED.short_market_value, maintenance_margin = EXCLUDED.maintenance_margin, initial_margin = EXCLUDED.initial_margin,
-                     buying_power = EXCLUDED.buying_power, regt_buying_power = EXCLUDED.regt_buying_power`,
-                [id, today, state.equity, ledger.cash, state.longMarketValue, state.shortMarketValue, state.maintenanceMargin, state.initialMargin, state.buyingPower, state.regtBuyingPower]
-            );
-            result.balances++;
-            await withAccountTx(id, async db => {
-                // Calls
-                const owed = deficiencies(state, { openedToday: await openedOn(id, today) });
-                for (const type of ["maintenance", "regt"] as CallType[]) {
-                    if (owed[type] <= 0) continue;
-                    const { rows: [existing] } = await db.query<{ id: string }>("SELECT id FROM sim_margin_calls WHERE account_id = $1 AND \"type\" = $2 AND status = 'open'", [id, type]);
-                    if (existing) {
-                        await db.query("UPDATE sim_margin_calls SET amount = $2 WHERE id = $1", [existing.id, owed[type]]);
-                        continue;
-                    }
-                    const call = { id: randomUUID(), type, amount: owed[type], due_at: easternTime(dueDay, "15:45") };
-                    await db.query(
-                        `INSERT INTO sim_margin_calls (id, account_id, "type", amount, "date", issued_at, due_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                        [call.id, id, type, call.amount, today, easternTime(issueDay, "08:00"), call.due_at]
-                    );
-                    await callEvent(db, id, "margin_call", call);
-                    result.calls++;
-                }
-                // Margin interest on the settlement-date debit: cash as if every trade had settled on its settlement date
-                const settledCash = ledger.cash - ledger.unsettledProceeds + ledger.unsettledPurchases;
-                const debit = roundCents(Math.max(0, -settledCash));
-                if (debit > 0) {
-                    const { rowCount } = await db.query(
-                        `INSERT INTO sim_interest_accruals (account_id, "date", debit, rate, days, amount) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
-                        [id, today, debit, MARGIN_RATE, days, marginInterest(debit, MARGIN_RATE, days)]
-                    );
-                    result.interest += rowCount ?? 0;
-                }
-                // Hard-to-borrow fees
-                for (const position of snapshot.positions.filter(({ qty, symbol }) => qty < 0 && hardToBorrow(symbol, snapshot.assets[symbol]))) {
-                    const amount = roundCents(borrowFee({ qty: position.qty, price: position.price, rate: HTB_BORROW_RATE, days }));
-                    const { rowCount } = await db.query(
-                        `INSERT INTO sim_borrow_fees (account_id, "date", symbol, qty, price, rate, amount) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
-                        [id, today, position.symbol, Math.abs(position.qty), position.price, HTB_BORROW_RATE, amount]
-                    );
-                    if (!rowCount || amount < 0.01) continue;
-                    const activity = await postActivity(db, {
-                        accountId: id, type: "FEE", netAmount: -amount, symbol: position.symbol, qty: Math.abs(position.qty),
-                        description: `Stock borrow fee: ${position.symbol} short, ${days} day${days === 1 ? "" : "s"} at ${(HTB_BORROW_RATE * 100).toFixed(2)}% a year (simulated rate)`,
-                        at: new Date(Math.min(easternTime(today, "20:00").getTime(), now.getTime()))
-                    });
-                    await db.query(`UPDATE sim_borrow_fees SET activity_id = $4 WHERE account_id = $1 AND "date" = $2 AND symbol = $3`, [id, today, position.symbol, activity.id]);
-                    result.borrowFees++;
-                }
-                // The month's interest posts after its last trading day
-                if (issueDay.slice(0, 7) !== today.slice(0, 7)) await postInterest(db, id, today);
-            });
+            const counts = await endOfDayAccount(id, now);
+            for (const key of Object.keys(result) as (keyof typeof result)[]) result[key] += counts[key];
         } catch (error) {
             console.error(`${LABEL}: end of day for ${id}: ${error instanceof Error ? error.message : error}`);
         }
     }
+    return result;
+};
+
+// The margin end of day for one account, at now (after the close of a trading day)
+export const endOfDayAccount = async (id: string, now = new Date()) => {
+    const today = dayOf(now);
+    const result = { balances: 0, calls: 0, interest: 0, borrowFees: 0, intradayDeficits: 0, intradayRestrictions: 0 };
+    const days = carryDays(today);
+    const issueDay = nextTradingDay(today);
+    let dueDay = issueDay;
+    for (let i = 1; i < CALL_DAYS; i++) dueDay = nextTradingDay(dueDay);
+    const snapshot = await marginSnapshot(pool, id, { session: "closed", now });
+    const { state, ledger } = snapshot;
+    await pool.query(
+        `INSERT INTO sim_daily_balances (account_id, "date", equity, cash, long_market_value, short_market_value, maintenance_margin, initial_margin, buying_power, regt_buying_power)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (account_id, "date") DO UPDATE SET equity = EXCLUDED.equity, cash = EXCLUDED.cash, long_market_value = EXCLUDED.long_market_value,
+             short_market_value = EXCLUDED.short_market_value, maintenance_margin = EXCLUDED.maintenance_margin, initial_margin = EXCLUDED.initial_margin,
+             buying_power = EXCLUDED.buying_power, regt_buying_power = EXCLUDED.regt_buying_power`,
+        [id, today, state.equity, ledger.cash, state.longMarketValue, state.shortMarketValue, state.maintenanceMargin, state.initialMargin, state.buyingPower, state.regtBuyingPower]
+    );
+    result.balances++;
+    await withAccountTx(id, async db => {
+        // Calls
+        const owed = deficiencies(state, { openedToday: await openedOn(id, today) });
+        for (const type of ["maintenance", "regt"] as CallType[]) {
+            if (owed[type] <= 0) continue;
+            const { rows: [existing] } = await db.query<{ id: string }>("SELECT id FROM sim_margin_calls WHERE account_id = $1 AND \"type\" = $2 AND status = 'open'", [id, type]);
+            if (existing) {
+                await db.query("UPDATE sim_margin_calls SET amount = $2 WHERE id = $1", [existing.id, owed[type]]);
+                continue;
+            }
+            const call = { id: randomUUID(), type, amount: owed[type], due_at: easternTime(dueDay, "15:45") };
+            await db.query(
+                `INSERT INTO sim_margin_calls (id, account_id, "type", amount, "date", issued_at, due_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [call.id, id, type, call.amount, today, easternTime(issueDay, "08:00"), call.due_at]
+            );
+            await callEvent(db, id, "margin_call", call);
+            result.calls++;
+        }
+        // Margin interest on the settlement-date debit: cash as if every trade had settled on its settlement date
+        const settledCash = ledger.cash - ledger.unsettledProceeds + ledger.unsettledPurchases;
+        const debit = roundCents(Math.max(0, -settledCash));
+        if (debit > 0) {
+            const { rowCount } = await db.query(
+                `INSERT INTO sim_interest_accruals (account_id, "date", debit, rate, days, amount) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
+                [id, today, debit, MARGIN_RATE, days, marginInterest(debit, MARGIN_RATE, days)]
+            );
+            result.interest += rowCount ?? 0;
+        }
+        // Hard-to-borrow fees
+        for (const position of snapshot.positions.filter(({ qty, symbol }) => qty < 0 && hardToBorrow(symbol, snapshot.assets[symbol]))) {
+            const amount = roundCents(borrowFee({ qty: position.qty, price: position.price, rate: HTB_BORROW_RATE, days }));
+            const { rowCount } = await db.query(
+                `INSERT INTO sim_borrow_fees (account_id, "date", symbol, qty, price, rate, amount) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
+                [id, today, position.symbol, Math.abs(position.qty), position.price, HTB_BORROW_RATE, amount]
+            );
+            if (!rowCount || amount < 0.01) continue;
+            const activity = await postActivity(db, {
+                accountId: id, type: "FEE", netAmount: -amount, symbol: position.symbol, qty: Math.abs(position.qty),
+                description: `Stock borrow fee: ${position.symbol} short, ${days} day${days === 1 ? "" : "s"} at ${(HTB_BORROW_RATE * 100).toFixed(2)}% a year (simulated rate)`,
+                at: new Date(Math.min(easternTime(today, "20:00").getTime(), now.getTime()))
+            });
+            await db.query(`UPDATE sim_borrow_fees SET activity_id = $4 WHERE account_id = $1 AND "date" = $2 AND symbol = $3`, [id, today, position.symbol, activity.id]);
+            result.borrowFees++;
+        }
+        // The month's interest posts after its last trading day
+        if (issueDay.slice(0, 7) !== today.slice(0, 7)) await postInterest(db, id, today);
+        // Intraday margin: today's deficit, and earlier ones met, missed or expired
+        const intraday = await endOfDayIntraday(db, id, today, { equity: state.equity, level: intradayMarginLevel(state) }, now);
+        result.intradayDeficits += intraday.issued;
+        result.intradayRestrictions += intraday.restricted;
+    });
     return result;
 };
 

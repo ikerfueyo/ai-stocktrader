@@ -9,6 +9,7 @@ import { easternTime } from "../../../marketHours";
 import { OPTIONS_LEVELS, parseOptionSymbol } from "../../../options";
 import { ledgerState, recordFill } from "./positions";
 import { marginSnapshot } from "./marginAccount";
+import { trackMarginLevel } from "./intradayDeficits";
 import { applyReplace, orderExpiry, type OrderSpec } from "./orderRules";
 import {
     legOpens, mlegCoverageError, mlegNetPrice, OPTION_MULTIPLIER, requiredLevel, sharesCoveringCalls, totalOptionRequirement, validateOptionOrder,
@@ -284,19 +285,24 @@ export const matchMlegOrder = async (parentId: string, accountId: string, contex
             await endMleg(db, order, legs, "canceled", error.message);
             return true;
         }
-        for (const [index, leg] of legs.entries()) {
-            const legQty = (leg.ratio_qty ?? 1) * qty;
-            const quote = quotes[index]!;
-            const price = leg.side === "buy" ? sides[index].ask : sides[index].bid;
-            if (!(price > 0)) {
-                await endMleg(db, order, legs, "canceled", `${leg.symbol} has no ${leg.side === "buy" ? "ask" : "bid"} to fill against`);
-                return true;
+        // One IML-reducing transaction for the margin level: all its legs
+        const ended = await trackMarginLevel(db, accountId, async () => {
+            for (const [index, leg] of legs.entries()) {
+                const legQty = (leg.ratio_qty ?? 1) * qty;
+                const quote = quotes[index]!;
+                const price = leg.side === "buy" ? sides[index].ask : sides[index].bid;
+                if (!(price > 0)) {
+                    await endMleg(db, order, legs, "canceled", `${leg.symbol} has no ${leg.side === "buy" ? "ask" : "bid"} to fill against`);
+                    return true;
+                }
+                const total = roundCents(legQty * price * OPTION_MULTIPLIER);
+                const policy: FillPolicy = quote.spread === "quoted" ? (leg.side === "buy" ? "ASK" : "BID") : (leg.side === "buy" ? "SIM_ASK" : "SIM_BID");
+                await recordFill(db, accountId, { symbol: leg.symbol, side: leg.side, qty: legQty, price, total, quoteTime: quote.quoteTime, fillPolicy: policy, orderId: leg.id, cumQty: legQty, leavesQty: 0 });
+                await updateOrder(db, leg.id, { status: "filled", filled_qty: legQty, filled_notional: total, filled_avg_price: price.toFixed(6), filled_at: now });
             }
-            const total = roundCents(legQty * price * OPTION_MULTIPLIER);
-            const policy: FillPolicy = quote.spread === "quoted" ? (leg.side === "buy" ? "ASK" : "BID") : (leg.side === "buy" ? "SIM_ASK" : "SIM_BID");
-            await recordFill(db, accountId, { symbol: leg.symbol, side: leg.side, qty: legQty, price, total, quoteTime: quote.quoteTime, fillPolicy: policy, orderId: leg.id, cumQty: legQty, leavesQty: 0 });
-            await updateOrder(db, leg.id, { status: "filled", filled_qty: legQty, filled_notional: total, filled_avg_price: price.toFixed(6), filled_at: now });
-        }
+            return false;
+        }, { symbol: legs[0]?.symbol });
+        if (ended) return true;
         const filled = await updateOrder(db, order.id, { status: "filled", filled_qty: qty, filled_notional: roundCents(Math.abs(net) * qty * OPTION_MULTIPLIER), filled_avg_price: net.toFixed(6), filled_at: now });
         await orderEvent(db, filled, "fill", { price: String(net), qty: String(qty) });
         return true;

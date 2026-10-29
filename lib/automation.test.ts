@@ -80,6 +80,12 @@ describe("Notifications from broker events", () => {
         assert.equal(notificationFor({ id: "a", stream: "accounts", payload: { status_from: "APPROVED", status_to: "ACTIVE" } })!.title, "Your account is open");
         assert.equal(notificationFor({ id: "a", stream: "accounts", payload: { status_from: "", status_to: "SUBMITTED" } }), null);
         assert.equal(notificationFor({ id: "m", stream: "accounts", payload: { event: "margin_call", margin_call: { type: "maintenance", amount: "101" } } })!.title, "A maintenance margin call of $101.00");
+        const intraday = (event: string, deficit: Record<string, unknown>) => notificationFor({ id: "i", stream: "accounts", payload: { event, intraday_margin_deficit: deficit } })!;
+        const deficit = intraday("intraday_margin_deficit", { amount: "2000", date: "2026-11-02", restrict_on: "2026-11-09" });
+        assert.deepEqual([deficit.kind, deficit.title], ["margin", "An intraday margin deficit of $2,000.00 on 2026-11-02"]);
+        assert.match(deficit.body, /by the close on 2026-11-09/);
+        assert.equal(intraday("intraday_margin_deficit_met", { amount: "2000", date: "2026-11-02" }).title, "Your intraday margin deficit of $2,000.00 on 2026-11-02 is met");
+        assert.match(intraday("intraday_margin_restriction", { amount: "2000", date: "2026-11-02", restricted_until: "2027-02-07" }).body, /until 2027-02-07/);
         assert.equal(notificationFor({ id: "t", stream: "transfers", payload: { status_from: "SENT_TO_CLEARING", status_to: "COMPLETE" } })!.kind, "transfers");
         assert.equal(notificationFor({ id: "t", stream: "transfers", payload: { status_from: "", status_to: "QUEUED" } }), null);
         // With the transfer looked up, it says which one

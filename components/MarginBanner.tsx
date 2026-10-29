@@ -18,8 +18,8 @@ const readDismissed = (userId: string | null | undefined) => {
     }
 };
 
-// Under the header: open margin calls (what's due and by when), liquidation while equity is far below the maintenance requirement,
-// and a notice of the past week's liquidations
+// Under the header: open margin calls (what's due and by when), a 90-day intraday margin restriction and the intraday margin deficits
+// outstanding, liquidation while equity is far below the maintenance requirement, and a notice of the past week's liquidations
 const MarginBanner = () => {
     const { account } = useAccount();
     const { userId } = useAuth();
@@ -48,6 +48,30 @@ const MarginBanner = () => {
                             : <>At the {call.date} close your equity was below the maintenance requirement. </>}
                         Until it&apos;s met, only closing orders and deposits are allowed. <Link href="/deposit">Deposit</Link> or close positions on
                         the <Link href="/portfolio">Portfolio</Link>; otherwise positions are liquidated at the deadline.
+                    </span>
+                </div>
+            ))}
+            {account.marginRestrictedUntil && (
+                <div className="margin-banner danger" role="alert">
+                    <span>
+                        <strong>Borrowing and short sales are restricted until {account.marginRestrictedUntil}.</strong>{" "}
+                        An intraday margin deficit went unmet past its 5th business day (FINRA Rule 4210(d)(2)). The
+                        account trades at 1x: you can buy with cash and close positions. <Link href="/deposit">Depositing</Link> the deficit lifts it
+                        at the next close.
+                    </span>
+                </div>
+            )}
+            {account.intradayDeficits.map(deficit => (
+                <div key={deficit.id} className="margin-banner warning" role="status">
+                    <span>
+                        <strong>Intraday margin deficit: {formatCurrency(deficit.amount)}, from {deficit.date}.</strong>{" "}
+                        That day your trades took the account below its maintenance requirement. <Link href="/deposit">Deposit</Link> it (deposits
+                        count at the next close)
+                        {deficit.missed
+                            ? <>: it&apos;s past its 5th business day, {deficit.restrictOn}, and stops being outstanding after {deficit.expireOn}.</>
+                            : deficit.deMinimis
+                                ? <> by the close on {deficit.restrictOn}; it&apos;s small enough (no more than 5% of equity or $1,000) not to count toward a restriction.</>
+                                : <> by the close on {deficit.restrictOn}: repeatedly missing that restricts borrowing and short sales for 90 days.</>}
                     </span>
                 </div>
             ))}

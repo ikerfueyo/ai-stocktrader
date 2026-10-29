@@ -126,6 +126,21 @@ export interface MarginCall {
     dueAt: string;
 }
 
+// An intraday margin deficit (FINRA Rule 4210(d)(2), the simulator's sim_intraday_deficits): how far trades on date took the account
+// below its maintenance requirement during the day. Met by deposits (or a rise in the margin level) counted at a later close;
+// unmet at restrictOn's close, with a practice of missing them, it restricts new shorts and borrowing for 90 days; outstanding until
+// expireOn's close. deMinimis: within the lesser of 5% of equity or $1,000, so it never counts toward a practice. missed: still unmet
+// at restrictOn's close.
+export interface IntradayDeficit {
+    id: string;
+    date: string;
+    amount: number;
+    deMinimis: boolean;
+    missed: boolean;
+    restrictOn: string;
+    expireOn: string;
+}
+
 // GET /api/account: the account's margin as the broker computes it (lib/server/broker/sim/margin.ts), with the ledger's figures
 export interface Account {
     // Cash less queued withdrawals (negative when borrowing on margin)
@@ -161,6 +176,9 @@ export interface Account {
     accruedInterest: number;
     marginStatus: MarginStatus;
     marginCalls: MarginCall[];
+    // Intraday margin deficits outstanding, and the last day of a 90-day restriction (1x, no new shorts) in force, or null
+    intradayDeficits: IntradayDeficit[];
+    marginRestrictedUntil: string | null;
     // Whether new shorts are allowed, and if not, why
     shortingEnabled: boolean;
     shortingBlockedReason: string | null;

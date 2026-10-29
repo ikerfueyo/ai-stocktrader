@@ -5,6 +5,7 @@ import type { Broker } from "./broker";
 import type { Account, AccountCreationRequest, Order, Transfer } from "./types";
 import { accountSummary, CASH_ACTIVITY_TYPES, cashRowsOf, ledgerOf, listAllActivities, taxLotsOf } from "../brokerLedger";
 import { closeAccountProblem } from "../../accounts";
+import { nextTradingDay } from "../../marketHours";
 
 // The brokerage scenarios, written against the Broker interface only, so the same steps run against the simulator
 // (lib/server/broker/sim/scenarios.sim.ts, npm run test:scenarios) and against Alpaca's Broker API sandbox
@@ -30,6 +31,13 @@ export interface ScenarioHarness {
     corporateAction?(action: { type: "SPLIT"; symbol: string; factor: number } | { type: "DIVIDEND"; symbol: string; amount: number }): Promise<void>;
     // The broker's margin check now (in the regular session: liquidation when equity is far below maintenance)
     enforceMargin?(accountId: string): Promise<void>;
+    // FINRA Rule 4210(d)(2) intraday margin, which Alpaca applies on its side: the broker's end of day for the account at day's close (a
+    // trading day, today or later, as the eod job runs it), and the account's intraday margin deficits outstanding with the last day of
+    // a 90-day restriction in force (null if none). A deficit unmet at its 5th business day restricts the account the first time.
+    intradayMargin?: {
+        endOfDay(accountId: string, day: string): Promise<void>;
+        status(accountId: string): Promise<{ deficits: { date: string; amount: number; deMinimis: boolean; restrictOn: string }[]; restrictedUntil: string | null }>;
+    };
     // Transfers wait for advance before each step, so one can be canceled while it's requested, and a deposit with test cents ($x.01)
     // comes back as R01 after it completes, with this return fee (the simulator's funding rules)
     transferSteps?: { returnFee: number };
@@ -49,7 +57,7 @@ export interface ScenarioHarness {
     close?(): Promise<void>;
 }
 
-type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "enforceMargin" | "transferSteps" | "optionContract";
+type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "enforceMargin" | "intradayMargin" | "transferSteps" | "optionContract";
 
 const STOCKS = 4;
 const roundCents = (value: number) => Math.round(value * 100) / 100;
@@ -306,6 +314,45 @@ export const SCENARIOS: Scenario[] = [
             });
             const trading = await h.broker.getTradeAccount(accountId);
             assert.ok(Number(trading.equity) >= Number(trading.maintenance_margin), `equity ${trading.equity} against maintenance ${trading.maintenance_margin}`);
+        }
+    },
+    {
+        name: "intraday margin: a day trade at 4x below maintenance leaves a deficit; unmet at its 5th business day it restricts the account until a deposit meets it",
+        needs: ["setPrice", "intradayMargin"],
+        async run(h) {
+            await h.setPrice!(h.symbols.stock, 100);
+            const accountId = await fundedAccount(h, 10000, { margin: true });
+            await h.broker.updateConfigurations(accountId, { max_margin_multiplier: "4", no_shorting: false });
+            await waitFor(h, "4x buying power", async () => Number((await h.broker.getTradeAccount(accountId)).buying_power) >= 39000);
+            // $39,000 of stock on $10,000 of equity: 30% maintenance is $11,700, $1,700 more than the equity. Sold the same day, so no
+            // call follows at the close, but the deficit stays.
+            await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.stock, side: "buy", qty: "390" }));
+            await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.stock, side: "sell", qty: "390", position_intent: "sell_to_close" }));
+            const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+            await h.intradayMargin!.endOfDay(accountId, today);
+            const [deficit] = (await h.intradayMargin!.status(accountId)).deficits;
+            assert.deepEqual([deficit?.date, deficit?.amount, deficit?.deMinimis], [today, 1700, false]);
+            // Each later close until the 5th business day's: the restriction comes with that one
+            let day = today;
+            while (day < deficit.restrictOn) {
+                day = nextTradingDay(day);
+                assert.equal((await h.intradayMargin!.status(accountId)).restrictedUntil, null, `restricted before ${day}'s close`);
+                await h.intradayMargin!.endOfDay(accountId, day);
+            }
+            const restricted = await h.intradayMargin!.status(accountId);
+            assert.ok(restricted.restrictedUntil && restricted.restrictedUntil > deficit.restrictOn, `restricted until ${restricted.restrictedUntil}`);
+            const trading = await h.broker.getTradeAccount(accountId);
+            assert.deepEqual([String(trading.multiplier), trading.shorting_enabled], ["1", false]);
+            await assert.rejects(placed(h, accountId, { symbol: h.symbols.other, side: "sell", qty: "3" }), (error: { status?: number }) => error.status === 403);
+            // Buying with cash and closing still work; a deposit of the deficit meets it at the next close and lifts the restriction
+            await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.stock, side: "buy", qty: "10" }));
+            const [link] = await h.broker.listAchRelationships(accountId);
+            const deposit = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "INCOMING", amount: "1700.00", relationship_id: link.id } as never);
+            await waitFor(h, "the deposit's completion", async () => (await h.broker.listTransfers(accountId)).some(({ id, status }) => id === deposit.id && status === "COMPLETE"));
+            await h.intradayMargin!.endOfDay(accountId, nextTradingDay(day));
+            const lifted = await h.intradayMargin!.status(accountId);
+            assert.deepEqual([lifted.deficits.length, lifted.restrictedUntil], [0, null]);
+            assert.equal((await h.broker.getTradeAccount(accountId)).shorting_enabled, true);
         }
     },
     {
