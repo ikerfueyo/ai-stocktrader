@@ -202,7 +202,9 @@ const TaxableGainsReport = () => {
                 </div>
             )}
             <p className="text-muted">
-                Lots close first in, first out. W: a loss disallowed because the same stock was bought within 30 days before or after the sale; it&apos;s added to the replacement shares&apos; basis.
+                Lots close first in, first out. W: a loss disallowed because the same stock was bought within 30 days before or after the sale (for a short, shorted again); it&apos;s added to
+                the replacement shares&apos; basis, and a sale of washed shares and others is shown as a line for each. Wash sales are found within this account only: purchases in your
+                other accounts (an IRA&apos;s too) or of options on the stock can also make a loss a wash sale, for you to report.
                 Every dividend is reported as ordinary (qualified status isn&apos;t known). Simulated figures, not for filing.
             </p>
             <h2 className="open-orders-title mt-4">Unrealized</h2>
@@ -221,7 +223,7 @@ const TaxableGainsReport = () => {
                                     <td>{formatShares(lot.qty)} {lot.symbol}{lot.side === "short" && <span className="fill-detail">short</span>}</td>
                                     <td>{day(lot.dateAcquired)}{lot.dateAcquired !== lot.acquiredAt && <span className="fill-detail">holding period carried over</span>}</td>
                                     <td>{formatPrice(lot.price)}</td>
-                                    <td>{formatCurrency(lot.costBasis)}{lot.washAdjustment > 0 && <span className="fill-detail">includes {formatCurrency(lot.washAdjustment)} wash sale loss</span>}</td>
+                                    <td>{formatCurrency(lot.costBasis)}{lot.washAdjustment > 0 && <span className="fill-detail">{lot.side === "short" ? "less" : "includes"} {formatCurrency(lot.washAdjustment)} wash sale loss</span>}</td>
                                     <td>{lot.marketValue === null ? "—" : formatCurrency(lot.marketValue)}</td>
                                     <td className={gainClass(lot.unrealized)}>{lot.unrealized === null ? "—" : signed(lot.unrealized)}</td>
                                     <td>{lot.term === "long" ? "Long" : "Short"}</td>

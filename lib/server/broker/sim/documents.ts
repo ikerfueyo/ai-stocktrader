@@ -10,7 +10,7 @@ import { getAccount } from "./accounts";
 import { fillsAsTrades } from "./positions";
 import { subjectToBackupWithholding } from "./withholding";
 import { renderDocument, type ApplicationPayload, type DocumentPayload, type Holder, type RenderableDocument, type StatementPayload, type TaxStatementPayload, type TradeConfirmationPayload } from "./documentRender";
-import { form1099R, form5498, reportSales, taxYear, termOf, type Acquisition, type Disposal, type ReportedSale, type TaxYear } from "./tax";
+import { form1099R, form5498, reportSales, sharesSince, taxYear, unrealizedRows, type Acquisition, type Disposal, type ReportedSale, type ShareChange, type TaxYear } from "./tax";
 import { DISTRIBUTION_REASONS } from "../../../ira";
 import type { SimAccountRow } from "./shapes";
 import type { AccountDocument, ListDocumentsQuery } from "../types";
@@ -120,28 +120,44 @@ const statementPayload = async (accountId: string, holder: Holder, start: string
 
 // The account's disposals and purchases as the tax rules take them, and its dividends, interest and withholding
 const taxInputs = async (accountId: string) => {
-    const [{ rows: closings }, { rows: lots }, { rows: cash }] = await Promise.all([
-        pool.query<{ id: number; lot_id: string; qty: string; lot_price: string; close_price: string; closed_at: Date; side: "long" | "short"; acquired_at: Date; activity_type: string; symbol: string }>(
-            `SELECT c.id, c.lot_id, c.qty, c.lot_price, c.close_price, c.closed_at, l.side, l.acquired_at, a.activity_type, COALESCE(a.symbol, l.symbol) AS symbol
+    const [{ rows: closings }, { rows: lots }, { rows: cash }, { rows: changeRows }] = await Promise.all([
+        pool.query<{ id: number; lot_id: string; qty: string; lot_price: string; close_price: string; closed_at: Date; closed_day: string; side: "long" | "short"; acquired_at: Date; activity_type: string; symbol: string }>(
+            `SELECT c.id, c.lot_id, c.qty, c.lot_price, c.close_price, c.closed_at, (c.closed_at AT TIME ZONE 'America/New_York')::date::text AS closed_day,
+                    l.side, l.acquired_at, a.activity_type, COALESCE(a.symbol, l.symbol) AS symbol
              FROM sim_lot_closings c JOIN sim_lots l ON l.id = c.lot_id JOIN sim_activities a ON a.id = c.fill_id
              WHERE c.account_id = $1 AND c.qty > 0 AND a.activity_type NOT IN ('OPEXC', 'OPASN')`, [accountId]
         ),
         // Purchases (lots a fill opened) can replace shares sold at a loss; lots a corporate action opened can't
-        pool.query<{ id: string; symbol: string; side: "long" | "short"; qty: string; price: string; acquired_at: Date }>(
-            `SELECT l.id, l.symbol, l.side, l.original_qty AS qty, l.price, l.acquired_at FROM sim_lots l JOIN sim_activities a ON a.id = l.fill_id WHERE l.account_id = $1 AND a.activity_type = 'FILL'`, [accountId]
+        pool.query<{ id: string; symbol: string; side: "long" | "short"; qty: string; price: string; acquired_at: Date; acquired_day: string }>(
+            `SELECT l.id, l.symbol, l.side, l.original_qty AS qty, l.price, l.acquired_at, (l.acquired_at AT TIME ZONE 'America/New_York')::date::text AS acquired_day
+             FROM sim_lots l JOIN sim_activities a ON a.id = l.fill_id WHERE l.account_id = $1 AND a.activity_type = 'FILL'`, [accountId]
         ),
         pool.query<{ date: string; activity_type: string; activity_sub_type: string | null; net_amount: string; reason: string | null }>(
             `SELECT "date"::text, activity_type, activity_sub_type, net_amount, reason FROM sim_activities WHERE account_id = $1 AND activity_type IN ('DIV', 'INT', 'WH')`, [accountId]
+        ),
+        // The share changes applied to the account, as closings keep the shares of their day while lots are in today's terms
+        pool.query<{ type: string; ticker: string; new_ticker: string | null; ex_date: string; factor: string | null; taxable: boolean | null }>(
+            `SELECT c."type", c.ticker, c.new_ticker, c.ex_date::text, c.factor, c.taxable FROM sim_corporate_actions_applied a
+             JOIN corporate_actions c ON c.ticker = a.symbol AND c."type" = a."type" AND c.ex_date = a.ex_date
+             WHERE a.account_id = $1 AND a."type" IN ('SPLIT', 'STOCK_DIVIDEND', 'STOCK_MERGER', 'MIXED_MERGER', 'NAME_CHANGE')`, [accountId]
         )
     ]);
+    const changes: ShareChange[] = changeRows.map(row => ({ type: row.type, ticker: row.ticker, newTicker: row.new_ticker, exDate: row.ex_date, factor: row.factor === null ? null : Number(row.factor), taxable: row.taxable }));
     const kinds: Record<string, Disposal["kind"]> = { FILL: "sale", MA: "merger", CIL: "cash_in_lieu", REORG: "worthless" };
     // Option contracts are counted in shares (× 100), as their prices are per share; an exercised or assigned contract isn't a
-    // disposal (its premium is in the shares' basis or proceeds), and an expired one is reported as sold for nothing
-    const disposals: Disposal[] = closings.map(row => ({
-        id: String(row.id), lotId: row.lot_id, symbol: row.symbol, side: row.side, qty: Number(row.qty) * contractMultiplier(row.symbol), lotPrice: Number(row.lot_price), price: Number(row.close_price),
-        acquiredAt: row.acquired_at.toISOString(), closedAt: row.closed_at.toISOString(), kind: kinds[row.activity_type] ?? "sale"
+    // disposal (its premium is in the shares' basis or proceeds), and an expired one is reported as sold for nothing. Sales and
+    // purchases are matched under the symbol the stock goes by now.
+    const disposals: Disposal[] = closings.map(row => {
+        const qty = Number(row.qty) * contractMultiplier(row.symbol);
+        return {
+            id: String(row.id), lotId: row.lot_id, symbol: row.symbol, side: row.side, qty, lotPrice: Number(row.lot_price), price: Number(row.close_price),
+            acquiredAt: row.acquired_at.toISOString(), closedAt: row.closed_at.toISOString(), kind: kinds[row.activity_type] ?? "sale",
+            sharesNow: qty * sharesSince(changes, row.symbol, row.closed_day).factor, matchSymbol: sharesSince(changes, row.symbol, row.closed_day, true).symbol
+        };
+    });
+    const acquisitions: Acquisition[] = lots.map(row => ({
+        lotId: row.id, symbol: sharesSince(changes, row.symbol, row.acquired_day, true).symbol, side: row.side, qty: Number(row.qty) * contractMultiplier(row.symbol), acquiredAt: row.acquired_at.toISOString()
     }));
-    const acquisitions: Acquisition[] = lots.map(row => ({ lotId: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty) * contractMultiplier(row.symbol), acquiredAt: row.acquired_at.toISOString() }));
     return {
         disposals, acquisitions,
         dividends: cash.filter(row => row.activity_type === "DIV" && row.activity_sub_type !== "SDIV").map(row => ({ date: row.date, amount: Number(row.net_amount) })),
@@ -161,28 +177,17 @@ export const accountTaxYear = async (accountId: string, year: number): Promise<T
 export const unrealizedLots = async (accountId: string) => {
     const inputs = await taxInputs(accountId);
     const { adjustments } = reportSales(inputs.acquisitions, inputs.disposals);
-    const { rows } = await pool.query<{ id: string; symbol: string; side: "long" | "short"; qty: string; original_qty: string; price: string; acquired_at: Date }>(
-        "SELECT id, symbol, side, qty, original_qty, price, acquired_at FROM sim_lots WHERE account_id = $1 AND qty > 0 ORDER BY symbol, acquired_at", [accountId]
+    const { rows } = await pool.query<{ id: string; symbol: string; side: "long" | "short"; qty: string; price: string; acquired_at: Date }>(
+        "SELECT id, symbol, side, qty, price, acquired_at FROM sim_lots WHERE account_id = $1 AND qty > 0 ORDER BY symbol, acquired_at", [accountId]
     );
     const symbols = [...new Set(rows.map(({ symbol }) => symbol))];
     const quotes = await Promise.allSettled(fetchQuotes(symbols));
     const prices = new Map(symbols.flatMap((symbol, i) => quotes[i].status === "fulfilled" ? [[symbol, (quotes[i] as PromiseFulfilledResult<{ price: number }>).value.price] as const] : []));
     const now = new Date().toISOString();
-    return rows.map(row => {
-        const qty = Number(row.qty);
-        const shares = qty * contractMultiplier(row.symbol);
-        const adjustment = adjustments.get(row.id);
-        const wash = adjustment ? adjustment.basis * qty / Number(row.original_qty) : 0;
-        const basis = roundCents(shares * Number(row.price) + wash);
-        const price = prices.get(row.symbol) ?? null;
-        const value = price === null ? null : roundCents(shares * price);
-        const dateAcquired = adjustment ? new Date(row.acquired_at.getTime() - adjustment.carriedDays * 86400000).toISOString() : row.acquired_at.toISOString();
-        return {
-            id: row.id, symbol: row.symbol, side: row.side, qty, acquiredAt: row.acquired_at.toISOString(), dateAcquired, price: Number(row.price), costBasis: basis,
-            washAdjustment: roundCents(wash), marketValue: value, unrealized: value === null ? null : roundCents(row.side === "long" ? value - basis : basis - value),
-            term: row.side === "long" ? termOf(dateAcquired, now) : "short" as const
-        };
-    });
+    return rows.flatMap(row => unrealizedRows(
+        { id: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty), price: Number(row.price), acquiredAt: row.acquired_at.toISOString(), multiplier: contractMultiplier(row.symbol) },
+        adjustments.get(row.id), prices.get(row.symbol) ?? null, now
+    ));
 };
 
 // An IRA's 1099-R and 5498 for a year: its distributions (dated when they left the account, with their withholding and code), the

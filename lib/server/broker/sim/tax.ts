@@ -3,8 +3,16 @@
 // 1099-INT figures. Pure, so it can be unit tested; ./documents.ts assembles them from the ledger.
 //   Wash sales (IRS Publication 550): a loss on a sale of shares is disallowed when shares of the same security are bought within 30
 //   days before or after it; the disallowed loss is added to the replacement shares' basis, and their holding period includes the
-//   sold shares'. As a broker reports it, this is within the account and by symbol, for long sales; each replacement share absorbs
-//   one share's loss. Short sales are reported short term, without wash sale adjustments (a labeled limitation).
+//   sold shares'. As a broker reports it (IRC 6045(g)(2)(B)(ii)), this is within the account and by symbol, each replacement share
+//   absorbing one share's loss, oldest first. Only the replaced shares are adjusted: a lot's washed shares are kept apart from the
+//   rest, sold first (their holding period starts earlier), and a sale spanning both is reported as one 1099-B line for each. A
+//   replacement must still be held at the loss sale (or bought after it), so the disallowed loss always lands on shares whose basis
+//   is still to be reported; shares bought and sold before the loss sale aren't counted (a labeled choice: counting them would mean
+//   restating a sale already reported, whose new loss could wash back into the shares being sold). Shares from the same purchase as
+//   the shares sold don't replace them (Rev. Rul. 56-602).
+//   Short sales: a loss on covering a short is disallowed when another short of the stock is opened within 30 days before or after
+//   (Treas. Reg. 1.1091-1(g)), and added to that short's cost of covering. A long sale as the replacement isn't covered. A short
+//   sale's gain or loss is short term, as the shares that close it were just bought (IRC 1233(b)).
 //   1099-DIV: every dividend is ordinary (qualified status isn't known); dividends charged to shorts aren't income, and stock
 //   dividends aren't taxable. 1099-INT: interest paid to the account (none: the simulator only charges margin interest).
 
@@ -36,6 +44,10 @@ export interface Disposal {
     closedAt: string;
     // How it was disposed of: a sale (a fill), a cash merger, cash in lieu, or a worthless removal
     kind: "sale" | "merger" | "cash_in_lieu" | "worthless";
+    // The shares in today's terms (after the splits and other share changes since the sale), as acquisitions are; qty when the same
+    sharesNow?: number;
+    // The symbol wash sales match acquisitions on (the stock's symbol now, after a symbol change); symbol when the same
+    matchSymbol?: string;
 }
 
 export interface ReportedSale extends Disposal {
@@ -51,13 +63,15 @@ export interface ReportedSale extends Disposal {
     covered: true;
 }
 
-export interface LotAdjustment {
-    // Disallowed losses added to the lot's basis, in total
+// Shares of a lot that replaced shares sold at a loss: how many (in today's terms), the disallowed loss added to their basis in total
+// (for a short, to its cost of covering), and the days of holding period carried over from the shares they replaced
+export interface WashedShares {
+    qty: number;
     basis: number;
-    // Days of holding period carried over from the shares it replaced
     carriedDays: number;
 }
 
+const EPSILON = 1e-9;
 const cents = (value: number) => Math.round(value * 100) / 100;
 const daysBetween = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / DAY_MS;
 const shiftDays = (iso: string, days: number) => new Date(Date.parse(iso) - days * DAY_MS).toISOString();
@@ -69,48 +83,166 @@ export const termOf = (acquiredAt: string, closedAt: string): "short" | "long" =
     return Date.parse(closedAt.slice(0, 10)) > anniversary.getTime() ? "long" : "short";
 };
 
-// Every disposal as a reported sale, oldest first, with the wash sales found among them, and what wash sales added to each lot
-export const reportSales = (acquisitions: Acquisition[], disposals: Disposal[]): { sales: ReportedSale[]; adjustments: Map<string, LotAdjustment> } => {
-    const adjustments = new Map<string, LotAdjustment>();
-    const capacity = new Map(acquisitions.map(({ lotId, qty }) => [lotId, qty]));
-    const lotQty = new Map(acquisitions.map(({ lotId, qty }) => [lotId, qty]));
+// Every disposal as reported sales, oldest first (more than one when it sold both washed shares and others, ids after the first
+// suffixed #2, #3...), with the wash sales found among them, and each lot's open shares that wash sales adjusted
+export const reportSales = (acquisitions: Acquisition[], disposals: Disposal[]): { sales: ReportedSale[]; adjustments: Map<string, WashedShares[]> } => {
+    // Each lot's shares not yet disposed of, in today's terms: those wash sales adjusted, in the order they're sold, and the rest
+    const washed = new Map<string, WashedShares[]>();
+    const plain = new Map(acquisitions.map(({ lotId, qty }) => [lotId, qty]));
     const sales: ReportedSale[] = [];
     for (const disposal of [...disposals].sort((a, b) => a.closedAt.localeCompare(b.closedAt) || a.id.localeCompare(b.id))) {
-        const adjustment = adjustments.get(disposal.lotId);
-        const extraPerShare = adjustment && lotQty.get(disposal.lotId) ? adjustment.basis / lotQty.get(disposal.lotId)! : 0;
-        const dateAcquired = adjustment ? shiftDays(disposal.acquiredAt, adjustment.carriedDays) : disposal.acquiredAt;
         const long = disposal.side === "long";
-        const proceeds = cents(disposal.qty * (long ? disposal.price : disposal.lotPrice));
-        const costBasis = cents(disposal.qty * (long ? disposal.lotPrice + extraPerShare : disposal.price));
-        let gain = cents(proceeds - costBasis);
-        let washDisallowed = 0;
-        if (long && gain < 0 && disposal.kind === "sale") {
-            const lossPerShare = -gain / disposal.qty;
-            let left = disposal.qty;
-            const replacements = acquisitions
-                .filter(({ lotId, symbol, side, acquiredAt }) => lotId !== disposal.lotId && symbol === disposal.symbol && side === "long"
-                    && Math.abs(daysBetween(disposal.closedAt, acquiredAt)) <= WASH_WINDOW_DAYS && (capacity.get(lotId) ?? 0) > 1e-9)
-                .sort((a, b) => a.acquiredAt.localeCompare(b.acquiredAt));
-            const heldDays = Math.max(0, daysBetween(dateAcquired, disposal.closedAt));
-            for (const replacement of replacements) {
-                if (left <= 1e-9) break;
-                const used = Math.min(left, capacity.get(replacement.lotId)!);
-                capacity.set(replacement.lotId, capacity.get(replacement.lotId)! - used);
-                const added = used * lossPerShare;
-                const existing = adjustments.get(replacement.lotId) ?? { basis: 0, carriedDays: 0 };
-                adjustments.set(replacement.lotId, { basis: existing.basis + added, carriedDays: Math.max(existing.carriedDays, heldDays) });
-                washDisallowed += added;
-                left -= used;
-            }
-            washDisallowed = cents(washDisallowed);
-            gain = cents(gain + washDisallowed);
+        const sharesNow = disposal.sharesNow ?? disposal.qty;
+        // The shares sold: the lot's washed shares first, then the rest (and any its acquisition doesn't account for)
+        const pieces: WashedShares[] = [];
+        let left = sharesNow;
+        const groups = washed.get(disposal.lotId) ?? [];
+        while (left > EPSILON && groups.length > 0) {
+            const group = groups[0];
+            const used = Math.min(left, group.qty);
+            const basis = group.basis * used / group.qty;
+            pieces.push({ qty: used, basis, carriedDays: group.carriedDays });
+            group.qty -= used;
+            group.basis -= basis;
+            if (group.qty <= EPSILON) groups.shift();
+            left -= used;
         }
-        sales.push({
-            ...disposal, proceeds, costBasis, washDisallowed, gain, covered: true, dateAcquired,
-            term: long ? termOf(dateAcquired, disposal.closedAt) : "short"
+        if (left > EPSILON) {
+            if (plain.has(disposal.lotId)) plain.set(disposal.lotId, Math.max(0, plain.get(disposal.lotId)! - left));
+            pieces.push({ qty: left, basis: 0, carriedDays: 0 });
+        }
+        // Disallows a loss on the shares sold (in today's terms) by the replacement shares found, oldest first: other lots of the stock
+        // on the same side opened within 30 days before or after the sale, with shares still open that haven't replaced others
+        const washLoss = (shares: number, loss: number, heldDays: number) => {
+            const lossPerShare = loss / shares;
+            let unreplaced = shares;
+            let disallowed = 0;
+            const replacements = acquisitions
+                .filter(({ lotId, symbol, side, acquiredAt }) => lotId !== disposal.lotId && symbol === (disposal.matchSymbol ?? disposal.symbol) && side === disposal.side
+                    && Math.abs(daysBetween(disposal.closedAt, acquiredAt)) <= WASH_WINDOW_DAYS && (plain.get(lotId) ?? 0) > EPSILON)
+                .sort((a, b) => a.acquiredAt.localeCompare(b.acquiredAt) || a.lotId.localeCompare(b.lotId));
+            for (const replacement of replacements) {
+                if (unreplaced <= EPSILON) break;
+                const used = Math.min(unreplaced, plain.get(replacement.lotId)!);
+                plain.set(replacement.lotId, plain.get(replacement.lotId)! - used);
+                const lotGroups = washed.get(replacement.lotId) ?? [];
+                // The washed shares with the earliest holding period are sold first
+                lotGroups.push({ qty: used, basis: used * lossPerShare, carriedDays: heldDays });
+                lotGroups.sort((a, b) => b.carriedDays - a.carriedDays);
+                washed.set(replacement.lotId, lotGroups);
+                disallowed += used * lossPerShare;
+                unreplaced -= used;
+            }
+            return cents(disallowed);
+        };
+        // Proceeds and cost apportioned by shares, the last piece taking what rounding leaves
+        const totalProceeds = cents(disposal.qty * (long ? disposal.price : disposal.lotPrice));
+        const totalCost = cents(disposal.qty * (long ? disposal.lotPrice : disposal.price));
+        let proceedsLeft = totalProceeds;
+        let costLeft = totalCost;
+        pieces.forEach((piece, i) => {
+            const last = i === pieces.length - 1;
+            const proceeds = last ? cents(proceedsLeft) : cents(totalProceeds * piece.qty / sharesNow);
+            const cost = last ? cents(costLeft) : cents(totalCost * piece.qty / sharesNow);
+            proceedsLeft -= proceeds;
+            costLeft -= cost;
+            const costBasis = cents(cost + piece.basis);
+            const dateAcquired = piece.carriedDays > 0 ? shiftDays(disposal.acquiredAt, piece.carriedDays) : disposal.acquiredAt;
+            let gain = cents(proceeds - costBasis);
+            let washDisallowed = 0;
+            if (gain < 0 && disposal.kind === "sale") {
+                washDisallowed = washLoss(piece.qty, -gain, long ? Math.max(0, daysBetween(dateAcquired, disposal.closedAt)) : 0);
+                gain = cents(gain + washDisallowed);
+            }
+            sales.push({
+                ...disposal, id: i === 0 ? disposal.id : `${disposal.id}#${i + 1}`, qty: pieces.length === 1 ? disposal.qty : disposal.qty * piece.qty / sharesNow,
+                proceeds, costBasis, washDisallowed, gain, covered: true, dateAcquired, term: long ? termOf(dateAcquired, disposal.closedAt) : "short"
+            });
         });
     }
+    const adjustments = new Map([...washed].flatMap(([lotId, groups]) => {
+        const open = groups.filter(({ qty }) => qty > EPSILON).map(group => ({ ...group }));
+        return open.length > 0 ? [[lotId, open] as const] : [];
+    }));
     return { sales, adjustments };
+};
+
+// A corporate action that changed an account's shares, as the tax rules follow them
+export interface ShareChange {
+    type: string;
+    ticker: string;
+    newTicker: string | null;
+    exDate: string;
+    factor: number | null;
+    // A mixed merger fully taxable (its lots closed and new ones opened) rather than a reorganization
+    taxable: boolean | null;
+}
+
+// What shares of a symbol held on a day (Eastern) are now, through the changes that took effect after it, in date order: the factor
+// to today's shares (splits and stock dividends multiply them; a stock merger, or a mixed merger taken as a reorganization, moves them
+// to the acquirer at its ratio) and the symbol they go by. renamesOnly follows symbol changes alone, which keep the same security.
+export const sharesSince = (changes: ShareChange[], symbol: string, day: string, renamesOnly = false): { factor: number; symbol: string } => {
+    let factor = 1;
+    let current = symbol;
+    for (const change of [...changes].sort((a, b) => a.exDate.localeCompare(b.exDate))) {
+        if (change.exDate <= day || change.ticker !== current) continue;
+        if (change.type === "NAME_CHANGE" && change.newTicker) current = change.newTicker;
+        if (renamesOnly) continue;
+        if (change.type === "SPLIT" || change.type === "STOCK_DIVIDEND") factor *= change.factor ?? 1;
+        else if ((change.type === "STOCK_MERGER" || (change.type === "MIXED_MERGER" && !change.taxable)) && change.newTicker) {
+            factor *= change.factor ?? 1;
+            current = change.newTicker;
+        }
+    }
+    return { factor, symbol: current };
+};
+
+export interface UnrealizedLot {
+    id: string;
+    symbol: string;
+    side: "long" | "short";
+    // In the lot's units (contracts for an option)
+    qty: number;
+    acquiredAt: string;
+    // The acquisition date the holding period runs from
+    dateAcquired: string;
+    price: number;
+    // What the shares cost, wash sale losses added; for a short, what it sold for, less the wash sale losses its covering will carry
+    costBasis: number;
+    washAdjustment: number;
+    marketValue: number | null;
+    unrealized: number | null;
+    term: "short" | "long";
+}
+
+// An open lot's unrealized gain as the tax report shows it: a row for each group of its shares wash sales adjusted (ids after the
+// first suffixed #2, #3...), then one for the rest. washed comes from reportSales' adjustments, in shares; multiplier is the contract's.
+export const unrealizedRows = (
+    lot: { id: string; symbol: string; side: "long" | "short"; qty: number; price: number; acquiredAt: string; multiplier: number },
+    washed: WashedShares[] = [], marketPrice: number | null, now: string
+): UnrealizedLot[] => {
+    const groups: WashedShares[] = [];
+    let left = lot.qty * lot.multiplier;
+    for (const group of washed) {
+        if (left <= EPSILON) break;
+        const qty = Math.min(left, group.qty);
+        groups.push({ qty, basis: group.basis * qty / group.qty, carriedDays: group.carriedDays });
+        left -= qty;
+    }
+    if (left > EPSILON || groups.length === 0) groups.push({ qty: Math.max(0, left), basis: 0, carriedDays: 0 });
+    return groups.map((group, i) => {
+        const wash = cents(group.basis);
+        const own = group.qty * lot.price;
+        const costBasis = cents(lot.side === "long" ? own + group.basis : own - group.basis);
+        const marketValue = marketPrice === null ? null : cents(group.qty * marketPrice);
+        const dateAcquired = group.carriedDays > 0 ? shiftDays(lot.acquiredAt, group.carriedDays) : lot.acquiredAt;
+        return {
+            id: i === 0 ? lot.id : `${lot.id}#${i + 1}`, symbol: lot.symbol, side: lot.side, qty: groups.length === 1 ? lot.qty : group.qty / lot.multiplier,
+            acquiredAt: lot.acquiredAt, dateAcquired, price: lot.price, costBasis, washAdjustment: wash, marketValue,
+            unrealized: marketValue === null ? null : cents(lot.side === "long" ? marketValue - costBasis : costBasis - marketValue),
+            term: lot.side === "long" ? termOf(dateAcquired, now) : "short"
+        };
+    });
 };
 
 export interface Form1099B {

@@ -6,7 +6,7 @@
 import { easternParts, settlementDate } from "../marketHours";
 import { contractMultiplier } from "../options";
 import { applyFill, applySplit, isLongTerm, type Lot } from "./broker/sim/ledger";
-import { reportSales, taxYear, termOf, type Acquisition, type Disposal, type TaxYear } from "./broker/sim/tax";
+import { reportSales, taxYear, unrealizedRows, type Acquisition, type Disposal, type TaxYear } from "./broker/sim/tax";
 import { totalOptionRequirement } from "./broker/sim/options";
 import type { Broker } from "./broker/broker";
 import type { AccountConfigurations, Activity, Position as BrokerPosition, TradeAccount } from "./broker/types";
@@ -92,8 +92,9 @@ export const replayFills = (fills: BrokerFill[], splits: Split[], today = easter
             const split_ = applySplit(before, split.factor);
             lots.set(symbol, [...open.filter(lot => !before.includes(lot)), ...split_.map(lot => ({ ...lot, originalQty: (original.get(lot.id) ?? lot.qty) * split.factor }))]);
             for (const lot of split_) original.set(lot.id, (original.get(lot.id) ?? lot.qty) * split.factor);
-            // The acquisitions are kept in today's terms, as the wash sale rule compares shares
+            // The acquisitions are kept in today's terms, as the wash sale rule compares shares, and so are the shares sold before it
             for (const acquisition of acquisitions) if (acquisition.symbol === symbol && dayOf(acquisition.acquiredAt) < split.exDate) acquisition.qty *= split.factor;
+            for (const disposal of disposals) if (disposal.symbol === symbol && dayOf(disposal.closedAt) < split.exDate) disposal.sharesNow = (disposal.sharesNow ?? disposal.qty) * split.factor;
         }
     };
     for (const fill of fills) {
@@ -260,20 +261,10 @@ export const taxReportOf = ({ replay, activities, year, prices, now = new Date()
             date: dated(activity), amount: -Number(activity.net_amount), on: /div/i.test(activity.description ?? "") ? "dividends" as const : "proceeds" as const
         }))
     });
-    const unrealized = replay.lots.map(lot => {
-        const shares = lot.qty * contractMultiplier(lot.symbol);
-        const adjustment = adjustments.get(lot.id);
-        const wash = adjustment ? adjustment.basis * lot.qty / lot.originalQty : 0;
-        const basis = roundCents(shares * lot.price + wash);
-        const price = prices.get(lot.symbol) ?? null;
-        const value = price === null ? null : roundCents(shares * price);
-        const dateAcquired = adjustment ? new Date(Date.parse(lot.acquiredAt) - adjustment.carriedDays * 86400000).toISOString() : lot.acquiredAt;
-        return {
-            id: lot.id, symbol: lot.symbol, side: lot.side, qty: lot.qty, acquiredAt: lot.acquiredAt, dateAcquired, price: lot.price, costBasis: basis,
-            washAdjustment: roundCents(wash), marketValue: value, unrealized: value === null ? null : roundCents(lot.side === "long" ? value - basis : basis - value),
-            term: lot.side === "long" ? termOf(dateAcquired, now) : "short" as const
-        };
-    }).sort((a, b) => a.symbol.localeCompare(b.symbol) || a.acquiredAt.localeCompare(b.acquiredAt));
+    const unrealized = [...replay.lots].sort((a, b) => a.symbol.localeCompare(b.symbol) || a.acquiredAt.localeCompare(b.acquiredAt)).flatMap(lot => unrealizedRows(
+        { id: lot.id, symbol: lot.symbol, side: lot.side, qty: lot.qty, price: lot.price, acquiredAt: lot.acquiredAt, multiplier: contractMultiplier(lot.symbol) },
+        adjustments.get(lot.id), prices.get(lot.symbol) ?? null, now
+    ));
     return { ...figures, unrealized };
 };
 

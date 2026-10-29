@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { backupWithholding, form1099R, form5498, reportSales, rmdAge, taxYear, termOf, type Acquisition, type Disposal } from "./tax";
+import { backupWithholding, form1099R, form5498, reportSales, rmdAge, sharesSince, taxYear, termOf, unrealizedRows, type Acquisition, type Disposal } from "./tax";
 import { renderDocument } from "./documentRender";
 
 const buy = (lotId: string, qty: number, acquiredAt: string, symbol = "XYZ"): Acquisition => ({ lotId, symbol, side: "long", qty, acquiredAt: `${acquiredAt}T15:00:00Z` });
@@ -26,7 +26,8 @@ describe("1099-B sales and wash sales (Publication 550)", () => {
         const disposals = [sell("s1", "a", 100, 10, 7.5, "2026-01-05", "2026-02-27"), sell("s2", "b", 100, 8, 9, "2026-03-10", "2026-06-01")];
         const { sales, adjustments } = reportSales(acquisitions, disposals);
         assert.deepEqual([sales[0].gain, sales[0].washDisallowed], [0, 250], "the $250 loss is disallowed");
-        assert.deepEqual(adjustments.get("b"), { basis: 250, carriedDays: 53 });
+        assert.equal(adjustments.has("b"), false, "nothing is left open once the replacement is sold");
+        assert.deepEqual(reportSales(acquisitions, disposals.slice(0, 1)).adjustments.get("b"), [{ qty: 100, basis: 250, carriedDays: 53 }]);
         // The replacement's basis is $800 + $250, and its holding period starts 53 days earlier
         assert.deepEqual([sales[1].costBasis, sales[1].gain, sales[1].dateAcquired.slice(0, 10)], [1050, -150, "2026-01-16"]);
     });
@@ -55,6 +56,80 @@ describe("1099-B sales and wash sales (Publication 550)", () => {
             sell("m", "a", 10, 50, 40, "2026-01-05", "2026-02-01", "merger"), sell("w", "b", 10, 30, 0, "2026-01-20", "2026-02-02", "worthless")
         ]);
         assert.deepEqual(sales.map(({ gain, washDisallowed }) => [gain, washDisallowed]), [[-100, 0], [-300, 0]]);
+    });
+
+    test("shares bought and sold before the loss sale don't replace it; shares still held or bought after do", () => {
+        const acquisitions = [buy("r", 100, "2026-03-01"), buy("l", 100, "2026-03-08")];
+        const disposals = [sell("sr", "r", 100, 50, 55, "2026-03-01", "2026-03-05"), sell("sl", "l", 100, 50, 40, "2026-03-08", "2026-03-20")];
+        const alone = reportSales(acquisitions, disposals);
+        assert.deepEqual(alone.sales.map(({ gain, washDisallowed }) => [gain, washDisallowed]), [[500, 0], [-1000, 0]], "the loss isn't lost on a sale already reported");
+        const withLater = reportSales([...acquisitions, buy("m", 100, "2026-03-25")], disposals);
+        assert.deepEqual(withLater.sales.map(({ gain, washDisallowed }) => [gain, washDisallowed]), [[500, 0], [0, 1000]]);
+        assert.deepEqual(withLater.adjustments.get("m"), [{ qty: 100, basis: 1000, carriedDays: 12 }]);
+    });
+
+    test("only the replacement shares get the basis and holding period, sold first as a 1099-B line of their own", () => {
+        // A year-old lot of 10 sold at a $100 loss, 100 bought 4 days later: 10 of them carry the loss and the 395 days held
+        const acquisitions = [buy("a", 10, "2025-01-02"), buy("b", 100, "2026-02-05")];
+        const loss = sell("s1", "a", 10, 50, 40, "2025-01-02", "2026-02-01");
+        const open = reportSales(acquisitions, [loss]).adjustments.get("b");
+        assert.deepEqual(open, [{ qty: 10, basis: 100, carriedDays: 395 }]);
+        const rows = unrealizedRows({ id: "b", symbol: "XYZ", side: "long", qty: 100, price: 45, acquiredAt: "2026-02-05T15:00:00Z", multiplier: 1 }, open, 46, "2026-12-01T15:00:00Z");
+        assert.deepEqual(rows.map(row => [row.id, row.qty, row.costBasis, row.washAdjustment, row.unrealized, row.dateAcquired.slice(0, 10), row.term]),
+            [["b", 10, 550, 100, -90, "2025-01-06", "long"], ["b#2", 90, 4050, 0, 90, "2026-02-05", "short"]]);
+        const { sales } = reportSales(acquisitions, [loss, sell("s2", "b", 100, 45, 46, "2026-02-05", "2026-12-01")]);
+        assert.deepEqual(sales.slice(1).map(sale => [sale.id, sale.qty, sale.proceeds, sale.costBasis, sale.gain, sale.dateAcquired.slice(0, 10), sale.term]), [
+            ["s2", 10, 460, 550, -90, "2025-01-06", "long"],
+            ["s2#2", 90, 4140, 4050, 90, "2026-02-05", "short"]
+        ]);
+    });
+
+    test("a replaced share absorbs one loss; a washed share sold at a loss washes on", () => {
+        const acquisitions = [buy("a", 10, "2026-01-05"), buy("b", 10, "2026-01-20"), buy("c", 10, "2026-03-01")];
+        const { sales, adjustments } = reportSales(acquisitions, [
+            sell("s1", "a", 10, 50, 40, "2026-01-05", "2026-02-01"), sell("s2", "b", 10, 45, 44, "2026-01-20", "2026-02-20")
+        ]);
+        // b's basis is $450 + $100; sold for $440 it loses $110, all washed into c
+        assert.deepEqual(sales.map(({ costBasis, washDisallowed, gain }) => [costBasis, washDisallowed, gain]), [[500, 100, 0], [550, 110, 0]]);
+        assert.deepEqual(adjustments.get("c")?.map(({ qty, basis }) => [qty, basis]), [[10, 110]]);
+    });
+
+    test("shares are compared in today's terms when a split came after the sales", () => {
+        // b: 100 bought, 50 sold before a 2-for-1 split (100 today), so 50 old shares (100 today) are left to replace a's 100
+        const acquisitions = [buy("a", 200, "2026-01-05"), buy("b", 200, "2026-02-10")];
+        const { sales } = reportSales(acquisitions, [
+            { ...sell("sb", "b", 50, 8, 9, "2026-02-10", "2026-02-20"), sharesNow: 100 },
+            { ...sell("sa", "a", 100, 10, 8, "2026-01-05", "2026-02-25"), sharesNow: 200 }
+        ]);
+        assert.deepEqual([sales[1].gain, sales[1].washDisallowed], [-100, 100]);
+    });
+
+    test("a symbol change keeps matching sales with purchases", () => {
+        const changes = [
+            { type: "SPLIT", ticker: "OLD", newTicker: null, exDate: "2026-03-02", factor: 2, taxable: null },
+            { type: "NAME_CHANGE", ticker: "OLD", newTicker: "NEW", exDate: "2026-04-01", factor: null, taxable: null },
+            { type: "STOCK_MERGER", ticker: "NEW", newTicker: "BIG", exDate: "2026-05-01", factor: 0.5, taxable: null }
+        ];
+        assert.deepEqual(sharesSince(changes, "OLD", "2026-02-27"), { factor: 1, symbol: "BIG" });
+        assert.deepEqual(sharesSince(changes, "OLD", "2026-03-02"), { factor: 0.5, symbol: "BIG" }, "the split on the day is already in its shares");
+        assert.deepEqual(sharesSince(changes, "OLD", "2026-02-27", true), { factor: 1, symbol: "NEW" }, "a merger makes another security");
+        const { sales } = reportSales([buy("a", 10, "2026-03-05", "OLD"), { ...buy("b", 10, "2026-03-20"), symbol: "NEW" }],
+            [{ ...sell("s", "a", 10, 50, 40, "2026-03-05", "2026-03-10"), symbol: "OLD", matchSymbol: "NEW" }]);
+        assert.equal(sales[0].washDisallowed, 100);
+    });
+
+    test("a short covered at a loss is washed by another short within 30 days, added to its cost of covering", () => {
+        const short = (lotId: string, qty: number, acquiredAt: string): Acquisition => ({ ...buy(lotId, qty, acquiredAt), side: "short" });
+        const cover = (id: string, lotId: string, qty: number, soldAt: number, coveredAt: number, acquiredAt: string, closedAt: string): Disposal =>
+            ({ ...sell(id, lotId, qty, soldAt, coveredAt, acquiredAt, closedAt), side: "short" });
+        const acquisitions = [short("x", 10, "2026-03-01"), short("y", 10, "2026-03-15"), buy("z", 10, "2026-03-12")];
+        const { sales, adjustments } = reportSales(acquisitions, [cover("c1", "x", 10, 50, 55, "2026-03-01", "2026-03-10")]);
+        assert.deepEqual([sales[0].gain, sales[0].washDisallowed, sales[0].term], [0, 50, "short"], "a purchase doesn't replace a short");
+        assert.deepEqual(adjustments.get("y"), [{ qty: 10, basis: 50, carriedDays: 0 }]);
+        const [row] = unrealizedRows({ id: "y", symbol: "XYZ", side: "short", qty: 10, price: 52, acquiredAt: "2026-03-15T15:00:00Z", multiplier: 1 }, adjustments.get("y"), 50, "2026-03-20T15:00:00Z");
+        assert.deepEqual([row.costBasis, row.washAdjustment, row.unrealized], [470, 50, -30], "sold for $520, less the $50 its covering carries");
+        const both = reportSales(acquisitions, [cover("c1", "x", 10, 50, 55, "2026-03-01", "2026-03-10"), cover("c2", "y", 10, 52, 50, "2026-03-15", "2026-04-01")]);
+        assert.deepEqual([both.sales[1].proceeds, both.sales[1].costBasis, both.sales[1].gain], [520, 550, -30]);
     });
 
     test("a short sale reports what it sold for as proceeds, short term", () => {

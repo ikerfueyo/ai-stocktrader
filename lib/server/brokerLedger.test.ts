@@ -173,6 +173,19 @@ describe("the tax report", () => {
         assert.equal(lot.washAdjustment, 50);
         assert.equal(lot.unrealized, -30);
     });
+
+    test("a split after a loss sale counts the shares sold in today's terms", () => {
+        // 10 sold at a $50 loss, a 2-for-1 split, then 20 bought: all 20 replace the 10 sold (20 today)
+        const activities = [
+            fill("1", "F", "buy", 10, 20, "2026-03-02T15:00:00Z"),
+            fill("2", "F", "sell", 10, 15, "2026-03-10T15:00:00Z"),
+            fill("3", "F", "buy", 20, 8, "2026-03-20T15:00:00Z")
+        ];
+        const replay = replayFills(fillsOf(activities), [{ ticker: "F", exDate: "2026-03-16", factor: 2 }], "2026-10-28");
+        const report = taxReportOf({ replay, activities, year: 2026, prices: new Map([["F", 9]]), now: "2026-10-28T00:00:00Z" });
+        assert.equal(report.form1099B.sales[0].washDisallowed, 50);
+        assert.deepEqual(report.unrealized.map(lot => [lot.qty, lot.costBasis, lot.washAdjustment]), [[20, 210, 50]], "one group: every share replaced one sold");
+    });
 });
 
 describe("an order's fills", () => {

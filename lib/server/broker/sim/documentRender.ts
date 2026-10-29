@@ -170,7 +170,7 @@ ${totals("short")}
 <h3>Long-term (held more than one year)</h3>
 ${table(headers, saleRows("long"), { numeric: [3, 4, 5, 6] })}
 ${totals("long")}
-<p class="muted">W: a loss disallowed by the wash sale rule (shares of the same security bought within 30 days before or after the sale), added to the replacement shares' basis. Wash sales are found within this account only.</p>`;
+<p class="muted">W: a loss disallowed by the wash sale rule (shares of the same security bought within 30 days before or after the sale, or for a short sale, the stock shorted again), added to the replacement shares' basis. Wash sales are found within this account only: purchases in the holder's other accounts, an IRA's included, or of options on the stock can also make a loss a wash sale, for the holder to report.</p>`;
 };
 
 const iraTax = (payload: IraTaxPayload) => {
