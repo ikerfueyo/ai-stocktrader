@@ -1,6 +1,7 @@
-// Recurring investments' schedules and price alerts' conditions, shared by the server (which runs them) and the pages (which describe
+// Recurring investments' schedules, price alerts' conditions and which notifications the browser shows, shared by the server (which runs them) and the pages (which describe
 // them). Pure, so they can be unit tested.
 import { addDays, isTradingDay, nextTradingDay } from "./marketHours";
+import type { NotificationItem, NotificationPreferences } from "./types";
 
 export type Frequency = "daily" | "weekly" | "biweekly" | "monthly";
 export const FREQUENCY_LABELS: Record<Frequency, string> = { daily: "Every trading day", weekly: "Every week", biweekly: "Every two weeks", monthly: "Every month" };
@@ -61,3 +62,8 @@ export const alertFires = (alert: AlertState, quote: { price: number; previousCl
     const change = (quote.price / quote.previousClose - 1) * 100;
     return condition === "change_up" ? change >= threshold : change <= -threshold;
 };
+
+// The notifications to show as browser notifications, oldest first: unread ones newer than the newest already seen, of the kinds on
+// for the browser. None on the first load (newestSeen null), which only marks what's already there as seen.
+export const browserNotificationsToShow = (items: NotificationItem[], newestSeen: number | null, preferences: NotificationPreferences): NotificationItem[] =>
+    newestSeen === null ? [] : items.filter(item => item.id > newestSeen && !item.read && preferences[item.kind]?.browser).sort((a, b) => a.id - b.id);

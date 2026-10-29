@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import axios from "axios";
 import { logError } from "@/lib/apiError";
+import { browserNotificationsToShow } from "@/lib/automation";
 import type { NotificationItem, NotificationsResponse } from "@/lib/types";
 
 const POLL_MS = 30000;
@@ -17,8 +18,11 @@ export const timeAgo = (iso: string) => {
     return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 };
 
+const browserAllows = () => typeof Notification !== "undefined" && Notification.permission === "granted";
+
 // The header's bell: the unread count and the latest notifications (GET /api/notifications every 30s while the page is visible, and
-// when it becomes visible again). New ones of the kinds the user chose show as browser notifications when the browser allows them.
+// when it becomes visible again). New ones of the kinds the user chose show as browser notifications while the app's tab is in the
+// background, when the browser allows them; then it keeps polling while hidden too (background tabs' timers run about once a minute).
 const NotificationBell = () => {
     const router = useRouter();
     const [data, setData] = useState<NotificationsResponse | null>(null);
@@ -26,30 +30,41 @@ const NotificationBell = () => {
     const newest = useRef<number | null>(null);
     const container = useRef<HTMLSpanElement>(null);
 
-    const load = useCallback(async () => {
-        try {
-            const response = (await axios.get<NotificationsResponse>("/api/notifications?limit=15")).data;
-            // Only those that arrive after the first load are shown by the browser
-            if (newest.current !== null && typeof Notification !== "undefined" && Notification.permission === "granted") {
-                for (const item of response.items.filter(entry => entry.id > newest.current! && !entry.read && response.preferences[entry.kind]?.browser).reverse()) {
-                    const shown = new Notification(item.title, { body: item.body, tag: `notification-${item.id}` });
-                    shown.onclick = () => {
-                        window.focus();
-                        if (item.link) router.push(item.link);
-                    };
-                }
+    // While the page is visible the bell shows them. Some browsers (Chrome on Android) refuse the constructor and want a service
+    // worker: that drops the popup, not the bell.
+    const showInBrowser = useCallback((items: NotificationItem[]) => {
+        if (document.visibilityState !== "hidden" || !browserAllows()) return;
+        for (const item of items) {
+            try {
+                const shown = new Notification(item.title, { body: item.body, tag: `notification-${item.id}` });
+                shown.onclick = () => {
+                    window.focus();
+                    if (item.link) router.push(item.link);
+                };
+            } catch (error) {
+                logError(error);
             }
-            newest.current = Math.max(newest.current ?? 0, ...response.items.map(({ id }) => id));
-            setData(response);
-        } catch (error) {
-            logError(error);
         }
     }, [router]);
 
+    const load = useCallback(async () => {
+        try {
+            const response = (await axios.get<NotificationsResponse>("/api/notifications?limit=15")).data;
+            const toShow = browserNotificationsToShow(response.items, newest.current, response.preferences);
+            newest.current = Math.max(newest.current ?? 0, ...response.items.map(({ id }) => id));
+            setData(response);
+            showInBrowser(toShow);
+        } catch (error) {
+            logError(error);
+        }
+    }, [showInBrowser]);
+
     useEffect(() => {
+        // load only sets state once its request finishes, not synchronously
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         load();
         const timer = setInterval(() => {
-            if (document.visibilityState === "visible") load();
+            if (document.visibilityState === "visible" || browserAllows()) load();
         }, POLL_MS);
         const onVisible = () => {
             if (document.visibilityState === "visible") load();

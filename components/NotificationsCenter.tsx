@@ -41,12 +41,24 @@ const useLoad = <T,>(url: string) => {
     return { data, error, reload, setData };
 };
 
-// The browser's notification permission (default while rendering on the server), updated after asking for it
+// The browser's notification permission (default while rendering on the server), updated after asking for it, when the site's
+// settings change it (the Permissions API, where the browser has it for notifications) and when the page becomes visible again
 const permissionListeners = new Set<() => void>();
 const subscribePermission = (listener: () => void) => {
     permissionListeners.add(listener);
+    let status: PermissionStatus | null = null;
+    let unsubscribed = false;
+    navigator.permissions?.query({ name: "notifications" }).then(result => {
+        if (unsubscribed) return;
+        status = result;
+        status.addEventListener("change", listener);
+    }).catch(() => undefined);
+    document.addEventListener("visibilitychange", listener);
     return () => {
+        unsubscribed = true;
         permissionListeners.delete(listener);
+        status?.removeEventListener("change", listener);
+        document.removeEventListener("visibilitychange", listener);
     };
 };
 const readPermission = (): NotificationPermission | "unsupported" => typeof Notification === "undefined" ? "unsupported" : Notification.permission;
@@ -352,7 +364,11 @@ const Preferences = () => {
         }
     };
     const allow = async () => {
-        await Notification.requestPermission();
+        try {
+            await Notification.requestPermission();
+        } catch (error) {
+            logError(error);
+        }
         permissionListeners.forEach(listener => listener());
     };
 
@@ -361,7 +377,7 @@ const Preferences = () => {
     return (
         <Fragment>
             <div className="browser-permission">
-                {permission === "granted" ? <span className="text-success">This browser shows notifications for the kinds checked below while the app is open.</span>
+                {permission === "granted" ? <span className="text-success">This browser shows notifications for the kinds checked below while the app is open in a tab you aren&apos;t looking at.</span>
                     : permission === "denied" ? <span className="text-muted">Notifications are blocked for this site in the browser&apos;s settings.</span>
                         : permission === "unsupported" ? <span className="text-muted">This browser doesn&apos;t support notifications.</span>
                             : <Fragment><span>Browser notifications are off.</span> <button type="button" className="btn btn-outline-primary btn-sm ml-2" onClick={allow}>Allow browser notifications</button></Fragment>}

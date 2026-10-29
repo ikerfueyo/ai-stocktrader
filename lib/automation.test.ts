@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { alertFires, followingDate, nextScheduledDate, runDateFor } from "./automation";
+import { alertFires, browserNotificationsToShow, followingDate, nextScheduledDate, runDateFor } from "./automation";
+import type { NotificationItem, NotificationPreferences } from "./types";
 import { notificationFor } from "./server/notificationRules";
 
 describe("Recurring schedules", () => {
@@ -104,5 +105,21 @@ describe("Notifications from broker events", () => {
         assert.equal(nta({ activity_type: "FEE", net_amount: "-25", description: "Wire fee" })!.title, "Fee charged: $25.00");
         assert.equal(nta({ activity_type: "SPLIT", description: "F 2-for-1 split" })!.kind, "corporate_actions");
         assert.equal(nta({ activity_type: "CSD", net_amount: "500" }), null, "deposits notify from the transfers stream");
+    });
+});
+
+describe("Browser notifications", () => {
+    const item = (id: number, kind: NotificationItem["kind"], read = false): NotificationItem => ({ id, kind, title: `#${id}`, body: "", link: null, createdAt: "2026-10-29T14:00:00Z", read });
+    const preferences = { orders: { inApp: true, browser: true }, transfers: { inApp: true, browser: false } } as NotificationPreferences;
+    // Newest first, as the route returns them
+    const items = [item(7, "orders"), item(6, "transfers"), item(5, "orders", true), item(4, "orders"), item(3, "orders")];
+
+    test("new unread ones of the kinds on for the browser, oldest first", () => {
+        assert.deepEqual(browserNotificationsToShow(items, 3, preferences).map(({ id }) => id), [4, 7]);
+        assert.deepEqual(browserNotificationsToShow(items, 7, preferences), [], "nothing newer");
+    });
+
+    test("none on the first load", () => {
+        assert.deepEqual(browserNotificationsToShow(items, null, preferences), []);
     });
 });
