@@ -98,7 +98,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 
 ### Phase 1: Accounts and onboarding (KYC)
 - **Reset migration** `013_accounts.sql` (done; 012 became the asset universe):
-  - Empties `orders`, `transactions` and `cash_activity`. They stay as tables, still used by the mock ledger, until Phase 3 replaces them; dropping them now would break trading for Phases 1–2.
+  - Empties `orders`, `transactions` and `cash_activity`. They stay as tables, still used by the mock ledger, until Phase 3 replaces them; dropping them now would break trading for Phases 1–2. (`023_drop_mock_ledger.sql` dropped them once Phases 3 and 4 replaced them.)
   - Keeps `watchlist`, `verdict_log` and the corporate-action data.
   - Creates `broker_accounts`, `account_attestations` and the `sim_*` tables.
 - **Account application** `/onboarding`, a multi-step wizard that builds Alpaca's `POST /v1/accounts` body:
