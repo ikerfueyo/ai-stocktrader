@@ -7,6 +7,7 @@ import QuantityStepper from "./QuantityStepper";
 import { accountActivityKey, useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { describeOrderSize, describeOrderType, formatPrice, formatShares, orderStatusLabel, orderSymbolLabel, TIME_IN_FORCE_LABELS } from "@/lib/orders";
+import { formatEasternDateTime } from "@/lib/marketHours";
 import { contractName, isOptionSymbol, parseOptionSymbol } from "@/lib/options";
 import type { AppOrder, BrokerOrder, BrokerOrderUpdate, OrderDetails } from "@/lib/types";
 
@@ -32,7 +33,7 @@ interface Edit {
     timeInForce: "day" | "gtc";
 }
 
-const formatTime = (iso: string) => new Date(iso).toLocaleString("en-US", { dateStyle: "short", timeStyle: "medium" });
+const formatTime = (iso: string) => formatEasternDateTime(iso, { seconds: true });
 
 // The stock an option order trades contracts of (an mleg order's legs'), or null for a stock order
 const underlyingOf = (order: Pick<BrokerOrder, "symbol" | "order_class" | "legs">) =>

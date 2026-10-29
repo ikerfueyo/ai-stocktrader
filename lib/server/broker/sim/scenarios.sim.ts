@@ -56,9 +56,9 @@ const prepareDatabase = async () => {
 const makeHarness = async (): Promise<ScenarioHarness> => {
     await prepareDatabase();
     // Loaded after the environment is set, since the modules read it when they load
-    const [{ SimBroker }, { default: pool }, accounts, transfers, orders, positions, calls, { overridePrice }, { loadCorporateActions }, portfolio, { withLedgerAccount }] = await Promise.all([
+    const [{ SimBroker }, { default: pool }, accounts, transfers, orders, positions, calls, { overridePrice }, { loadCorporateActions }, portfolio, { withLedgerAccount }, { TRANSFER_FEES }] = await Promise.all([
         import("./index"), import("../../db"), import("./accounts"), import("./transfers"), import("./orders"), import("./positions"), import("./calls"),
-        import("../../alphaVantage"), import("../../corporateActions"), import("../../portfolio"), import("../../requestContext")
+        import("../../alphaVantage"), import("../../corporateActions"), import("../../portfolio"), import("../../requestContext"), import("./funding")
     ]);
     // Their corporate actions count as fetched, so none is looked up at Alpha Vantage
     await pool.query(
@@ -72,6 +72,7 @@ const makeHarness = async (): Promise<ScenarioHarness> => {
         symbols: { stock: SYMBOLS.stock, other: SYMBOLS.other },
         patience: 12,
         thinlyTraded: { symbol: SYMBOLS.thin, sharesPerFill: 100 },
+        transferSteps: { returnFee: TRANSFER_FEES.achReturn },
         async advance() {
             await accounts.advanceAccounts();
             await transfers.fastForwardTransfers();

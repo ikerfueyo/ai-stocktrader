@@ -24,8 +24,13 @@ export const handleEvent = async (event: BrokerEvent) => {
     forgetBrokerLedger(event.accountId);
     const userId = await userForAccount(event.accountId);
     if (userId) {
-        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        let payload = (event.payload ?? {}) as Record<string, unknown>;
         try {
+            if (event.stream === "transfers" && ["COMPLETE", "RETURNED", "REJECTED"].includes(String(payload.status_to))) {
+                // The event only names the transfer; its amount, type and direction say which one it is (left out if it can't be read)
+                const transfer = (await getBroker().listTransfers(event.accountId).catch(() => [])).find(({ id }) => id === payload.transfer_id);
+                if (transfer) payload = { ...payload, transfer };
+            }
             const draft = notificationFor({ id: event.id, stream: event.stream, payload });
             if (draft) await notify(userId, event.accountId, draft);
             if (event.stream === "nta" && payload.activity_type === "DIV" && payload.activity_sub_type !== "SDIV") {

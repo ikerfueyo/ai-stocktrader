@@ -5,6 +5,7 @@ import { contractMultiplier, contractName } from "@/lib/options";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
+import { formatEasternDateTime } from "@/lib/marketHours";
 import { formatCurrency, formatShares } from "@/lib/orders";
 import type { BrokerActivity } from "@/lib/types";
 
@@ -95,7 +96,7 @@ const ActivityFeed = () => {
                             <tbody>
                                 {rows.map(({ id, date, type, details, amount }) => (
                                     <tr key={id}>
-                                        <td>{date ? new Date(date).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
+                                        <td>{date ? formatEasternDateTime(date) : "—"}</td>
                                         <td>{type}</td>
                                         <td className="text-left">{details}</td>
                                         <td className={amount === 0 ? "" : `price-change ${amount > 0 ? "positive" : "negative"}`}>{amount === 0 ? "—" : `${amount > 0 ? "+" : "−"}${formatCurrency(Math.abs(amount))}`}</td>

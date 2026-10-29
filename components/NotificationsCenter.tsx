@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
+import { formatEasternDateTime } from "@/lib/marketHours";
 import { formatCurrency, formatPrice } from "@/lib/orders";
 import { ALERT_LABELS, describeAlert, FREQUENCY_LABELS, type AlertCondition, type Frequency } from "@/lib/automation";
 import { KIND_LABELS, NOTIFICATION_KINDS } from "@/lib/server/notificationRules";
@@ -107,7 +108,7 @@ const NotificationList = () => {
                                 <span className="notification-kind">{KIND_LABELS[item.kind]?.split(":")[0]}</span>
                                 <span className="bell-item-title">{item.title}</span>
                                 {item.body && <span className="bell-item-body">{item.body}</span>}
-                                <span className="bell-item-time" title={new Date(item.createdAt).toLocaleString()}>{timeAgo(item.createdAt)}</span>
+                                <span className="bell-item-time" title={formatEasternDateTime(item.createdAt)}>{timeAgo(item.createdAt)}</span>
                             </button>
                         </li>
                     ))}
@@ -176,7 +177,7 @@ const Alerts = ({ symbol }: { symbol: string }) => {
                                 <td><Link href={`/trading/${alert.symbol}`}>{describeAlert(alert.symbol, alert.condition, alert.threshold)}</Link>{alert.rearm && <span className="badge badge-light ml-2">stays on</span>}</td>
                                 <td>{alert.status === "active" ? "Watching" : "Fired"}</td>
                                 <td>{alert.lastPrice === null ? "—" : formatPrice(alert.lastPrice)}</td>
-                                <td>{alert.triggeredAt ? new Date(alert.triggeredAt).toLocaleString() : "—"}</td>
+                                <td>{alert.triggeredAt ? formatEasternDateTime(alert.triggeredAt) : "—"}</td>
                                 <td><button type="button" className="btn btn-link btn-sm text-danger p-0" onClick={() => remove(alert.id)}>Delete</button></td>
                             </tr>
                         ))}

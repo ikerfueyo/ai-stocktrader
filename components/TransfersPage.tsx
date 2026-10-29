@@ -21,17 +21,26 @@ const TransfersPage = () => {
     const { refreshAccount } = useAccount();
     const { accountId, relationships, banks, transfers, holderName, terms, error, reload } = useFunding();
     const [actionError, setActionError] = useState<string | null>(null);
+    // What's being done (a transfer's or bank's ID, or "advance"), so its button can't be pressed twice
+    const [pending, setPending] = useState<string | null>(null);
 
-    const act = async (request: () => Promise<unknown>) => {
+    const act = async (key: string, request: () => Promise<unknown>) => {
         setActionError(null);
+        setPending(key);
         try {
             await request();
             await Promise.all([reload(), refreshAccount()]);
         } catch (error) {
             logError(error);
             setActionError(apiErrorMessage(error));
+        } finally {
+            setPending(null);
         }
     };
+
+    // Development with the simulator only: every in-progress transfer one step on now (the settle-transfers job), instead of
+    // waiting for the banking calendar
+    const canAdvance = process.env.NODE_ENV !== "production" && terms?.simulated === true && (transfers ?? []).some(({ status }) => IN_PROGRESS.includes(status));
 
     return (
         <main className="transfer-container transfers-page mt-5">
@@ -56,7 +65,8 @@ const TransfersPage = () => {
                     {banks.map(bank => (
                         <div key={bank.id} className="bank-link">
                             <div><strong>{bank.name}</strong> {bank.account_number}<span className="text-muted"> · routing {bank.bank_code}</span></div>
-                            <button type="button" className="btn btn-sm btn-link text-muted" onClick={() => act(() => axios.delete(`/api/accounts/${accountId}/banks/${bank.id}`))}>Remove</button>
+                            <button type="button" className="btn btn-sm btn-link text-muted" disabled={pending === bank.id}
+                                onClick={() => act(bank.id, () => axios.delete(`/api/accounts/${accountId}/banks/${bank.id}`))}>{pending === bank.id ? "Removing…" : "Remove"}</button>
                         </div>
                     ))}
                 </section>
@@ -64,7 +74,18 @@ const TransfersPage = () => {
 
             <section className="settings-section">
                 <h2 className="panel-title">History</h2>
-                {transfers.length === 0 ? (
+                {canAdvance && (
+                    <p>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" disabled={pending === "advance"}
+                            onClick={() => act("advance", () => axios.post("/api/dev/jobs", { job: "settle-transfers" }))}
+                            title="Development only: moves every in-progress transfer one step (requested, in transit, complete, and a test-cents deposit returned) without waiting for the banking calendar">
+                            {pending === "advance" ? "Advancing…" : "Advance transfers a step"}
+                        </button>
+                    </p>
+                )}
+                {transfers === null ? (
+                    <p>Loading...</p>
+                ) : transfers.length === 0 ? (
                     <p className="text-muted">No transfers yet.</p>
                 ) : (
                     <table className="table table-sm transfers-table">
@@ -92,7 +113,8 @@ const TransfersPage = () => {
                                         </td>
                                         <td>
                                             {transfer.status === "QUEUED" && (
-                                                <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => act(() => axios.delete(`/api/accounts/${accountId}/transfers/${transfer.id}`))}>Cancel</button>
+                                                <button type="button" className="btn btn-sm btn-outline-danger" disabled={pending === transfer.id}
+                                                    onClick={() => act(transfer.id, () => axios.delete(`/api/accounts/${accountId}/transfers/${transfer.id}`))}>{pending === transfer.id ? "Canceling…" : "Cancel"}</button>
                                             )}
                                         </td>
                                     </tr>

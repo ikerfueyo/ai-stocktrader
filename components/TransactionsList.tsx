@@ -5,6 +5,7 @@ import Link from "next/link";
 import ActivityFeed from "./ActivityFeed";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
+import { formatEasternDateTime } from "@/lib/marketHours";
 import { describeOrderSize, describeOrderType, formatCurrency, formatPrice, formatShares, formatSigned, orderStatusLabel, TIME_IN_FORCE_LABELS } from "@/lib/orders";
 import type { AppOrder, CashActivityRow, CashActivityType, FillPolicy, TradeHistoryRow } from "@/lib/types";
 
@@ -24,7 +25,7 @@ const CASH_LABELS: Record<CashActivityType, string> = { DEPOSIT: "Deposit", WITH
 };
 const isCredit = (type: CashActivityType) => type === "DEPOSIT" || type === "DIVIDEND_IN" || type === "CORPORATE_ACTION_IN";
 
-const formatDate = (date: string) => new Date(date).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
+const formatDate = (date: string) => formatEasternDateTime(date);
 
 // The account's history in tabs (kept in the URL as ?tab=): orders (every order, in every status, with bracket, OCO and OTO legs
 // under their entry), executed trades, cash activity (deposits, withdrawals, dividends) and every ledger activity

@@ -31,6 +31,8 @@ export interface BrokerEventLike {
 const money = (value: unknown) => `$${Math.abs(Number(value)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const shares = (value: unknown) => Number(value).toLocaleString("en-US", { maximumFractionDigits: 6 });
 
+type TransferLike = { type?: string; direction?: string; amount?: string; reason?: string | null };
+
 type OrderLike = { id?: string; client_order_id?: string; order_class?: string; legs?: OrderLike[] | null; ratio_qty?: string; side?: string; symbol?: string; qty?: string | null; notional?: string | null; filled_qty?: string; filled_avg_price?: string | null; type?: string; limit_price?: string | null; stop_price?: string | null };
 
 // Which kind an order's events are: the simulator's own liquidations, recurring buys and reinvested dividends by their client order ID
@@ -118,9 +120,18 @@ export const notificationFor = (event: BrokerEventLike): NotificationDraft | nul
     }
     if (event.stream === "transfers") {
         const status = payload.status_to;
-        if (status === "COMPLETE") return { kind: "transfers", title: "A transfer completed", body: "The money has arrived.", link: "/transfers", dedupeKey };
-        if (status === "RETURNED") return { kind: "transfers", title: "A deposit was returned by the bank", body: "Its credit and a return fee were taken back.", link: "/transfers", dedupeKey };
-        if (status === "REJECTED") return { kind: "transfers", title: "A transfer was rejected", body: "", link: "/transfers", dedupeKey };
+        // The transfer itself, when the event's handler could look it up (the event only names it): "$20.00 ACH withdrawal"
+        const transfer = payload.transfer as TransferLike | undefined;
+        const what = transfer ? `${money(transfer.amount)} ${transfer.type === "wire" ? "wire" : "ACH"} ${transfer.direction === "INCOMING" ? "deposit" : "withdrawal"}` : null;
+        const reason = transfer?.reason ? `${transfer.reason}. ` : "";
+        if (status === "COMPLETE") {
+            if (!what) return { kind: "transfers", title: "A transfer completed", body: "The money has arrived.", link: "/transfers", dedupeKey };
+            return { kind: "transfers", title: `Your ${what} completed`, body: transfer!.direction === "INCOMING" ? "It has settled in your account." : "It has arrived at your bank.", link: "/transfers", dedupeKey };
+        }
+        if (status === "RETURNED") {
+            return { kind: "transfers", title: what ? `Your ${what} was returned by the bank` : "A deposit was returned by the bank", body: `${reason}Its credit and a return fee were taken back.`, link: "/transfers", dedupeKey };
+        }
+        if (status === "REJECTED") return { kind: "transfers", title: what ? `Your ${what} was rejected` : "A transfer was rejected", body: reason.trim(), link: "/transfers", dedupeKey };
         return null;
     }
     // Non-trade activities

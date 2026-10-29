@@ -183,3 +183,14 @@ export const formatEastern = (iso: string, { withDay = false } = {}): string => 
     });
     return `${formatted} ET`;
 };
+
+// Formats an instant as a date and time in Eastern time, such as "10/28/26, 7:52 PM ET" (with seconds, "7:52:05 PM ET"), so the
+// history reads the same wherever the browser is; a date without a time (an activity's YYYY-MM-DD) is shown as that date
+export const formatEasternDateTime = (value: string, { seconds = false } = {}): string => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        const [year, month, day] = value.split("-");
+        return `${Number(month)}/${Number(day)}/${year.slice(2)}`;
+    }
+    const formatted = new Date(value).toLocaleString("en-US", { timeZone: MARKET_TIME_ZONE, dateStyle: "short", timeStyle: seconds ? "medium" : "short" });
+    return `${formatted} ET`;
+};

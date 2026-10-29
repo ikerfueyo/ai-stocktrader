@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
+import { MARKET_TIME_ZONE } from "@/lib/marketHours";
 import { formatCurrency, formatShares } from "@/lib/orders";
 import type { TaxLot } from "@/lib/types";
 
@@ -39,7 +40,7 @@ const PositionLots = ({ ticker }: { ticker: string }) => {
             <tbody>
                 {lots.map(lot => (
                     <tr key={lot.id}>
-                        <td>{new Date(lot.acquiredAt).toLocaleDateString("en-US", { dateStyle: "medium" })}</td>
+                        <td>{new Date(lot.acquiredAt).toLocaleDateString("en-US", { dateStyle: "medium", timeZone: MARKET_TIME_ZONE })}</td>
                         <td>{formatShares(lot.qty)}{lot.qty !== lot.originalQty && <span className="text-muted"> of {formatShares(lot.originalQty)}</span>}</td>
                         <td>{formatCurrency(lot.price)}</td>
                         <td>{formatCurrency(lot.costBasis)}</td>

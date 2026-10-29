@@ -17,7 +17,8 @@ export const useFunding = () => {
     const accountId = active?.accountId ?? null;
     const [relationships, setRelationships] = useState<AchRelationship[] | null>(null);
     const [banks, setBanks] = useState<RecipientBank[]>([]);
-    const [transfers, setTransfers] = useState<BrokerTransfer[]>([]);
+    // null until the first load, so an empty history isn't shown while it loads
+    const [transfers, setTransfers] = useState<BrokerTransfer[] | null>(null);
     const [holderName, setHolderName] = useState("");
     const [terms, setTerms] = useState<FundingTerms | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -50,7 +51,7 @@ export const useFunding = () => {
         reload();
     }, [reload]);
 
-    const busy = (relationships ?? []).some(({ status }) => status === "QUEUED") || transfers.some(({ status }) => IN_PROGRESS.includes(status));
+    const busy = (relationships ?? []).some(({ status }) => status === "QUEUED") || (transfers ?? []).some(({ status }) => IN_PROGRESS.includes(status));
     useEffect(() => {
         if (!busy) return;
         const timer = setInterval(reload, POLL_MS);

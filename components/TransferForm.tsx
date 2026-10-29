@@ -24,8 +24,8 @@ const expected = (iso: string) => formatEastern(iso, { withDay: true });
 
 // Deposit or withdraw money. Deposits come by ACH from the linked bank account (linked here first if there's none), with up to the
 // instant limit credited at once. Withdrawals go by ACH to it (free, next banking day) or by wire to a recipient bank (with its fee,
-// the same day), and only from withdrawable cash. In an IRA, a deposit is a contribution for a tax year (within what's left of the
-// limit across the user's IRAs) and a withdrawal a distribution, with its reason and tax withholding.
+// the same banking day if requested by 3 p.m. ET), and only from withdrawable cash. In an IRA, a deposit is a contribution for a tax
+// year (within what's left of the limit across the user's IRAs) and a withdrawal a distribution, with its reason and tax withholding.
 const TransferForm = ({ direction }: { direction: Direction }) => {
     const { account, refreshAccount } = useAccount();
     const { active } = useBrokerAccount();
@@ -176,7 +176,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
             {!isDeposit && (
                 <div className="method-tiles" role="radiogroup" aria-label="Withdrawal method">
                     <button type="button" role="radio" aria-checked={method === "ach"} className={`method-tile${method === "ach" ? " active" : ""}`} onClick={() => setMethod("ach")}>ACH (free, next banking day)</button>
-                    <button type="button" role="radio" aria-checked={method === "wire"} className={`method-tile${method === "wire" ? " active" : ""}`} onClick={() => setMethod("wire")}>Wire ({formatCurrency(wireFee)}, same day)</button>
+                    <button type="button" role="radio" aria-checked={method === "wire"} className={`method-tile${method === "wire" ? " active" : ""}`} onClick={() => setMethod("wire")}>Wire ({formatCurrency(wireFee)}, same day if sent by 3 PM ET)</button>
                 </div>
             )}
 

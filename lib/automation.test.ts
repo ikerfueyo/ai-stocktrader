@@ -82,6 +82,16 @@ describe("Notifications from broker events", () => {
         assert.equal(notificationFor({ id: "m", stream: "accounts", payload: { event: "margin_call", margin_call: { type: "maintenance", amount: "101" } } })!.title, "A maintenance margin call of $101.00");
         assert.equal(notificationFor({ id: "t", stream: "transfers", payload: { status_from: "SENT_TO_CLEARING", status_to: "COMPLETE" } })!.kind, "transfers");
         assert.equal(notificationFor({ id: "t", stream: "transfers", payload: { status_from: "", status_to: "QUEUED" } }), null);
+        // With the transfer looked up, it says which one
+        const transfer = (status_to: string, transfer: Record<string, unknown>) => notificationFor({ id: "t", stream: "transfers", payload: { status_from: "", status_to, transfer } })!;
+        assert.deepEqual(
+            [transfer("COMPLETE", { type: "ach", direction: "OUTGOING", amount: "20" }).title, transfer("COMPLETE", { type: "ach", direction: "OUTGOING", amount: "20" }).body],
+            ["Your $20.00 ACH withdrawal completed", "It has arrived at your bank."]
+        );
+        assert.equal(transfer("COMPLETE", { type: "wire", direction: "OUTGOING", amount: "30" }).title, "Your $30.00 wire withdrawal completed");
+        assert.equal(transfer("COMPLETE", { type: "ach", direction: "INCOMING", amount: "500" }).body, "It has settled in your account.");
+        const returned = transfer("RETURNED", { type: "ach", direction: "INCOMING", amount: "100.01", reason: "R01: Insufficient funds" });
+        assert.deepEqual([returned.title, returned.body], ["Your $100.01 ACH deposit was returned by the bank", "R01: Insufficient funds. Its credit and a return fee were taken back."]);
         const nta = (payload: Record<string, unknown>) => notificationFor({ id: "n", stream: "nta", payload });
         assert.equal(nta({ activity_type: "DIV", activity_sub_type: "CDIV", net_amount: "6.5", symbol: "KO" })!.title, "Dividend received: $6.50 from KO");
         assert.equal(nta({ activity_type: "FEE", activity_sub_type: "REG", net_amount: "-0.01" }), null, "regulatory fees don't notify");

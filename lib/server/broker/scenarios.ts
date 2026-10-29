@@ -30,6 +30,9 @@ export interface ScenarioHarness {
     corporateAction?(action: { type: "SPLIT"; symbol: string; factor: number } | { type: "DIVIDEND"; symbol: string; amount: number }): Promise<void>;
     // The broker's margin check now (in the regular session: liquidation when equity is far below maintenance)
     enforceMargin?(accountId: string): Promise<void>;
+    // Transfers wait for advance before each step, so one can be canceled while it's requested, and a deposit with test cents ($x.01)
+    // comes back as R01 after it completes, with this return fee (the simulator's funding rules)
+    transferSteps?: { returnFee: number };
     // A listed option contract to trade (the sandbox's), with its underlying
     optionContract?: { symbol: string; underlying: string };
     // What the app records itself once an account is opened (its W-9 certification, without which sales and dividends are subject
@@ -46,7 +49,7 @@ export interface ScenarioHarness {
     close?(): Promise<void>;
 }
 
-type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "enforceMargin" | "optionContract";
+type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "enforceMargin" | "transferSteps" | "optionContract";
 
 const STOCKS = 4;
 const roundCents = (value: number) => Math.round(value * 100) / 100;
@@ -315,6 +318,62 @@ export const SCENARIOS: Scenario[] = [
             const transfer = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "OUTGOING", amount: "1000.00", relationship_id: link.id } as never);
             await waitFor(h, "the withdrawal's completion", async () => (await h.broker.listTransfers(accountId)).some(({ id, status }) => id === transfer.id && status === "COMPLETE"));
             assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), 2000);
+        }
+    },
+    {
+        name: "wire: a wire withdrawal to a recipient bank leaves the account with its fee",
+        async run(h) {
+            const accountId = await fundedAccount(h, 3000);
+            const bank = await h.broker.createRecipientBank(accountId, { name: "Scenario Bank", bank_code: "011000015", bank_code_type: "ABA", account_number: "987654321" } as never);
+            assert.ok((await h.broker.listRecipientBanks(accountId)).some(({ id }) => id === bank.id));
+            const transfer = await h.broker.createTransfer(accountId, { transfer_type: "wire", direction: "OUTGOING", amount: "500.00", bank_id: bank.id } as never);
+            assert.equal(transfer.type, "wire");
+            const done = await waitFor(h, "the wire's completion", async () => (await h.broker.listTransfers(accountId)).find(({ id, status }) => id === transfer.id && status === "COMPLETE"));
+            const fee = Number(done.fee ?? 0);
+            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), roundCents(3000 - 500 - fee));
+            if (fee > 0) {
+                const activities = await listAllActivities(h.broker, accountId, ["FEE"]);
+                assert.ok(activities.some(activity => activity.activity_type === "FEE" && Number((activity as { net_amount?: string }).net_amount) === -fee), "the wire fee's activity");
+            }
+        }
+    },
+    {
+        name: "cancel transfers: a requested deposit takes back its instant credit, a requested withdrawal releases its hold",
+        needs: ["transferSteps"],
+        async run(h) {
+            const accountId = await fundedAccount(h, 3000);
+            const [link] = await h.broker.listAchRelationships(accountId);
+            const deposit = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "INCOMING", amount: "500.00", relationship_id: link.id } as never);
+            assert.equal(deposit.status, "QUEUED");
+            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), 3500, "credited at once up to the instant limit");
+            await h.broker.cancelTransfer(accountId, deposit.id);
+            const withdrawal = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "OUTGOING", amount: "200.00", relationship_id: link.id } as never);
+            assert.equal(Number((await h.broker.getTradeAccount(accountId)).pending_transfer_out), 200);
+            await h.broker.cancelTransfer(accountId, withdrawal.id);
+            const transfers = await h.broker.listTransfers(accountId);
+            assert.deepEqual([deposit.id, withdrawal.id].map(id => transfers.find(transfer => transfer.id === id)?.status), ["CANCELED", "CANCELED"]);
+            const trading = await h.broker.getTradeAccount(accountId);
+            assert.deepEqual([Number(trading.cash), Number(trading.pending_transfer_out)], [3000, 0]);
+            // Once it's on its way, it can't be
+            const late = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "OUTGOING", amount: "100.00", relationship_id: link.id } as never);
+            await waitFor(h, "the withdrawal going to clearing", async () => (await h.broker.listTransfers(accountId)).some(({ id, status }) => id === late.id && status !== "QUEUED"));
+            await assert.rejects(h.broker.cancelTransfer(accountId, late.id), (error: { status?: number }) => error.status === 422);
+        }
+    },
+    {
+        name: "return: a deposit with test cents completes, then comes back as R01 with the return fee",
+        needs: ["transferSteps"],
+        async run(h) {
+            const accountId = await fundedAccount(h, 3000);
+            const [link] = await h.broker.listAchRelationships(accountId);
+            const deposit = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "INCOMING", amount: "250.01", relationship_id: link.id } as never);
+            await waitFor(h, "the deposit's completion", async () => (await h.broker.listTransfers(accountId)).some(({ id, status }) => id === deposit.id && status === "COMPLETE"));
+            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), 3250.01);
+            const returned = await waitFor(h, "the deposit's return", async () => (await h.broker.listTransfers(accountId)).find(({ id, status }) => id === deposit.id && status === "RETURNED"));
+            assert.match(String(returned.reason), /^R01/);
+            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), roundCents(3000 - h.transferSteps!.returnFee));
+            const cash = cashRowsOf(await listAllActivities(h.broker, accountId, [...CASH_ACTIVITY_TYPES]), "scenario");
+            assert.ok(cash.some(({ type, amount }) => type === "WITHDRAW" && Number(amount) === 250.01), "the return takes the deposit back");
         }
     },
     {
