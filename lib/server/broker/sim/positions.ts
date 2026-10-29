@@ -11,7 +11,7 @@ import { emitEvent } from "./accounts";
 import { withhold } from "./withholding";
 import { activityId, ledgerCash, postActivity } from "./transfers";
 import { applyFill, isLongTerm, positionsFromLots, type Lot } from "./ledger";
-import { applyActionToLots, basisShare, spinoffDescription, trueUpBasis, type CorporateAction, type CorporateActionType, type LotEffect, type StoredAllocation } from "./corporateActions";
+import { applyActionToLots, spinoffDescription, trueUpBasis, type ActionPrices, type CorporateAction, type CorporateActionType, type LotEffect, type StoredAllocation } from "./corporateActions";
 import { FEE_DESCRIPTIONS, feesFor, roundFeeUp, type FeeAccrual } from "./feeSchedule";
 import { assetId, type SimAccountRow, type SimActivityRow } from "./shapes";
 import { contractMultiplier, contractName } from "../../../options";
@@ -44,10 +44,11 @@ const dayOf = (date: Date | string) => easternParts(new Date(date)).dateKey;
 // keeping it (Alpaca supports fractional shares, so the default keeps it)
 const CASH_IN_LIEU = process.env.SIM_CASH_IN_LIEU === "true";
 
-export interface ActionRow { ticker: string; type: CorporateActionType; ex_date: string; factor: string | null; amount: string | null; new_ticker: string | null }
+export interface ActionRow { ticker: string; type: CorporateActionType; ex_date: string; factor: string | null; amount: string | null; new_ticker: string | null; taxable?: boolean | null }
 
 export const toAction = (row: ActionRow): CorporateAction => ({
-    type: row.type, symbol: row.ticker, newSymbol: row.new_ticker, factor: row.factor === null ? null : Number(row.factor), cash: row.amount === null ? null : Number(row.amount), exDate: row.ex_date
+    type: row.type, symbol: row.ticker, newSymbol: row.new_ticker, factor: row.factor === null ? null : Number(row.factor), cash: row.amount === null ? null : Number(row.amount), exDate: row.ex_date,
+    taxable: row.taxable ?? null
 });
 
 // Applies the stored corporate actions of these symbols whose effective date has come to the account's lots acquired before it, once
@@ -77,7 +78,7 @@ export const applyCorporateActions = async (db: Db, accountId: string, symbols: 
     const seen = new Set(queue);
     while (queue.length > 0) {
         const { rows } = await db.query<ActionRow>(
-            `SELECT ticker, "type", ex_date::text, factor, amount, new_ticker FROM corporate_actions c
+            `SELECT ticker, "type", ex_date::text, factor, amount, new_ticker, taxable FROM corporate_actions c
              WHERE "type" <> 'DIVIDEND' AND ticker = ANY($1) AND ex_date <= $2
                AND NOT EXISTS (SELECT 1 FROM sim_corporate_actions_applied a WHERE a.account_id = $3 AND a.symbol = c.ticker AND a."type" = c."type" AND a.ex_date = c.ex_date)
              ORDER BY ex_date, ticker`,
@@ -143,7 +144,7 @@ const postLotEffect = async (db: PoolClient, accountId: string, lots: Lot[], eff
         openedIds.push(id);
         await db.query(
             `INSERT INTO sim_lots (id, account_id, symbol, side, qty, original_qty, price, acquired_at, fill_id) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`,
-            [id, accountId, lot.symbol, lot.side, lot.qty, lot.price, lot.acquiredAt, activityIds.get("spin") ?? null]
+            [id, accountId, lot.symbol, lot.side, lot.qty, lot.price, lot.acquiredAt, activityIds.get("spin") ?? activityIds.get("received") ?? null]
         );
     }
     for (const closing of effect.closings) {
@@ -162,9 +163,10 @@ const postLotEffect = async (db: PoolClient, accountId: string, lots: Lot[], eff
 const recordAllocation = async (db: Db, accountId: string, row: ActionRow, side: Lot["side"], effect: LotEffect, { activityIds, openedIds }: Awaited<ReturnType<typeof postLotEffect>>, closingsAfter: number) => {
     const lots: StoredAllocation["lots"] = effect.allocation!.lots.map(({ openedIndex, ...lot }) => ({ ...lot, ...(openedIndex !== undefined ? { newLotId: openedIds[openedIndex] } : {}) }));
     await db.query(
-        `INSERT INTO sim_basis_allocations (account_id, symbol, "type", ex_date, new_symbol, side, factor, cash, share, cash_fill_id, lots, closings_after)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT DO NOTHING`,
-        [accountId, row.ticker, row.type, row.ex_date, row.new_ticker, side, row.factor, row.amount, effect.allocation!.share, activityIds.get("cash") ?? null, JSON.stringify(lots), closingsAfter]
+        `INSERT INTO sim_basis_allocations (account_id, symbol, "type", ex_date, new_symbol, side, factor, cash, taxable, prices, cash_fill_id, lots, closings_after)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT DO NOTHING`,
+        [accountId, row.ticker, row.type, row.ex_date, row.new_ticker, side, row.factor, row.amount, row.taxable === true, JSON.stringify(effect.allocation!.prices), activityIds.get("cash") ?? null,
+            JSON.stringify(lots), closingsAfter]
     );
 };
 
@@ -183,7 +185,7 @@ const TRUE_UP_ATTEMPTS = 5;
 
 interface AllocationRow {
     account_id: string; symbol: string; type: "SPINOFF" | "MIXED_MERGER"; ex_date: string; new_symbol: string; side: Lot["side"]; factor: string; cash: string | null;
-    share: string | null; cash_fill_id: string | null; lots: StoredAllocation["lots"]; closings_after: number; attempts: number;
+    taxable: boolean; cash_fill_id: string | null; lots: StoredAllocation["lots"]; closings_after: number; attempts: number;
 }
 
 // Trues up the spinoffs' and mixed mergers' basis allocations with their effective date's closes, once that session is over (the
@@ -192,16 +194,15 @@ interface AllocationRow {
 // out from the closings, so they follow. Returns how many it trued up.
 export const trueUpBasisAllocations = async (now = new Date()): Promise<number> => {
     const { rows } = await pool.query<AllocationRow>(
-        `SELECT account_id, symbol, "type", ex_date::text, new_symbol, side, factor, cash, share, cash_fill_id, lots, closings_after, attempts
+        `SELECT account_id, symbol, "type", ex_date::text, new_symbol, side, factor, cash, taxable, cash_fill_id, lots, closings_after, attempts
          FROM sim_basis_allocations WHERE status = 'pending' AND ex_date < $1 ORDER BY ex_date`, [dayOf(now)]
     );
     let done = 0;
     for (const row of rows) {
         const key = [row.account_id, row.symbol, row.type, row.ex_date];
-        const action = { type: row.type, factor: Number(row.factor), cash: row.cash === null ? null : Number(row.cash) };
+        // A spinoff needs both closes, a merger the acquirer's
         const [own, other] = await Promise.all([row.type === "SPINOFF" ? closeOn(row.symbol, row.ex_date) : Promise.resolve(null), closeOn(row.new_symbol, row.ex_date)]);
-        const share = basisShare(action, { symbol: own, newSymbol: other });
-        if (share === null) {
+        if (other === null || (row.type === "SPINOFF" && own === null)) {
             const fallback = row.attempts + 1 >= TRUE_UP_ATTEMPTS;
             if (fallback) console.warn(`Basis true-up: no ${row.ex_date} closes for ${row.symbol} and ${row.new_symbol}; keeping the allocation applied`);
             await pool.query(
@@ -214,7 +215,7 @@ export const trueUpBasisAllocations = async (now = new Date()): Promise<number> 
         try {
             await client.query("BEGIN");
             await lockAccount(client, row.account_id);
-            if (await trueUpAllocation(client, row, share)) done++;
+            if (await trueUpAllocation(client, row, { symbol: own, newSymbol: other })) done++;
             await client.query("COMMIT");
         } catch (error) {
             await client.query("ROLLBACK").catch(() => {});
@@ -228,11 +229,13 @@ export const trueUpBasisAllocations = async (now = new Date()): Promise<number> 
 
 // Trues up one allocation under the account's lock. A lot whose price has moved since (a later split, say) leaves the allocation as
 // applied, as it can't be redone from the prices kept. Returns whether it changed anything.
-const trueUpAllocation = async (db: PoolClient, row: AllocationRow, share: number): Promise<boolean> => {
+const trueUpAllocation = async (db: PoolClient, row: AllocationRow, prices: ActionPrices): Promise<boolean> => {
     const key = [row.account_id, row.symbol, row.type, row.ex_date];
     const { rowCount } = await db.query(`SELECT 1 FROM sim_basis_allocations WHERE account_id = $1 AND symbol = $2 AND "type" = $3 AND ex_date = $4 AND status = 'pending' FOR UPDATE`, key);
     if (!rowCount) return false;
-    const allocation: StoredAllocation = { type: row.type, side: row.side, factor: Number(row.factor), cashFillId: row.cash_fill_id, lots: row.lots };
+    const allocation: StoredAllocation = {
+        type: row.type, side: row.side, factor: Number(row.factor), cash: row.cash === null ? null : Number(row.cash), taxable: row.taxable, cashFillId: row.cash_fill_id, lots: row.lots
+    };
     const applied = new Map(row.lots.flatMap(({ lotId, price, newLotId, newPrice }) => newLotId ? [[lotId, price], [newLotId, newPrice!]] : [[lotId, price]]));
     const { rows: current } = await db.query<{ id: string; price: string }>("SELECT id, price FROM sim_lots WHERE id = ANY($1::uuid[])", [[...applied.keys()]]);
     if (current.length !== applied.size || current.some(({ id, price }) => Math.abs(Number(price) - applied.get(id)!) > 1e-6)) {
@@ -240,17 +243,20 @@ const trueUpAllocation = async (db: PoolClient, row: AllocationRow, share: numbe
         await db.query(`UPDATE sim_basis_allocations SET status = 'fallback', finalized_at = now() WHERE account_id = $1 AND symbol = $2 AND "type" = $3 AND ex_date = $4`, key);
         return false;
     }
-    const { rows: closings } = await db.query<{ id: number; lot_id: string; fill_id: string; qty: string; lot_price: string; realized: string }>(
-        "SELECT id, lot_id, fill_id, qty, lot_price, realized FROM sim_lot_closings WHERE account_id = $1 AND lot_id = ANY($2::uuid[]) AND id > $3",
+    const { rows: closings } = await db.query<{ id: number; lot_id: string; fill_id: string; qty: string; lot_price: string; close_price: string; realized: string }>(
+        "SELECT id, lot_id, fill_id, qty, lot_price, close_price, realized FROM sim_lot_closings WHERE account_id = $1 AND lot_id = ANY($2::uuid[]) AND id > $3",
         [row.account_id, [...applied.keys()], row.closings_after]
     );
-    const result = trueUpBasis(allocation, share, closings.map(closing => ({
-        id: String(closing.id), lotId: closing.lot_id, fillId: closing.fill_id, qty: Number(closing.qty), lotPrice: Number(closing.lot_price), realized: Number(closing.realized)
+    const result = trueUpBasis(allocation, prices, closings.map(closing => ({
+        id: String(closing.id), lotId: closing.lot_id, fillId: closing.fill_id, qty: Number(closing.qty), lotPrice: Number(closing.lot_price), closePrice: Number(closing.close_price),
+        realized: Number(closing.realized)
     })));
+    if (!result) return false;
     for (const lot of result.lots) await db.query("UPDATE sim_lots SET price = $2 WHERE id = $1", [lot.id, lot.price]);
     const changes = new Map<string, number>();
     for (const closing of result.closings) {
-        await db.query("UPDATE sim_lot_closings SET lot_price = $2, realized = $3 WHERE id = $1", [Number(closing.id), closing.lotPrice, roundCents(closing.realized).toFixed(2)]);
+        await db.query("UPDATE sim_lot_closings SET lot_price = $2, close_price = $3, realized = $4 WHERE id = $1",
+            [Number(closing.id), closing.lotPrice, closing.closePrice, roundCents(closing.realized).toFixed(2)]);
         changes.set(closing.fillId, (changes.get(closing.fillId) ?? 0) + closing.change);
     }
     for (const [fillId, change] of changes) {
@@ -259,11 +265,12 @@ const trueUpAllocation = async (db: PoolClient, row: AllocationRow, share: numbe
     if (row.type === "SPINOFF") {
         await db.query(
             `UPDATE sim_activities SET description = $3 WHERE account_id = $1 AND activity_type = 'SPIN' AND symbol = $2 AND "date" = $4`,
-            [row.account_id, row.new_symbol, spinoffDescription(row.symbol, row.new_symbol, Number(row.factor), share), row.ex_date]
+            [row.account_id, row.new_symbol, spinoffDescription(row.symbol, row.new_symbol, Number(row.factor), result.share ?? 0), row.ex_date]
         );
     }
     await db.query(
-        `UPDATE sim_basis_allocations SET status = 'final', final_share = $5, finalized_at = now() WHERE account_id = $1 AND symbol = $2 AND "type" = $3 AND ex_date = $4`, [...key, share]
+        `UPDATE sim_basis_allocations SET status = 'final', final_prices = $5, finalized_at = now() WHERE account_id = $1 AND symbol = $2 AND "type" = $3 AND ex_date = $4`,
+        [...key, JSON.stringify(prices)]
     );
     return true;
 };

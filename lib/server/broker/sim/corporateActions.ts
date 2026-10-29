@@ -3,9 +3,11 @@
 // accounts and ./orders.ts to orders.
 //   Lots: splits and stock dividends multiply the shares and divide the price; a stock merger moves the lots to the acquirer, and a
 //   spinoff adds lots of the new company, both keeping each lot's acquisition date (the holding period carries over), a spinoff
-//   allocating the basis by market value; cash and mixed mergers close the shares for the cash, realizing against the basis (a mixed
-//   merger's basis split between the new shares and the cash by market value); a worthless removal closes them at nothing. Short lots
-//   follow the same rules with the cash going the other way. With cashInLieu, a fractional share left by a split, stock dividend,
+//   allocating the basis by market value; cash mergers close the shares for the cash, realizing against the basis; a mixed merger is
+//   a reorganization with cash (IRC 356 and 358, mixedMergerTerms): each long lot recognizes its gain up to the cash and no loss, the
+//   new shares keeping the rest of the basis and the holding period, unless the action is marked taxable, which realizes the whole gain
+//   or loss and opens the new shares at their value that day; a worthless removal closes them at nothing. Short lots follow the same
+//   rules with the cash going the other way (a short's mixed merger splits its basis by market value). With cashInLieu, a fractional share left by a split, stock dividend,
 //   merger or spinoff is paid out in cash (CIL) at the new price instead of kept.
 //   Orders (placed before the effective date): a reverse split cancels them; a forward split or stock dividend adjusts GTC buy limits
 //   and sell stops (shares × the ratio, prices ÷ it) and cancels the rest; a cash dividend lowers GTC buy limits and sell stops by the
@@ -26,6 +28,8 @@ export interface CorporateAction {
     // Cash per share (dividends, cash and mixed mergers)
     cash: number | null;
     exDate: string;
+    // A mixed merger that's fully taxable rather than a reorganization (the issuer's Form 8937 says; set by hand)
+    taxable?: boolean | null;
 }
 
 // An activity the action posts to the account, in Alpaca's types: SPLIT (FSPLIT, RSPLIT), DIV (SDIV), MA (CMA, SMA, SCMA), SPIN,
@@ -65,19 +69,18 @@ export interface LotEffect {
     realized: number;
     // A spinoff's or mixed merger's basis allocation, at the prices it was applied with, so trueUpBasis can redo it with the effective
     // date's closes
-    allocation?: { share: number | null; lots: AllocatedLot[] };
+    allocation?: { prices: ActionPrices; lots: AllocatedLot[] };
 }
 
 // A source lot's basis before the action (originalPrice) and as allocated: price is the lot's own price after it (the source's for a
-// spinoff, the acquirer's shares' for a mixed merger); a spinoff's new lot (openedIndex, into opened) at newPrice; a mixed merger's
-// cash closing at cashBasis a share
+// spinoff, the acquirer's shares' for a mixed merger moving the lot, its basis for a taxable one closing it); the new lot it opened
+// (openedIndex, into opened: a spinoff's, a taxable merger's) at newPrice
 export interface AllocatedLot {
     lotId: string;
     originalPrice: number;
     price: number;
     openedIndex?: number;
     newPrice?: number;
-    cashBasis?: number;
 }
 
 const round9 = (value: number) => Math.round(value * 1e9) / 1e9;
@@ -100,6 +103,26 @@ export const basisShare = (action: Pick<CorporateAction, "type" | "factor" | "ca
     const other = action.type === "SPINOFF" ? prices.symbol : action.cash ?? 0;
     return other !== null && newValue + other > 0 ? newValue / (newValue + other) : null;
 };
+
+// A mixed merger's terms for one lot, per old share, from its basis, the cash and the new shares' value (null while unknown): the cash
+// closing realizes (closePrice - lotPrice), and the new shares keep newBasis.
+//   A long in a reorganization (IRC 356 and 358) recognizes its realized gain (cash + value - basis) up to the cash, and no loss; the
+//   new shares' basis is the old basis less the cash plus the gain recognized. Without the value, the cash returns basis first.
+//   Taxable: the whole gain or loss is realized on the cash and the shares' value, and the new shares' basis is their value.
+//   A short isn't exchanged in a reorganization: its basis splits by market value (the cash first without the value).
+export const mixedMergerTerms = (basis: number, { side, cash, value, taxable }: { side: "long" | "short"; cash: number; value: number | null; taxable: boolean }) => {
+    if (taxable) return { lotPrice: basis, closePrice: cash + (value ?? 0), newBasis: value ?? 0 };
+    if (side === "long") {
+        const recognized = Math.max(0, Math.min(cash, cash + (value ?? 0) - basis));
+        return { lotPrice: cash - recognized, closePrice: cash, newBasis: basis - cash + recognized };
+    }
+    const share = value !== null && value + cash > 0 ? value / (value + cash) : null;
+    const cashBasis = share !== null ? basis * (1 - share) : Math.min(basis, cash);
+    return { lotPrice: cashBasis, closePrice: cash, newBasis: basis - cashBasis };
+};
+
+// When a taxable merger's new lots are acquired: the effective date, at noon Eastern's hour in UTC (the same day in either offset)
+const acquiredOn = (day: string) => `${day}T16:00:00.000Z`;
 
 export const spinoffDescription = (symbol: string, spun: string, factor: number, share: number) =>
     `${spun} spun off from ${symbol}: ${factor} per share${share > 0 ? `, with ${(share * 100).toFixed(2)}% of the basis` : ""}`;
@@ -181,29 +204,32 @@ export const applyActionToLots = (lots: Lot[], action: CorporateAction, { prices
             break;
         }
         case "MIXED_MERGER": {
-            // The basis splits between the new shares and the cash by market value; without the acquirer's price, the cash first
-            // returns basis
             const acquirer = action.newSymbol!;
-            const stockShare = basisShare(action, prices);
+            const taxable = action.taxable === true;
+            const value = prices.newSymbol !== null ? factor * prices.newSymbol : null;
             const proceeds = cents(sign * cash * total);
             activity({ tag: "removed", type: "MA", subType: "SCMA", symbol, qty: -sign * total, netAmount: 0, description: `${symbol} merged into ${acquirer}: shares removed` });
-            let realized = 0;
-            const keep = held.map(lot => {
-                const cashBasis = stockShare !== null ? lot.price * (1 - stockShare) : Math.min(lot.price, cash);
-                const gain = sign * (cash - cashBasis) * lot.qty;
-                effect.closings.push({ lotId: lot.id, qty: lot.qty, lotPrice: cashBasis, price: cash, realized: gain, tag: "cash" });
-                realized += gain;
-                return lot.price > 0 ? (lot.price - cashBasis) / lot.price : 0;
+            const original = [...held];
+            const terms = held.map(lot => {
+                const lotTerms = mixedMergerTerms(lot.price, { side, cash, value, taxable });
+                const realized = sign * (lotTerms.closePrice - lotTerms.lotPrice) * lot.qty;
+                effect.closings.push({ lotId: lot.id, qty: lot.qty, lotPrice: lotTerms.lotPrice, price: lotTerms.closePrice, realized, tag: "cash" });
+                effect.realized += realized;
+                return lotTerms;
             });
-            effect.realized += realized;
             effect.cash += proceeds;
-            // Each lot keeps the rest of its basis in the new shares
-            const original = held.map(lot => ({ ...lot }));
-            held.forEach((lot, index) => { lot.price = lot.price * keep[index]; });
-            const received = reshape(acquirer, factor);
+            // Each lot's new shares at the basis they keep: the lot itself moved to the acquirer, or for a taxable merger, closed and a
+            // new lot acquired that day
+            held.splice(0, held.length, ...original.map((lot, index) => ({ ...lot, price: terms[index].newBasis, ...(taxable ? { acquiredAt: acquiredOn(action.exDate) } : {}) })));
+            if (taxable) for (const lot of original) effect.updates.push({ id: lot.id, symbol, qty: 0, price: lot.price });
+            const received = reshape(acquirer, factor, 1, taxable ? "open" : "update");
             effect.allocation = {
-                share: stockShare,
-                lots: original.map((lot, index) => ({ lotId: lot.id, originalPrice: lot.price, price: effect.updates[index].price, cashBasis: lot.price * (1 - keep[index]) }))
+                prices,
+                lots: original.map((lot, index) => {
+                    if (!taxable) return { lotId: lot.id, originalPrice: lot.price, price: effect.updates[index].price };
+                    const openedIndex = effect.opened.findIndex(({ sourceLotId }) => sourceLotId === lot.id);
+                    return { lotId: lot.id, originalPrice: lot.price, price: lot.price, ...(openedIndex >= 0 ? { openedIndex, newPrice: effect.opened[openedIndex].price } : {}) };
+                })
             };
             held.splice(0, held.length, ...original);
             activity({ tag: "received", type: "MA", subType: "SCMA", symbol: acquirer, qty: sign * received, netAmount: 0, description: `${acquirer} received for ${symbol}: ${factor} per share` });
@@ -225,12 +251,11 @@ export const applyActionToLots = (lots: Lot[], action: CorporateAction, { prices
         case "SPINOFF": {
             // The basis moves to the new company's shares in proportion to market value (none without both prices)
             const spun = action.newSymbol!;
-            const known = basisShare(action, prices);
-            const share = known ?? 0;
+            const share = basisShare(action, prices) ?? 0;
             for (const lot of held) effect.updates.push({ id: lot.id, symbol, qty: lot.qty, price: round6(lot.price * (1 - share)) });
             const received = reshape(spun, factor, share, "open");
             effect.allocation = {
-                share: known,
+                prices,
                 lots: held.map((lot, index) => {
                     const openedIndex = effect.opened.findIndex(({ sourceLotId }) => sourceLotId === lot.id);
                     return { lotId: lot.id, originalPrice: lot.price, price: effect.updates[index].price, ...(openedIndex >= 0 ? { openedIndex, newPrice: effect.opened[openedIndex].price } : {}) };
@@ -253,7 +278,10 @@ export interface StoredAllocation {
     type: "SPINOFF" | "MIXED_MERGER";
     side: "long" | "short";
     factor: number;
-    // The mixed merger's cash activity, whose closings are at the cash basis
+    // A mixed merger's cash per share, and whether it's taxable
+    cash: number | null;
+    taxable: boolean;
+    // The mixed merger's cash activity, whose closings are its terms' (mixedMergerTerms)
     cashFillId: string | null;
     lots: (Omit<AllocatedLot, "openedIndex"> & { newLotId?: string })[];
 }
@@ -265,38 +293,51 @@ export interface AllocatedClosing {
     fillId: string;
     qty: number;
     lotPrice: number;
+    closePrice: number;
     realized: number;
 }
 
 export interface BasisTrueUp {
+    // The share of the basis a spinoff moved (null for a merger)
+    share: number | null;
     lots: { id: string; price: number }[];
-    closings: { id: string; fillId: string; lotPrice: number; realized: number; change: number }[];
+    closings: { id: string; fillId: string; lotPrice: number; closePrice: number; realized: number; change: number }[];
 }
 
-// Redoes an allocation at share (from the effective date's closes, basisShare): each lot's price from its basis before the action,
-// and each closing of those lots at its lot's new price (a mixed merger's cash closing at the new cash basis), with what that changes in
-// its realized P&L
-export const trueUpBasis = (allocation: StoredAllocation, share: number, closings: AllocatedClosing[]): BasisTrueUp => {
+// Redoes an allocation at the effective date's closes: each lot's price from its basis before the action, and each closing of those
+// lots at its lot's new price (a mixed merger's cash closing at its new terms), with what that changes in its realized P&L. null
+// without the closes it needs (a spinoff both, a merger the acquirer's).
+export const trueUpBasis = (allocation: StoredAllocation, prices: ActionPrices, closings: AllocatedClosing[]): BasisTrueUp | null => {
     const sign = allocation.side === "long" ? 1 : -1;
     const lots: BasisTrueUp["lots"] = [];
-    const cashBases = new Map<string, number>();
+    // The cash closings' new terms, by lot
+    const cashTerms = new Map<string, { lotPrice: number; closePrice: number }>();
+    const share = allocation.type === "SPINOFF" ? basisShare({ type: "SPINOFF", factor: allocation.factor, cash: null }, prices) : null;
+    if (allocation.type === "SPINOFF" ? share === null : prices.newSymbol === null) return null;
     for (const lot of allocation.lots) {
         if (allocation.type === "SPINOFF") {
-            lots.push({ id: lot.lotId, price: round6(lot.originalPrice * (1 - share)) });
-            if (lot.newLotId) lots.push({ id: lot.newLotId, price: round6(lot.originalPrice * share / allocation.factor) });
+            lots.push({ id: lot.lotId, price: round6(lot.originalPrice * (1 - share!)) });
+            if (lot.newLotId) lots.push({ id: lot.newLotId, price: round6(lot.originalPrice * share! / allocation.factor) });
+            continue;
+        }
+        const terms = mixedMergerTerms(lot.originalPrice, { side: allocation.side, cash: allocation.cash ?? 0, value: allocation.factor * prices.newSymbol!, taxable: allocation.taxable });
+        cashTerms.set(lot.lotId, terms);
+        if (allocation.taxable) {
+            if (lot.newLotId) lots.push({ id: lot.newLotId, price: round6(terms.newBasis / allocation.factor) });
         } else {
-            lots.push({ id: lot.lotId, price: round6(lot.originalPrice * share / allocation.factor) });
-            cashBases.set(lot.lotId, lot.originalPrice * (1 - share));
+            lots.push({ id: lot.lotId, price: round6(terms.newBasis / allocation.factor) });
         }
     }
-    const prices = new Map(lots.map(({ id, price }) => [id, price]));
+    const lotPrices = new Map(lots.map(({ id, price }) => [id, price]));
     const changed = closings.flatMap(closing => {
-        const lotPrice = closing.fillId === allocation.cashFillId && cashBases.has(closing.lotId) ? cashBases.get(closing.lotId)! : prices.get(closing.lotId);
+        const terms = closing.fillId === allocation.cashFillId ? cashTerms.get(closing.lotId) : undefined;
+        const lotPrice = terms?.lotPrice ?? lotPrices.get(closing.lotId);
         if (lotPrice === undefined) return [];
-        const change = sign * (closing.lotPrice - lotPrice) * closing.qty;
-        return [{ id: closing.id, fillId: closing.fillId, lotPrice, realized: closing.realized + change, change }];
+        const closePrice = terms?.closePrice ?? closing.closePrice;
+        const change = sign * ((closePrice - closing.closePrice) - (lotPrice - closing.lotPrice)) * closing.qty;
+        return [{ id: closing.id, fillId: closing.fillId, lotPrice, closePrice, realized: closing.realized + change, change }];
     });
-    return { lots, closings: changed };
+    return { share, lots, closings: changed };
 };
 
 export interface AdjustableOrder {
