@@ -36,6 +36,7 @@ const AccountSettings = () => {
     const [employment, setEmployment] = useState({ employment_status: "", employer_name: "", employment_position: "" });
     const [trusted, setTrusted] = useState({ given_name: "", family_name: "", email_address: "", phone_number: "" });
     const [optionsLevel, setOptionsLevel] = useState(1);
+    const [stocksExperience, setStocksExperience] = useState<ExperienceLevel | "">("");
     const [optionsExperience, setOptionsExperience] = useState<ExperienceLevel | "">("");
     // What an options request adds to the account's identity when it lacks them: annual income and the suitability answers
     const [annualIncome, setAnnualIncome] = useState(-1);
@@ -110,7 +111,7 @@ const AccountSettings = () => {
         ? "Saved. Your new details are being reviewed; withdrawals resume once they're approved."
         : "Saved.";
     const patchConfigurations = (body: AccountConfigurations) => axios.patch(`/api/accounts/${id}/configurations`, body);
-    const noticeFor = (section: string) => notice?.section === section && <p className={notice.error ? "text-danger" : "text-success"}>{notice.text}</p>;
+    const noticeFor = (section: string) => notice?.section === section && notice.text && <p className={notice.error ? "text-danger" : "text-success"}>{notice.text}</p>;
 
     if (error) return <p className="text-danger text-center mt-5">Couldn&apos;t load your account: {error}</p>;
     if (!account || !configurations || !active) return <p className="text-center mt-5">Loading...</p>;
@@ -122,12 +123,16 @@ const AccountSettings = () => {
     const maxLevel = isIra ? IRA_MAX_OPTIONS_LEVEL : 3;
     const approvedLevel = configurations.max_options_trading_level ?? 0;
     const latestApproval = approvals[0];
+    // The levels that can be requested; the choice falls back to the lowest when it isn't one of them (such as after an approval)
+    const levelChoices = [1, 2, 3].filter(level => level > approvedLevel && level <= maxLevel);
+    const requestLevel = levelChoices.includes(optionsLevel) ? optionsLevel : levelChoices[0];
     // An account opened without options lacks the answers Alpaca requires for them, which the request then adds
     const identity = (account.identity ?? {}) as AccountApplication["identity"];
     const needsIncome = identity.annual_income_min === undefined;
     const needsSuitability = SUITABILITY_FIELDS.some(field => identity[field] === undefined);
     const income = RANGES[annualIncome];
     const identityChanges: Partial<AccountApplication["identity"]> = {
+        ...(stocksExperience && stocksExperience !== identity.investment_experience_with_stocks ? { investment_experience_with_stocks: stocksExperience } : {}),
         ...(optionsExperience && optionsExperience !== identity.investment_experience_with_options ? { investment_experience_with_options: optionsExperience } : {}),
         ...(needsIncome && income ? { annual_income_min: income.min, annual_income_max: income.max } : {}),
         ...(needsSuitability ? suitability : {})
@@ -162,8 +167,9 @@ const AccountSettings = () => {
                 ...(Object.keys(identityChanges).length > 0 ? { identity: identityChanges } : {})
             });
         }
-        await axios.post(`/api/accounts/${id}/options`, { level: optionsLevel });
-    }, "Requested. The decision takes a few seconds.");
+        await axios.post(`/api/accounts/${id}/options`, { level: requestLevel });
+    // No notice: the latest request's line says it's pending, then how it was decided
+    }, "");
     const onClose = () => save("close", async () => {
         await axios.post(`/api/accounts/${id}/close`);
     }, "Your account is closed.");
@@ -294,18 +300,26 @@ const AccountSettings = () => {
             )}
 
             <Section title="Options trading">
-                {latestApproval?.status && <p className="text-muted">Latest request: level {latestApproval.requested_level}, {latestApproval.status.toLowerCase().replaceAll("_", " ")}{latestApproval.status !== "PENDING" && latestApproval.status !== "REJECTED" ? ` (level ${latestApproval.approved_level} approved)` : ""}.</p>}
+                {latestApproval?.status && <p className="text-muted">Latest request: level {latestApproval.requested_level}, {latestApproval.status.toLowerCase().replaceAll("_", " ")}{latestApproval.status !== "PENDING" && latestApproval.status !== "REJECTED" ? ` (level ${latestApproval.approved_level} approved)` : ""}{latestApproval.status === "PENDING" ? "; the decision takes a few seconds" : ""}.</p>}
                 {approvedLevel < maxLevel && !pendingApproval && (
                     <div className="transfer-fields">
-                        <select className="form-control" aria-label="Options level" value={optionsLevel} onChange={event => setOptionsLevel(Number(event.target.value))}>
-                            {[1, 2, 3].filter(level => level > approvedLevel && level <= maxLevel).map(level => <option key={level} value={level}>{OPTIONS_LEVEL_LABELS[level]}</option>)}
+                        <select className="form-control" aria-label="Options level" value={requestLevel} onChange={event => setOptionsLevel(Number(event.target.value))}>
+                            {levelChoices.map(level => <option key={level} value={level}>{OPTIONS_LEVEL_LABELS[level]}</option>)}
                         </select>
-                        {!account.identity?.investment_experience_with_options && (
-                            <select className="form-control" aria-label="Options experience" value={optionsExperience} onChange={event => setOptionsExperience(event.target.value as ExperienceLevel | "")}>
-                                <option value="">Your options experience…</option>
+                        {/* The experience decides the level approved: level 2 needs experience trading stocks, level 3 trading options */}
+                        <Field label="Your experience trading stocks">
+                            <select className="form-control" value={stocksExperience || identity.investment_experience_with_stocks || ""} onChange={event => setStocksExperience(event.target.value as ExperienceLevel | "")}>
+                                <option value="">Choose…</option>
                                 {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
                             </select>
-                        )}
+                        </Field>
+                        <Field label="Your experience trading options">
+                            <select className="form-control" value={optionsExperience || identity.investment_experience_with_options || ""} onChange={event => setOptionsExperience(event.target.value as ExperienceLevel | "")}>
+                                <option value="">Choose…</option>
+                                {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
+                            </select>
+                        </Field>
+                        <p className="text-muted">Level 2 needs experience trading stocks and level 3 trading options; a request beyond your experience is approved at a lower level.</p>
                         {needsIncome && (
                             <Field label="Annual income">
                                 <select className="form-control" value={annualIncome} onChange={event => setAnnualIncome(Number(event.target.value))}>

@@ -71,7 +71,7 @@ The run settles these questions, which the docs and the vendored specs leave ope
   - exchange display fees and non-professional subscriber declarations;
   - Alpaca's SIP plan, if it's used;
   - OPRA, for options.
-- **Modeled option quotes.** The modeled option quotes (`modelOptionQuote`) are estimates. They must not be shown as quotes.
+- **Option quotes.** The chain is quoted from Alpaca's free indicative feed, whose quotes are adjusted from OPRA's. Check Alpaca's terms for showing them to end users, or subscribe to OPRA (`ALPACA_OPTIONS_FEED=opra`). Contracts without a current quote there are still modeled (`modelOptionQuote`); those are estimates and must not be shown as quotes.
 
 ### Security
 - **SOC 2.** Alpaca expects partners to pass a security assessment.
@@ -90,7 +90,8 @@ Alpaca does these itself. The simulator's versions were approximations and go aw
 - voluntary corporate actions and their elections;
 - real bank verification and ACH returns;
 - real statements, confirmations and tax forms;
-- OCC's assignment process.
+- OCC's assignment process;
+- the order in which a margin liquidation closes positions. Alpaca's docs don't say how it handles options. The simulator closes first what releases the most requirement per dollar, buys back short calls before selling the shares covering them, and closes short options first when equity is gone. The sandbox can't force a margin call, so ask Alpaca how it orders a liquidation with options.
 
 ## Code still to do
 

@@ -443,11 +443,13 @@ export type TaxReport = TaxYearFigures & {
 };
 
 // GET /api/options/[ticker]: one expiration of a stock's option chain, with every listed expiration. source is realtime (Alpha Vantage's
-// realtime options) or modeled (each quote moved from the last close's by the stock's price since, at the contract's implied volatility).
+// realtime options, or Alpaca's OPRA feed), indicative (Alpaca's free feed: quotes adjusted from OPRA's) or modeled (each quote moved
+// from the last close's by the stock's price since, at the contract's implied volatility); in an Alpaca chain, contracts without a
+// current quote there are modeled.
 export interface OptionChainResponse {
     underlying: { symbol: string; price: number; previousClose: number | null; quoteTime: string; delay: QuoteDelay };
-    source: "realtime" | "modeled";
-    // The session the closing prices are from ("YYYY-MM-DD"), or the quotes' time
+    source: OptionQuoteSourceName;
+    // The session the closing prices are from ("YYYY-MM-DD"), or the newest quote's time
     asOf: string;
     today: string;
     expirations: string[];
@@ -455,8 +457,11 @@ export interface OptionChainResponse {
     contracts: OptionChainContract[];
 }
 
+export type OptionQuoteSourceName = "realtime" | "indicative" | "modeled";
+
 export interface OptionChainContract {
     symbol: string;
+    quoteSource: OptionQuoteSourceName;
     type: "call" | "put";
     strike: number;
     expiration: string;

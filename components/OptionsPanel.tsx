@@ -36,7 +36,8 @@ const percent = (value: number) => `${(value * 100).toFixed(0)}%`;
 
 // The Trading page's options: the stock's chain for an expiration (calls, strikes, puts: bid, ask, implied volatility and delta, in the
 // money shaded), an order ticket for one contract, and a spread builder for mleg orders of 2 to 4 legs. Quotes are Alpha Vantage's
-// realtime ones when the plan has them, else modeled from the last close. Collapsed until opened, since a chain is a large download.
+// realtime ones when the plan has them, else Alpaca's (its free indicative feed), else modeled from the last close. Collapsed until
+// opened, since a chain is a large download.
 const OptionsPanel = ({ ticker }: { ticker: string }) => {
     const { account, refreshAccount } = useAccount();
     const [open, setOpen] = useState(false);
@@ -93,7 +94,7 @@ const OptionsPanel = ({ ticker }: { ticker: string }) => {
             <td>
                 <button type="button" className={`chain-quote ${field} ${active ? "active" : ""}`} onClick={() => setSelected({ contract, side })}
                     title={`${side === "buy" ? "Buy" : "Sell"} ${contractName(contract.symbol)} at about ${formatPrice(contract[field])}`}>
-                    {contract[field].toFixed(2)}
+                    {contract[field].toFixed(2)}{chain?.source !== "modeled" && contract.quoteSource === "modeled" ? "*" : ""}
                 </button>
             </td>
         );
@@ -123,7 +124,9 @@ const OptionsPanel = ({ ticker }: { ticker: string }) => {
                     <p className="options-source">
                         {chain.source === "realtime"
                             ? "Realtime option quotes."
-                            : `Quotes modeled from the ${chain.asOf} close, moved with ${ticker}'s price at each contract's implied volatility (realtime options aren't in this data plan).`}
+                            : chain.source === "indicative"
+                                ? `Quotes from Alpaca's free indicative feed (adjusted from the exchanges' quotes)${chain.contracts.some(({ quoteSource }) => quoteSource === "modeled") ? "; those marked * have no current quote there and are modeled from the last close" : ""}.`
+                                : `Quotes modeled from the ${chain.asOf} close, moved with ${ticker}'s price at each contract's implied volatility (realtime options aren't in this data plan).`}
                         {" "}Click a bid to sell or an ask to buy; one contract is 100 shares.
                     </p>
                     <div className="option-chain-wrapper">

@@ -10,7 +10,7 @@ import type { Quote } from "../../types";
 export * from "../alphaVantage";
 // Loading ./options registers the option contracts' quotes with fetchQuotes
 export { fetchOptionChain, fetchOptionContract, type ChainEntry, type OptionChain, type OptionQuoteSource } from "./options";
-export { ALPACA_DATA_FEED, fetchAlpacaAssets, fetchAlpacaCalendar, fetchAlpacaClock, fetchAlpacaCorporateActions, isAlpacaConfigured } from "./alpaca";
+export { ALPACA_DATA_FEED, ALPACA_OPTIONS_FEED, fetchAlpacaAssets, fetchAlpacaCalendar, fetchAlpacaClock, fetchAlpacaCorporateActions, isAlpacaConfigured } from "./alpaca";
 
 // A ticker's quote with Alpaca's top of book (book is null without Alpaca keys, or when the book can't be fetched: it's only
 // shown, so its failure doesn't fail the quote)
