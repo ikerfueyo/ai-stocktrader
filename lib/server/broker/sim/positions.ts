@@ -6,7 +6,7 @@ import { BrokerError } from "../errors";
 import { fetchDailySeries, fetchQuotes, priceOverride } from "../../marketData";
 import { findAsset } from "../../assets";
 import { planDividends, roundCents, type Dividend, type Split, type Trade } from "../../account";
-import { easternParts, easternTime, settlementDate } from "../../../marketHours";
+import { addDays, easternParts, easternTime, settlementDate } from "../../../marketHours";
 import { emitEvent } from "./accounts";
 import { withhold } from "./withholding";
 import { activityId, ledgerCash, postActivity } from "./transfers";
@@ -514,12 +514,15 @@ export const listFills = async (db: Db, accountId: string, { since, orderIds }: 
     )).rows;
 
 // The end of the trading day (the eod job): deducts each account's accrued regulatory fees, per day and type, rounded up to the cent
-// (FEE activities with sub-types REG, TAF and CAT); ./calls.ts then keeps the closing balances and runs the margin checks
+// (FEE activities with sub-types REG, TAF, CAT, ORF and OCC); ./calls.ts then keeps the closing balances and runs the margin checks.
+// Only days whose trading has ended (8:00 p.m. ET, the after-hours close) are deducted, so a run during the day (the job runs at
+// every startup) doesn't take part of today's fees early and round the rest up again apart.
 export const endOfDay = async (now = new Date()): Promise<{ fees: number }> => {
     const today = dayOf(now);
+    const through = now >= easternTime(today, "20:00") ? today : addDays(today, -1);
     const { rows: due } = await pool.query<{ account_id: string; date: string; fee_type: FeeAccrual["type"]; amount: string }>(
         `SELECT account_id, "date"::text, fee_type, SUM(amount) AS amount FROM sim_fee_accruals WHERE deducted_by IS NULL AND "date" <= $1
-         GROUP BY account_id, "date", fee_type ORDER BY account_id, "date"`, [today]
+         GROUP BY account_id, "date", fee_type ORDER BY account_id, "date"`, [through]
     );
     let fees = 0;
     for (const { account_id, date, fee_type, amount } of due) {
