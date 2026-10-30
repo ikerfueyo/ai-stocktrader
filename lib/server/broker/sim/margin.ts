@@ -283,10 +283,11 @@ export const planLiquidation = (positions: MarginPosition[], deficiency: number,
 // next trading day (a Friday's balance accrues three days)
 export const marginInterest = (debit: number, rate: number, days: number): number => debit > 0 ? debit * rate / 360 * days : 0;
 
-// The daily borrow fee on a hard-to-borrow short: its market value, on the nearest round lot above its shares, × the borrow rate / 360,
-// for each calendar day until the next trading day
-export const borrowFee = ({ qty, price, rate, days }: { qty: number; price: number; rate: number; days: number }): number =>
-    Math.ceil(Math.abs(qty) / ROUND_LOT) * ROUND_LOT * price * rate / 360 * days;
+// The daily borrow fee on a hard-to-borrow short, as Alpaca's fee schedule describes it: the shares rounded up to the round lot, × a
+// collateral value of the prior trading day's close × 102% rounded up to the dollar, × the borrow rate / 360, for each calendar day
+// until the next trading day
+export const borrowFee = ({ qty, previousClose, rate, days }: { qty: number; previousClose: number; rate: number; days: number }): number =>
+    Math.ceil(Math.abs(qty) / ROUND_LOT) * ROUND_LOT * Math.ceil(previousClose * 1.02 - 1e-9) * rate / 360 * days;
 
 // Locates come in round lots
 export const isRoundLot = (qty: number) => Number.isInteger(qty) && qty > 0 && qty % ROUND_LOT === 0;

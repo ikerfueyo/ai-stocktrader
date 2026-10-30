@@ -48,7 +48,7 @@ The run settles these questions, which the docs and the vendored specs leave ope
   - the app's own Form CRS and privacy notice, if counsel decides the app needs them.
 
   The `signed_at` and IP recorded at signing must refer to the version that was shown.
-- **Fees and limits.** Confirm Alpaca's fee schedule: wires, ACH returns, ACATS, and the option ORF, OCC and CAT fees. Confirm the production ACH limits and cutoff times. The deposit and withdraw forms still show the simulator's figures.
+- **Fees and limits.** Alpaca's fee schedule (revised Oct 12, 2026) confirmed the simulator's figures: the $15 outgoing domestic wire, the $25 ACH return, the 6.50% margin rate, the regulatory fees (SEC, TAF, CAT, and the options ORF and OCC) and how the HTB borrow fee is computed. Check it again before launch, since it changes without notice. Outgoing ACATS ($25) and international wires ($35) aren't offered. Confirm the production ACH limits and cutoff times. The deposit and withdraw forms still show the simulator's figures.
 
 ### Plaid
 - **Production access.** That needs a Plaid production application, approval for the Auth product, and Alpaca enabled as a processor in the Plaid dashboard.

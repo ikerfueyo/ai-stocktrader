@@ -22,11 +22,11 @@ export const FUNDING_LIMITS = {
     instant: Number(process.env.SIM_INSTANT_DEPOSIT_LIMIT ?? 1000)
 };
 
-// Transfer fees. Verify against Alpaca's fee schedule (files.alpaca.markets/disclosures/library/BrokFeeSched.pdf) before relying on
-// them: ACH is free; the outgoing domestic wire and returned-ACH figures are reported elsewhere and not yet confirmed.
+// Transfer fees, from Alpaca's fee schedule (files.alpaca.markets/disclosures/library/BrokFeeSched.pdf, revised Oct 12, 2026): ACH is
+// free, an outgoing domestic wire $15 and a returned ACH $25 (an international wire, $35, isn't offered)
 export const TRANSFER_FEES = {
     ach: 0,
-    wireOutDomestic: Number(process.env.SIM_WIRE_FEE ?? 25),
+    wireOutDomestic: Number(process.env.SIM_WIRE_FEE ?? 15),
     achReturn: Number(process.env.SIM_ACH_RETURN_FEE ?? 25)
 };
 

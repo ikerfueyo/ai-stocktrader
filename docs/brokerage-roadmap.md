@@ -314,7 +314,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - Orders: market, limit, stop and stop limit, day or GTC, whole contracts; mleg orders market or limit, 2 to 4 legs of one underlying, every opening short leg covered within the order, filled all at once at each leg's quote. Option orders fill in full (no liquidity cap). Mleg orders can't be replaced. Expiring contracts take no orders after 3:15 p.m. ET.
   - Buying power: the universal spread rule per underlying (long shares cover calls); options buying power is non-marginable buying power; long options are paid in full. A cash account's buying power is cash less the option requirement.
   - Expiration: in-the-money longs the account can't exercise are sold at 3:00 p.m. ET; after the close (4:45 p.m.) contracts are exercised, assigned or expire at the stock's price then; a long put without the shares expires. Positions that missed their run are settled at the stock's current price. Short calls are assigned early when their time value is below the next day's dividend.
-  - Fees: ORF $0.015 and OCC $0.025 per contract, the options TAF and CAT are from reports of Alpaca's Oct 12, 2026 schedule, not yet confirmed. Adjusted (non-standard) contracts after corporate actions aren't offered.
+  - Fees, checked against Alpaca's fee schedule (revised Oct 12, 2026): ORF $0.015 and OCC $0.025 per contract, the options TAF ($0 now), CAT on 100 executed equivalent shares a contract. Adjusted (non-standard) contracts after corporate actions aren't offered.
   - A liquidation weighs each close by the requirement it releases on the whole account (short options' requirement is their underlying's), buys back short calls before selling the shares covering them, and closes short options first when equity is gone.
 
 ### Phase 10: IRAs (traditional and Roth)
@@ -384,7 +384,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 - **Each phase:** `npm test`, `npm run typecheck`, `npm run lint` and `npm run build` pass.
 
 ## Open items to verify during implementation (not blockers)
-- Alpaca's fee schedule PDF figures (wire, ACH-return, ACATS), the exact descriptions on `FEE` activities, and the current margin interest rate.
+- The exact descriptions on `FEE` activities. (Alpaca's fee schedule, revised Oct 12, 2026, confirmed the $15 outgoing domestic wire, the $25 ACH return, the 6.50% margin rate and the regulatory fees; the simulator follows it.)
 - Which agreements a U.S. individual account needs. The production ACH limits and cutoff times.
 - Alpaca's policy for intraday margin deficits (the rule's 5th and 15th business days are modeled; what counts as a practice is the simulator's guess). The maintenance-call deadline.
 - Whether the Alpha Vantage plan includes `REALTIME_OPTIONS` and extended-hours realtime quotes. Alpaca Basic's corporate-actions coverage. The options TIF rules and expiration cutoffs. Options ORF and OCC fees.

@@ -74,6 +74,24 @@ describe("Regulatory fees", () => {
         assert.deepEqual(feesFor({ side: "sell", qty: 100, price: 50, date: "2027-01-04" }).map(({ type }) => type), ["REG", "TAF", "CAT"]);
     });
 
+    test("CAT per executed equivalent share: $0.000001, then $0.000003 from Alpaca's October 12, 2026 schedule", () => {
+        const cat = (date: string) => feesFor({ side: "buy", qty: 1000, price: 50, date }).find(({ type }) => type === "CAT")!.amount;
+        assert.ok(Math.abs(cat("2026-10-09") - 1000 * 0.000001) < 1e-15);
+        assert.ok(Math.abs(cat("2026-10-12") - 1000 * 0.000003) < 1e-15);
+    });
+
+    test("options: ORF and OCC per contract on buys and sells, CAT on 100 shares a contract, the SEC fee on sale proceeds", () => {
+        const fees = Object.fromEntries(feesFor({ side: "sell", qty: 10, price: 1.5, date: "2026-10-29", multiplier: 100 }).map(({ type, amount }) => [type, amount]));
+        assert.deepEqual(Object.keys(fees).sort(), ["CAT", "OCC", "ORF", "REG"]);
+        assert.ok(Math.abs(fees.ORF - 0.15) < 1e-12);
+        assert.ok(Math.abs(fees.OCC - 0.25) < 1e-12);
+        assert.ok(Math.abs(fees.CAT - 10 * 100 * 0.000003) < 1e-15);
+        assert.ok(Math.abs(fees.REG - 1500 * 20.60 / 1e6) < 1e-12);
+        const buy = feesFor({ side: "buy", qty: 10, price: 1.5, date: "2027-01-04", multiplier: 100 }).map(({ type }) => type);
+        assert.deepEqual(buy, ["ORF", "OCC", "CAT"]);
+        assert.ok(feesFor({ side: "sell", qty: 10, price: 1.5, date: "2027-01-04", multiplier: 100 }).some(({ type, amount }) => type === "TAF" && Math.abs(amount - 10 * 0.00329) < 1e-12));
+    });
+
     test("TAF is capped per trade", () => {
         const taf = feesFor({ side: "sell", qty: 1e6, price: 1, date: "2026-06-01" }).find(({ type }) => type === "TAF")!;
         assert.equal(taf.amount, 9.79);

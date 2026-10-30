@@ -160,8 +160,10 @@ describe("Interest and borrow fees", () => {
         assert.equal(marginInterest(0, 0.065, 1), 0);
     });
 
-    test("hard-to-borrow fees on the nearest round lot", () => {
-        assert.equal(borrowFee({ qty: -150, price: 36, rate: 0.5, days: 1 }), 200 * 36 * 0.5 / 360);
+    test("hard-to-borrow fees on the round lot above, at the prior close × 102% rounded up to the dollar", () => {
+        assert.equal(borrowFee({ qty: -150, previousClose: 36, rate: 0.5, days: 1 }), 200 * 37 * 0.5 / 360);
+        assert.equal(borrowFee({ qty: -100, previousClose: 49.02, rate: 0.3, days: 3 }), 100 * 51 * 0.3 / 360 * 3);
+        assert.equal(borrowFee({ qty: -100, previousClose: 50, rate: 0.3, days: 1 }), 100 * 51 * 0.3 / 360, "exactly $51 stays $51");
         assert.equal(isRoundLot(200), true);
         assert.equal(isRoundLot(150), false);
     });

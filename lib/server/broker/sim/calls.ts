@@ -209,10 +209,11 @@ export const endOfDayAccount = async (id: string, now = new Date()) => {
         }
         // Hard-to-borrow fees
         for (const position of snapshot.positions.filter(({ qty, symbol }) => qty < 0 && hardToBorrow(symbol, snapshot.assets[symbol]))) {
-            const amount = roundCents(borrowFee({ qty: position.qty, price: position.price, rate: HTB_BORROW_RATE, days }));
+            const previousClose = snapshot.quotes[position.symbol]?.previousClose ?? position.price;
+            const amount = roundCents(borrowFee({ qty: position.qty, previousClose, rate: HTB_BORROW_RATE, days }));
             const { rowCount } = await db.query(
                 `INSERT INTO sim_borrow_fees (account_id, "date", symbol, qty, price, rate, amount) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
-                [id, today, position.symbol, Math.abs(position.qty), position.price, HTB_BORROW_RATE, amount]
+                [id, today, position.symbol, Math.abs(position.qty), previousClose, HTB_BORROW_RATE, amount]
             );
             if (!rowCount || amount < 0.01) continue;
             const activity = await postActivity(db, {
