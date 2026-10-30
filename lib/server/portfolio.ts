@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import pool from "./db";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { requestContext } from "./requestContext";
-import { loadCorporateActions } from "./corporateActions";
+import { loadCorporateActions, loadShareActions } from "./corporateActions";
 import { roundCents, type Dividend, type Split, type Trade } from "./account";
 import { advanceTransfers } from "./broker/sim/transfers";
 import { enforceMargin as enforceAccountMargin } from "./broker/sim/calls";
@@ -11,7 +11,7 @@ import { applyCorporateActions, fillsAsTrades, listFills, ledgerState, openLots,
 import type { SimActivityRow } from "./broker/sim/shapes";
 import { orderReasons } from "./broker/sim/orders";
 import { brokerMode, getBroker } from "./broker";
-import { CASH_ACTIVITY_TYPES, cashRowsOf, ledgerOf, listAllActivities, transactionRowsOf, tradesOf } from "./brokerLedger";
+import { CASH_ACTIVITY_TYPES, OPTION_EVENT_TYPES, cashRowsOf, ledgerOf, listAllActivities, transactionRowsOf, tradesOf } from "./brokerLedger";
 import type { Order as BrokerOrder } from "./broker/types";
 import type { CashActivityRow, Position, TradeHistoryRow } from "../types";
 
@@ -54,17 +54,18 @@ export const ledgerAccountId = async (userId: string, db: Db = pool): Promise<st
 
 const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
 
-// An account's ledger through the Broker interface (positions, the trading account, every fill and cash activity, the traded tickers'
-// splits for the replay), kept 5 seconds so one page's requests share it
+// An account's ledger through the Broker interface (positions, the trading account, every fill, cash activity and option exercise,
+// assignment or expiry, and the traded tickers' corporate actions for the replay), kept 5 seconds so one page's requests share it
 const brokerLedgerCache = singleton("brokerLedgers", () => new Map<string, CacheEntry<Awaited<ReturnType<typeof loadBrokerLedger>>>>());
 const loadBrokerLedger = async (accountId: string) => {
     const broker = getBroker();
     const [trade, positions, activities] = await Promise.all([
-        broker.getTradeAccount(accountId), broker.listPositions(accountId), listAllActivities(broker, accountId, ["FILL", ...CASH_ACTIVITY_TYPES])
+        broker.getTradeAccount(accountId), broker.listPositions(accountId), listAllActivities(broker, accountId, ["FILL", ...CASH_ACTIVITY_TYPES, ...OPTION_EVENT_TYPES])
     ]);
     const traded = [...new Set(activities.flatMap(activity => (activity as { activity_type?: string; symbol?: string }).activity_type === "FILL" ? [String((activity as { symbol?: string }).symbol).toUpperCase()] : []))];
     const corporate = await loadCorporateActions(traded, positions.map(({ symbol }) => String(symbol)));
-    return { trade, positions, activities, corporate, ledger: ledgerOf({ trade, positions, activities, splits: corporate.splits }) };
+    const actions = await loadShareActions(traded);
+    return { trade, positions, activities, corporate, ledger: ledgerOf({ trade, positions, activities, splits: corporate.splits, actions }) };
 };
 export const brokerLedger = (accountId: string) => cachePromise(brokerLedgerCache, accountId, 5000, () => loadBrokerLedger(accountId));
 // Drops it after a change (an order, a transfer, a broker event), so the next read sees the change

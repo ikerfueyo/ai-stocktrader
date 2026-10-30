@@ -156,10 +156,22 @@ const AccountSettings = () => {
         event.preventDefault();
         save("trusted", () => patchAccount({ trusted_contact: trusted }), "Saved.");
     };
+    // The broker can refuse 2x after accepting the agreement (Alpaca's "exceeds the current limit 1", 422): the agreement stays
+    // signed and the account stays at 1x until the broker raises its limit
     const onUpgradeMargin = () => save("margin", async () => {
         await patchAccount({ agreements: [{ agreement: "margin_agreement" }] });
-        await patchConfigurations({ max_margin_multiplier: "2", no_shorting: false });
-    }, "Your account is now a margin account.");
+        try {
+            await patchConfigurations({ max_margin_multiplier: "2", no_shorting: false });
+            return true;
+        } catch (error) {
+            if (axios.isAxiosError(error) && error.response?.status === 422) {
+                logError(error);
+                return false;
+            }
+            throw error;
+        }
+    }, raised => raised ? "Your account is now a margin account."
+        : "The margin agreement is signed, but the broker hasn't raised your limit above 1x yet (margin needs $2,000 of equity). Choose 2× under Maximum margin once it does.");
     const onRequestOptions = () => save("options", async () => {
         if (!agreements.includes("options_agreement") || Object.keys(identityChanges).length > 0) {
             await patchAccount({
@@ -274,6 +286,8 @@ const AccountSettings = () => {
                         </>
                     )}
                     {noticeFor("trading")}
+                    {/* The upgrade's outcome shows here, by the margin settings, as its own section goes once the agreement is signed */}
+                    {noticeFor("margin")}
                 </div>
             </Section>
 
@@ -294,7 +308,6 @@ const AccountSettings = () => {
                         <input type="checkbox" checked={acceptMargin} onChange={event => setAcceptMargin(event.target.checked)} />
                         I&apos;ve read and accept the <Link href="/agreements/margin_agreement" target="_blank">margin agreement</Link>
                     </label>
-                    {noticeFor("margin")}
                     <button type="button" className="btn btn-dark" disabled={!acceptMargin} onClick={onUpgradeMargin}>Upgrade to margin</button>
                 </Section>
             )}

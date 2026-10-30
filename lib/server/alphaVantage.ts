@@ -303,10 +303,20 @@ export interface OptionChainRow {
 const realtimeChainCache = singleton("realtimeOptionChains", () => new Map<string, CacheEntry<OptionChainRow[]>>());
 const historicalChainCache = singleton("historicalOptionChains", () => new Map<string, CacheEntry<OptionChainRow[]>>());
 
+// For local testing only: an underlying's closing chain set by the scenarios (overrideOptionChain), so options trade on a made-up
+// symbol without HISTORICAL_OPTIONS or Alpaca's snapshots; its contracts are modeled from the (overridden) stock price
+const CHAIN_OVERRIDES: Record<string, OptionChainRow[]> = {};
+export const overrideOptionChain = (underlying: string, rows: OptionChainRow[]) => {
+    if (process.env.NODE_ENV === "production") throw new Error("Option chain overrides are for local testing only");
+    CHAIN_OVERRIDES[underlying.toUpperCase()] = rows;
+};
+export const optionChainOverridden = (underlying: string) => CHAIN_OVERRIDES[underlying.toUpperCase()] !== undefined;
+
 // An underlying's option chain: REALTIME_OPTIONS with Greeks when the plan includes it (the 600-a-minute plans; cached 15s), else
 // HISTORICAL_OPTIONS, the last session's closing chain with implied volatility and Greeks (cached an hour; it changes once a day)
 export const fetchOptionChainRows = async (underlying: string): Promise<{ rows: OptionChainRow[]; realtime: boolean }> => {
     const symbol = underlying.toUpperCase();
+    if (CHAIN_OVERRIDES[symbol]) return { rows: CHAIN_OVERRIDES[symbol], realtime: false };
     if (isAvailable("REALTIME_OPTIONS")) {
         try {
             const rows = await cachePromise(realtimeChainCache, symbol, QUOTE_CACHE_MS, async () =>

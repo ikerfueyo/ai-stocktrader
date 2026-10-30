@@ -1,6 +1,6 @@
 // Shapes shared by the API route handlers (app/api) and the pages that call them
 import type { AccountApplication } from "./kyc";
-import type { Order as BrokerOrder } from "./server/broker/types";
+import type { ListLocateQuotesResponse as BrokerLocateQuotes, Order as BrokerOrder } from "./server/broker/types";
 import type { TaxYear as TaxYearFigures } from "./server/broker/sim/tax";
 import type { NotificationKind } from "./server/notificationRules";
 import type { AlertCondition, Frequency } from "./automation";
@@ -623,6 +623,9 @@ export type {
     Order as BrokerOrder, CreateOrderRequest as BrokerOrderRequest, UpdateOrderRequest as BrokerOrderUpdate, Asset as BrokerAsset, Locate, LocateQuote,
     ListLocateQuotesResponse, CreateLocateRequest as BrokerLocateRequest, AccountDocument as BrokerDocument
 } from "./server/broker/types";
+
+// GET /api/locates/quotes: the broker's locate quotes, and whether it offers locates at all (Alpaca's Broker API doesn't: 501)
+export type LocateQuotesResponse = BrokerLocateQuotes & { offered: boolean };
 
 // GET /api/accounts/[id]/lots: an open tax lot (FIFO), with whether selling it now would be a long-term gain or loss
 export interface TaxLot {

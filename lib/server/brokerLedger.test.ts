@@ -1,8 +1,10 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-    accountSummary, cashRowsOf, fillsOf, ledgerOf, listAllActivities, orderFillRows, replayFills, taxLotsOf, taxReportOf, toAppPositions, tradesOf, transactionRowsOf
+    accountSummary, cashRowsOf, fillsOf, ledgerOf, listAllActivities, optionEventsOf, orderFillRows, replayFills, taxLotsOf, taxReportOf, toAppPositions, tradesOf,
+    transactionRowsOf, type ShareAction
 } from "./brokerLedger";
+import type { CorporateAction } from "./broker/sim/corporateActions";
 import type { Activity, Order, Position, TradeAccount } from "./broker/types";
 
 // A FILL activity as Alpaca's /v1/accounts/activities returns it
@@ -82,6 +84,95 @@ describe("FIFO replay", () => {
     test("a split after today isn't applied yet", () => {
         const replay = replayFills(fillsOf([fill("1", "NVDA", "buy", 10, 100, "2026-09-01T15:00:00Z")]), [{ ticker: "NVDA", exDate: "2026-11-02", factor: 2 }], "2026-10-28");
         assert.equal(replay.lots[0].qty, 10);
+    });
+});
+
+// A stored corporate action, with the effective date's closes
+const action = (fields: Partial<CorporateAction> & Pick<CorporateAction, "type" | "symbol" | "exDate">, prices = { symbol: null, newSymbol: null } as ShareAction["prices"]): ShareAction =>
+    ({ action: { newSymbol: null, factor: null, cash: null, ...fields }, prices });
+
+describe("corporate actions and option events in the replay", () => {
+    test("a stock merger moves the lots to the acquirer at its ratio, keeping their basis and acquisition date", () => {
+        const replay = replayFills(fillsOf([
+            fill("1", "AAA", "buy", 10, 100, "2026-09-01T15:00:00Z"),
+            fill("2", "BBB", "sell", 3, 250, "2026-09-15T15:00:00Z")
+        ]), [], "2026-10-28", { actions: [action({ type: "STOCK_MERGER", symbol: "AAA", newSymbol: "BBB", factor: 0.5, exDate: "2026-09-10" })] });
+        assert.equal(replay.realizedByFill.get("2"), 150);
+        assert.deepEqual(replay.lots.map(({ symbol, qty, price, acquiredAt, originalQty }) => [symbol, qty, price, acquiredAt, originalQty]), [["BBB", 2, 200, "2026-09-01T15:00:00Z", 5]]);
+        assert.deepEqual(replay.acquisitions.map(({ symbol, qty }) => [symbol, qty]), [["BBB", 5]]);
+    });
+
+    test("a spinoff splits the basis by market value into new lots that aren't purchases", () => {
+        const replay = replayFills(fillsOf([fill("1", "PAR", "buy", 10, 100, "2026-09-01T15:00:00Z")]), [], "2026-10-28", {
+            actions: [action({ type: "SPINOFF", symbol: "PAR", newSymbol: "KID", factor: 1, exDate: "2026-09-10" }, { symbol: 80, newSymbol: 20 })]
+        });
+        assert.deepEqual(replay.lots.map(({ symbol, qty, price, acquiredAt }) => [symbol, qty, price, acquiredAt]), [
+            ["PAR", 10, 80, "2026-09-01T15:00:00Z"], ["KID", 10, 20, "2026-09-01T15:00:00Z"]
+        ]);
+        assert.equal(replay.acquisitions.length, 1);
+    });
+
+    test("a cash merger closes the lots for the cash, realizing against their basis", () => {
+        const replay = replayFills(fillsOf([fill("1", "TGT", "buy", 10, 40, "2026-09-01T15:00:00Z")]), [], "2026-10-28", {
+            actions: [action({ type: "CASH_MERGER", symbol: "TGT", cash: 50, exDate: "2026-09-10" })]
+        });
+        assert.equal(replay.realized, 100);
+        assert.equal(replay.lots.length, 0);
+        assert.deepEqual(replay.disposals.map(({ kind, qty, lotPrice, price }) => [kind, qty, lotPrice, price]), [["merger", 10, 40, 50]]);
+    });
+
+    test("an action after today, or on lots bought on its effective date, isn't applied", () => {
+        const replay = replayFills(fillsOf([
+            fill("1", "AAA", "buy", 10, 100, "2026-09-10T15:00:00Z"),
+            fill("2", "CCC", "buy", 10, 100, "2026-09-01T15:00:00Z")
+        ]), [], "2026-10-28", {
+            actions: [action({ type: "STOCK_MERGER", symbol: "AAA", newSymbol: "BBB", factor: 2, exDate: "2026-09-10" }), action({ type: "WORTHLESS", symbol: "CCC", exDate: "2026-11-02" })]
+        });
+        assert.deepEqual(replay.lots.map(({ symbol, qty }) => [symbol, qty]).sort(), [["AAA", 10], ["CCC", 10]]);
+    });
+
+    test("a loss washed by shares bought under the stock's new symbol", () => {
+        const activities = [
+            fill("1", "OLD", "buy", 10, 20, "2026-03-02T15:00:00Z"),
+            fill("2", "OLD", "sell", 10, 15, "2026-03-10T15:00:00Z"),
+            fill("3", "NEW", "buy", 10, 16, "2026-03-20T15:00:00Z")
+        ];
+        const replay = replayFills(fillsOf(activities), [], "2026-10-28", { actions: [action({ type: "NAME_CHANGE", symbol: "OLD", newSymbol: "NEW", exDate: "2026-03-12" })] });
+        const report = taxReportOf({ replay, activities, year: 2026, prices: new Map([["NEW", 18]]), now: "2026-10-28T00:00:00Z" });
+        assert.equal(report.form1099B.sales[0].washDisallowed, 50);
+    });
+
+    test("an expired contract closes at nothing", () => {
+        const activities = [
+            fill("1", "F261120C00012000", "buy", 1, 2, "2026-09-03T15:00:00Z"),
+            cash("2", "OPEXP", 0, "2026-11-20", { symbol: "F261120C00012000", qty: "-1", created_at: "2026-11-20T21:45:00Z" })
+        ];
+        const replay = replayFills(fillsOf(activities), [], "2026-11-21", { optionEvents: optionEventsOf(activities) });
+        assert.equal(replay.realized, -200);
+        assert.equal(replay.lots.length, 0);
+        assert.deepEqual(replay.disposals.map(({ qty, lotPrice, price }) => [qty, lotPrice, price]), [[100, 2, 0]]);
+    });
+
+    test("an exercised call closes without P&L and puts its premium into the shares' basis", () => {
+        const activities = [
+            fill("1", "F261120C00012000", "buy", 2, 2, "2026-09-03T15:00:00Z"),
+            cash("2", "OPEXC", 0, "2026-10-01", { symbol: "F261120C00012000", qty: "-1", created_at: "2026-10-01T15:00:00Z" }),
+            fill("3", "F", "buy", 100, 12, "2026-10-01T15:00:00Z", "")
+        ];
+        const replay = replayFills(fillsOf(activities), [], "2026-10-28", { optionEvents: optionEventsOf(activities) });
+        assert.equal(replay.realized, 0);
+        assert.equal(replay.disposals.length, 0, "an exercise isn't a disposal");
+        assert.deepEqual(replay.lots.map(({ symbol, qty, price }) => [symbol, qty, price]), [["F261120C00012000", 1, 2], ["F", 100, 14]]);
+    });
+
+    test("an assigned short put buys the shares at the strike less the premium", () => {
+        const activities = [
+            fill("1", "F261120P00012000", "sell", 1, 1.5, "2026-09-03T15:00:00Z"),
+            cash("2", "OPASN", 0, "2026-10-01", { symbol: "F261120P00012000", qty: "1", created_at: "2026-10-01T20:45:00Z" }),
+            fill("3", "F", "buy", 100, 12, "2026-10-01T20:45:00Z", "")
+        ];
+        const replay = replayFills(fillsOf(activities), [], "2026-10-28", { optionEvents: optionEventsOf(activities) });
+        assert.deepEqual(replay.lots.map(({ symbol, qty, price }) => [symbol, qty, price]), [["F", 100, 10.5]]);
     });
 });
 

@@ -10,7 +10,7 @@ import { apiErrorMessage, logError } from "@/lib/apiError";
 import { formatEastern, type MarketStatus } from "@/lib/marketHours";
 import { feesFor, roundFeeUp } from "@/lib/server/broker/sim/feeSchedule";
 import { convertValue, describePlacedOrder, formatCurrency, formatPrice, formatShares, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS, toOrder, type TradeMode } from "@/lib/orders";
-import type { AppOrder, BrokerAsset, BrokerOrderRequest, ListLocateQuotesResponse, Locate, Quote } from "@/lib/types";
+import type { AppOrder, BrokerAsset, BrokerOrderRequest, Locate, LocateQuotesResponse, Quote } from "@/lib/types";
 
 type OrderType = BrokerOrderRequest["type"];
 type TimeInForce = BrokerOrderRequest["time_in_force"];
@@ -69,6 +69,8 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
     const [asset, setAsset] = useState<BrokerAsset | null>(null);
     const [locates, setLocates] = useState<Locate[]>([]);
     const [locateQuote, setLocateQuote] = useState<{ price: number | null; available: number } | null>(null);
+    // Alpaca's Broker API offers no locates, so a hard-to-borrow stock can't be shorted through it
+    const [locatesOffered, setLocatesOffered] = useState(true);
     const [locating, setLocating] = useState(false);
     const [locatesVersion, setLocatesVersion] = useState(0);
     const hardToBorrow = asset?.borrow_status === "hard_to_borrow";
@@ -80,8 +82,9 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
     useEffect(() => {
         if (!hardToBorrow) return;
         axios.get<{ locates: Locate[] }>(`/api/locates?symbol=${encodeURIComponent(ticker)}&status=active`).then(({ data }) => setLocates(data.locates)).catch(logError);
-        axios.get<ListLocateQuotesResponse>(`/api/locates/quotes?symbols=${encodeURIComponent(ticker)}`)
+        axios.get<LocateQuotesResponse>(`/api/locates/quotes?symbols=${encodeURIComponent(ticker)}`)
             .then(({ data }) => {
+                setLocatesOffered(data.offered);
                 const found = data.quotes.find(({ symbol }) => symbol === ticker.toUpperCase());
                 setLocateQuote(found ? { price: found.price ? Number(found.price) : null, available: found.available_qty } : null);
             })
@@ -122,7 +125,8 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
     const bpCost = (total: number) => asset?.marginable === false && (account?.multiplier ?? 1) > 1 ? total * account!.multiplier : total;
     const located = locates.reduce((sum, locate) => sum + (locate.located_qty ?? 0), 0);
     const shortProblem = !account ? null : !account.shortingEnabled ? account.shortingBlockedReason
-        : asset?.shortable === false ? `${ticker} can't be sold short` : null;
+        : asset?.shortable === false ? `${ticker} can't be sold short`
+        : hardToBorrow && !locatesOffered ? `${ticker} is hard to borrow, and its short sales need a locate, which isn't offered here` : null;
     const pastPosition = (side: Side, shares: number) => side === "sell" ? held > 0 && shares > held + 1e-9 : held < 0 && shares > -held + 1e-9;
     // Shorts are whole shares: a fractional or $ order can't sell short, nor cover one
     const fractionalCover = held < 0 && fractional;
@@ -131,7 +135,9 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
     const sellBlocked = account !== null && (held > 0 ? pastPosition("sell", sellOrder.quantity)
         : fractionalShort || shortProblem !== null || marginCall || bpCost(sellOrder.total) > buyingPower);
     const needsLocate = held <= 0 && hardToBorrow && shortProblem === null;
-    const locateShares = Math.max(100, Math.ceil(sellOrder.quantity / 100) * 100);
+    // Locates come in round lots: offer the lots still missing once today's locates are counted, and none when they cover the order
+    const locatedEnough = located >= sellOrder.quantity;
+    const locateShares = Math.max(100, Math.ceil((sellOrder.quantity - located) / 100) * 100);
 
     const onLocate = async () => {
         setLocating(true);
@@ -319,9 +325,9 @@ const BuySellFunctionality = ({ ticker, quote, market, onTraded = () => {} }: Bu
                     {account && (fractionalCover || (fractionalShort && !shortProblem)) && <p className="text-muted">Shorts are whole shares: {held < 0 ? "cover" : "sell short"} in whole shares, not fractions or dollars.</p>}
                     {held <= 0 && !shortProblem && !fractionalShort && sellBlocked && <p className="text-danger">Insufficient buying power to short: this order needs {formatCurrency(bpCost(sellOrder.total))}. <Link href="/deposit">Deposit</Link></p>}
                     {needsLocate && (
-                        <p className={located >= sellOrder.quantity ? "text-muted" : "text-warning"}>
-                            {ticker} is hard to borrow: a short sale needs a locate first, and holding the short costs a daily borrow fee. {located > 0 ? `${located} shares located today. ` : ""}
-                            {locateQuote && (locateQuote.available > 0 && locateQuote.price !== null
+                        <p className={locatedEnough ? "text-muted" : "text-warning"}>
+                            {ticker} is hard to borrow: a short sale needs a locate first, and holding the short costs a daily borrow fee. {located > 0 ? `${located} shares located today${locatedEnough ? ", enough for this order" : ""}. ` : ""}
+                            {!locatedEnough && locateQuote && (locateQuote.available > 0 && locateQuote.price !== null
                                 ? <button type="button" className="btn btn-sm btn-outline-secondary" onClick={onLocate} disabled={locating}>
                                     {locating ? "Locating…" : `Locate ${locateShares} for ${formatCurrency(locateShares * locateQuote.price)}`}
                                 </button>

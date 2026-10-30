@@ -1,5 +1,5 @@
 import "server-only";
-import { fetchOptionChainRows, fetchQuote, isStaleQuote, registerOptionQuotes, type OptionChainRow } from "../alphaVantage";
+import { fetchOptionChainRows, fetchQuote, isStaleQuote, optionChainOverridden, registerOptionQuotes, type OptionChainRow } from "../alphaVantage";
 import { ALPACA_OPTIONS_FEED, fetchOptionSnapshots, isAlpacaConfigured, type AlpacaOptionSnapshot } from "./alpaca";
 import { UpstreamError } from "../httpError";
 import { medianVolatility, modelOptionQuote, usableVolatility, type ChainContract, type OptionQuoteModel } from "../broker/sim/options";
@@ -77,7 +77,7 @@ const snapshotQuote = (snapshot: AlpacaOptionSnapshot | undefined, modeled: Opti
 export const fetchOptionChain = async (underlying: string, now = new Date()): Promise<OptionChain> => {
     const symbol = underlying.toUpperCase();
     // A failure at Alpaca leaves the chain modeled rather than failing it
-    const snapshotsFetched = isAlpacaConfigured()
+    const snapshotsFetched = isAlpacaConfigured() && !optionChainOverridden(symbol)
         ? fetchOptionSnapshots(symbol).catch(error => {
             console.warn(`Alpaca option snapshots for ${symbol}: ${error instanceof Error ? error.message : error}`);
             return null;

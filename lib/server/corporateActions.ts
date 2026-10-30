@@ -2,7 +2,10 @@ import "server-only";
 import { isOptionSymbol } from "../options";
 import pool from "./db";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
-import { fetchAlpacaCorporateActions, fetchCorporateActions, isAlpacaConfigured } from "./marketData";
+import { fetchAlpacaCorporateActions, fetchCorporateActions, fetchDailySeries, isAlpacaConfigured, priceOverride } from "./marketData";
+import { addDays, easternParts } from "../marketHours";
+import type { CorporateAction, CorporateActionType } from "./broker/sim/corporateActions";
+import type { ShareAction } from "./brokerLedger";
 import type { Dividend, Split } from "./account";
 
 // Corporate actions are stored in Postgres (corporate_actions, shared by all users), fetched once per ticker and refreshed daily while
@@ -96,4 +99,52 @@ export const loadCorporateActions = async (allTickers: string[], allRefreshTicke
             ticker: row.ticker, exDate: row.ex_date, paymentDate: row.payment_date, amount: parseFloat(row.amount!)
         }))
     };
+};
+
+// A symbol's close on a past day (PRICE_OVERRIDES' price when it has one), from its daily series (the full one for a day more than
+// about 100 sessions back), or null when there's none. Kept 12 hours, as a finished day's close doesn't change (the simulator's
+// true-up fetches its own afresh, since it can run on the day itself).
+const closes = singleton("effectiveDateCloses", () => new Map<string, CacheEntry<number | null>>());
+const closeOn = (symbol: string, day: string): Promise<number | null> => {
+    const override = priceOverride(symbol);
+    if (override !== undefined) return Promise.resolve(override);
+    // A failed fetch isn't kept, so it's tried again on the next read
+    return cachePromise(closes, `${symbol}|${day}`, 12 * 3600000, async () => {
+        const size = day < addDays(easternParts(new Date()).dateKey, -140) ? "full" : "compact";
+        const bar = (await fetchDailySeries(symbol, size))["Time Series (Daily)"]?.[day];
+        const close = bar ? parseFloat(bar["4. close"]) : NaN;
+        return close > 0 ? close : null;
+    }).catch(() => null);
+};
+
+// The stored share-changing actions (not splits or cash dividends) of these tickers that have taken effect, oldest first, with the
+// effective date's closes a spinoff or mixed merger allocates basis by, following each to the symbol it leads to (an acquirer, a
+// spun-off company, a new symbol), for replaying an account's lots without the simulator's (lib/server/brokerLedger.ts).
+// loadCorporateActions has fetched the tickers first.
+export const loadShareActions = async (allTickers: string[], today = easternParts(new Date()).dateKey): Promise<ShareAction[]> => {
+    const queue = [...new Set(allTickers.filter(ticker => !isOptionSymbol(ticker)).map(ticker => ticker.toUpperCase()))];
+    const seen = new Set(queue);
+    const actions: ShareAction[] = [];
+    while (queue.length > 0) {
+        const { rows } = await pool.query<{ ticker: string; type: CorporateActionType; ex_date: string; factor: string | null; amount: string | null; new_ticker: string | null; taxable: boolean | null }>(
+            `SELECT ticker, "type", ex_date::text, factor, amount, new_ticker, taxable FROM corporate_actions
+             WHERE ticker = ANY($1) AND "type" NOT IN ('SPLIT', 'DIVIDEND') AND ex_date <= $2 ORDER BY ex_date, ticker`, [queue.splice(0, queue.length), today]
+        );
+        for (const row of rows) {
+            const action: CorporateAction = {
+                type: row.type, symbol: row.ticker, newSymbol: row.new_ticker, factor: row.factor === null ? null : Number(row.factor), cash: row.amount === null ? null : Number(row.amount),
+                exDate: row.ex_date, taxable: row.taxable
+            };
+            const [own, other] = await Promise.all([
+                row.type === "SPINOFF" ? closeOn(row.ticker, row.ex_date) : Promise.resolve(null),
+                (row.type === "SPINOFF" || row.type === "MIXED_MERGER") && row.new_ticker ? closeOn(row.new_ticker, row.ex_date) : Promise.resolve(null)
+            ]);
+            actions.push({ action, prices: { symbol: own, newSymbol: other } });
+            if (row.new_ticker && !seen.has(row.new_ticker)) {
+                seen.add(row.new_ticker);
+                queue.push(row.new_ticker);
+            }
+        }
+    }
+    return actions.sort((a, b) => a.action.exDate.localeCompare(b.action.exDate) || a.action.symbol.localeCompare(b.action.symbol));
 };

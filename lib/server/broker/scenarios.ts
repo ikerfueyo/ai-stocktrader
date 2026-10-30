@@ -29,7 +29,7 @@ export interface ScenarioHarness {
     // Moves the account's fills and lots back that many days, as if its positions had been held since then
     backdate?(accountId: string, days: number): Promise<void>;
     // A split, cash dividend or spinoff of the symbol taking effect today, then applied to the accounts holding it
-    corporateAction?(action: { type: "SPLIT"; symbol: string; factor: number } | { type: "DIVIDEND"; symbol: string; amount: number } | { type: "SPINOFF"; symbol: string; newSymbol: string; factor: number }): Promise<void>;
+    corporateAction?(action: { type: "SPLIT"; symbol: string; factor: number } | { type: "DIVIDEND"; symbol: string; amount: number } | { type: "SPINOFF" | "STOCK_MERGER"; symbol: string; newSymbol: string; factor: number }): Promise<void>;
     // The broker's true-up of today's spinoffs' basis with today's closes (the current prices), as it runs once the session is over
     basisTrueUp?(): Promise<void>;
     // The broker's margin check now (in the regular session: liquidation when equity is far below maintenance)
@@ -149,6 +149,16 @@ const filled = (h: ScenarioHarness, accountId: string, order: AnyOrder) =>
         assert.ok(!["canceled", "expired", "rejected"].includes(String(current.status)), `order ${order.status} became ${current.status}`);
         return current.status === "filled" ? current : null;
     });
+
+// The app's ledger read directly and through the Broker interface (as with Alpaca) agree: positions, cash, realized P&L and each fill's
+const sameBothWays = async (h: ScenarioHarness, accountId: string) => {
+    const direct = await h.appLedger!(accountId, false), through = await h.appLedger!(accountId, true);
+    // The positions in symbol order, as the two reads list them differently
+    const bySymbol = ({ account }: { account: Record<string, unknown> }) =>
+        ({ ...account, positions: [...(account.positions as { ticker: string }[])].sort((a, b) => a.ticker.localeCompare(b.ticker)) });
+    assert.deepEqual(bySymbol(through), bySymbol(direct));
+    assert.deepEqual(through.fills, direct.fills);
+};
 
 const positionQty = async (h: ScenarioHarness, accountId: string, symbol: string) =>
     Number((await h.broker.listPositions(accountId)).find(position => position.symbol === symbol)?.qty ?? 0);
@@ -389,7 +399,8 @@ export const SCENARIOS: Scenario[] = [
         needs: ["backdate", "corporateAction", "basisTrueUp", "setPrice", "appLedger"],
         async run(h) {
             const accountId = await fundedAccount(h, 5000);
-            const source = h.symbols.other;
+            // A symbol of its own, so the splits and dividends other scenarios post today don't fall after its backdated fill
+            const source = `${h.symbols.other}P`;
             const spun = `${source}S`;
             await h.setPrice!(source, 50);
             await filled(h, accountId, await placed(h, accountId, { symbol: source, side: "buy", qty: "10" }));
@@ -415,6 +426,28 @@ export const SCENARIOS: Scenario[] = [
             // Nothing lost: the source's basis, the new shares' and the 2 sold add up to the cost
             assert.ok(Math.abs(Number(kept.cost_basis) + Number(received.cost_basis) + 2 * cost / 10 * share - cost) < 0.02);
             assert.ok(Math.abs(Number(await realized()) - 2 * (10 - cost / 10 * share)) < 0.02, `realized ${await realized()} after the true-up`);
+            // Through the Broker interface the replay allocates the basis at the same closes
+            await sameBothWays(h, accountId);
+        }
+    },
+    {
+        name: "merger: the shares move to the acquirer at its ratio, read the same through the Broker interface",
+        needs: ["backdate", "corporateAction", "setPrice", "appLedger"],
+        async run(h) {
+            const accountId = await fundedAccount(h, 5000);
+            // Symbols of their own, as the merger takes the target out of every account holding it
+            const target = `${h.symbols.other}Q`, acquirer = `${h.symbols.other}M`;
+            await h.setPrice!(target, 50);
+            await h.setPrice!(acquirer, 120);
+            await filled(h, accountId, await placed(h, accountId, { symbol: target, side: "buy", qty: "10" }));
+            const cost = Number((await h.broker.getPosition(accountId, target)).cost_basis);
+            await h.backdate!(accountId, 3);
+            await h.corporateAction!({ type: "STOCK_MERGER", symbol: target, newSymbol: acquirer, factor: 0.5 });
+            const received = await h.broker.getPosition(accountId, acquirer);
+            assert.equal(Number(received.qty), 5);
+            assert.ok(Math.abs(Number(received.cost_basis) - cost) < 0.01, `basis ${received.cost_basis} against ${cost}`);
+            await filled(h, accountId, await placed(h, accountId, { symbol: acquirer, side: "sell", qty: "2" }));
+            await sameBothWays(h, accountId);
         }
     },
     {
@@ -563,6 +596,7 @@ export const SCENARIOS: Scenario[] = [
             assert.equal(await positionQty(h, accountId, contract.symbol), 1);
             await filled(h, accountId, await h.broker.closePosition(accountId, contract.symbol));
             assert.equal(await positionQty(h, accountId, contract.symbol), 0);
+            if (h.appLedger) await sameBothWays(h, accountId);
         }
     },
     {

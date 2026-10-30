@@ -1,15 +1,20 @@
 import { NextResponse } from "next/server";
 import { HttpError, withUser } from "@/lib/server/errors";
+import { isHttpError } from "@/lib/server/httpError";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount } from "@/lib/server/brokerAccounts";
 import { optionsSuitabilityErrors, type AccountApplication } from "@/lib/kyc";
 import type { OptionsApprovalResponse } from "@/lib/types";
 import type { AccountContext } from "../route";
 
-// Get the account's options approval requests, newest first
+// Get the account's options approval requests, newest first; none when the broker refuses to list them (403), as Alpaca does for a
+// correspondent without options ("us_option is not enabled for correspondent"), so the rest of Settings still loads
 export const GET = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
-    return NextResponse.json<OptionsApprovalResponse[]>(await getBroker().listOptionsApprovals(account_id));
+    return NextResponse.json<OptionsApprovalResponse[]>(await getBroker().listOptionsApprovals(account_id).catch(error => {
+        if (isHttpError(error) && error.status === 403) return [];
+        throw error;
+    }));
 });
 
 // Ask for options trading at a level: body { level } (1 covered calls and cash-secured puts, 2 buying calls and puts, 3 spreads).

@@ -1,13 +1,15 @@
 // The app's view of an account read through the Broker interface alone, for brokers whose ledger the app can't query (BROKER=alpaca;
 // with the simulator, lib/server/portfolio.ts reads its richer ledger directly). Everything comes from Alpaca's endpoints: positions,
-// the trading account, and the account's activities, whose fills are replayed FIFO with the stored splits (replayFills) for what
-// Alpaca doesn't report: realized P&L per fill, open tax lots and the year's gains and losses (its 1099 is the record). Kept free of
-// the database and server-only modules, so it's tested with a fake broker, and the scenarios check it against SimBroker.
-import { easternParts, settlementDate } from "../marketHours";
-import { contractMultiplier } from "../options";
+// the trading account, and the account's activities, whose fills are replayed FIFO with the stored corporate actions and the option
+// exercises, assignments and expiries (replayFills) for what Alpaca doesn't report: realized P&L per fill, open tax lots and the
+// year's gains and losses (its 1099 is the record). Kept free of the database and server-only modules, so it's tested with a fake
+// broker, and the scenarios check it against SimBroker.
+import { easternParts, easternTime, settlementDate } from "../marketHours";
+import { contractMultiplier, isOptionSymbol, parseOptionSymbol } from "../options";
 import { applyFill, applySplit, isLongTerm, type Lot } from "./broker/sim/ledger";
-import { reportSales, taxYear, unrealizedRows, type Acquisition, type Disposal, type TaxYear } from "./broker/sim/tax";
-import { totalOptionRequirement } from "./broker/sim/options";
+import { reportSales, sharesSince, taxYear, unrealizedRows, type Acquisition, type Disposal, type ShareChange, type TaxYear } from "./broker/sim/tax";
+import { applyActionToLots, type ActionPrices, type CorporateAction } from "./broker/sim/corporateActions";
+import { deliveryFor, totalOptionRequirement } from "./broker/sim/options";
 import type { Broker } from "./broker/broker";
 import type { AccountConfigurations, Activity, Position as BrokerPosition, TradeAccount } from "./broker/types";
 import type { Account, CashActivityRow, Position, TaxLot, TradeHistoryRow } from "../types";
@@ -70,55 +72,212 @@ export interface Replay {
     disposals: Disposal[];
 }
 
-// Replays the fills FIFO (lib/server/broker/sim/ledger.ts's applyFill), applying each split to the lots acquired before its ex-date,
-// as Alpaca's activities keep their pre-split terms. Other corporate actions (mergers, spinoffs) and option exercises aren't replayed,
-// so after one the lots are approximate; the broker's positions stay the source of what's held.
-export const replayFills = (fills: BrokerFill[], splits: Split[], today = easternParts(new Date()).dateKey): Replay => {
+// A stored corporate action that changes shares other than a split (stock dividends, mergers, spinoffs, symbol changes, worthless
+// removals), with the effective date's closes a spinoff or mixed merger allocates basis by (null when unknown)
+export interface ShareAction {
+    action: CorporateAction;
+    prices: ActionPrices;
+}
+
+// An option exercise, assignment or expiry as the replay reads it (Alpaca's OPEXC, OPASN, OPEXP): the contracts it closed
+export interface OptionEvent {
+    id: string;
+    kind: "exercise" | "assignment" | "expiry";
+    symbol: string;
+    qty: number;
+    at: string;
+}
+
+const OPTION_EVENT_KINDS: Record<string, OptionEvent["kind"]> = { OPEXC: "exercise", OPASN: "assignment", OPEXP: "expiry" };
+export const OPTION_EVENT_TYPES = Object.keys(OPTION_EVENT_KINDS);
+
+export const optionEventsOf = (activities: Activity[]): OptionEvent[] =>
+    (activities as (Activity & { id?: string; activity_type?: string; symbol?: string; qty?: string; date?: string; created_at?: string })[])
+        .filter(activity => OPTION_EVENT_KINDS[String(activity.activity_type)] && isOptionSymbol(String(activity.symbol ?? "")) && Number(activity.qty) !== 0)
+        .map(activity => ({
+            id: String(activity.id), kind: OPTION_EVENT_KINDS[String(activity.activity_type)], symbol: String(activity.symbol).toUpperCase(), qty: Math.abs(Number(activity.qty)),
+            at: activity.created_at ?? easternTime(String(activity.date), "16:00").toISOString()
+        }));
+
+// The symbols and days cash in lieu was paid on (CIL activities), so an action is replayed paying out its fractional share as the
+// broker did
+export const cashInLieuOf = (activities: Activity[]): Set<string> => new Set(
+    (activities as (Activity & { activity_type?: string; symbol?: string; date?: string })[])
+        .filter(activity => activity.activity_type === "CIL" && activity.symbol && activity.date)
+        .map(activity => `${String(activity.symbol).toUpperCase()}|${activity.date}`)
+);
+
+// The share changes the tax rules follow (sharesSince): splits, stock dividends, stock and mixed mergers, and symbol changes
+const SHARE_CHANGE_TYPES = new Set(["STOCK_DIVIDEND", "STOCK_MERGER", "MIXED_MERGER", "NAME_CHANGE"]);
+const DISPOSAL_KINDS: Partial<Record<string, Disposal["kind"]>> = { CASH_MERGER: "merger", MIXED_MERGER: "merger", WORTHLESS: "worthless" };
+
+// Replays the fills FIFO (lib/server/broker/sim/ledger.ts's applyFill) as the simulator keeps its lots, since Alpaca's activities
+// keep the terms of their day: each split, and each stored share-changing action (applyActionToLots: stock dividends, mergers,
+// spinoffs, symbol changes, worthless removals), applied to the lots acquired before its effective date; option expiries closing the
+// contracts at nothing, and exercises and assignments closing them without P&L, with the premium rolled into the price of the shares
+// delivered (deliveryFor), the FILL at the strike that follows. The broker's positions stay the source of what's held.
+export const replayFills = (fills: BrokerFill[], splits: Split[], today = easternParts(new Date()).dateKey, { actions = [], optionEvents = [], cashInLieu = new Set() }: {
+    actions?: ShareAction[]; optionEvents?: OptionEvent[]; cashInLieu?: Set<string>;
+} = {}): Replay => {
     const lots = new Map<string, ReplayedLot[]>();
-    const applied = new Set<string>();
     const realizedByFill = new Map<string, number | null>();
     const acquisitions: Acquisition[] = [];
+    const acquisitionOf = new Map<string, Acquisition>();
     const disposals: Disposal[] = [];
     const original = new Map<string, number>();
     let realized = 0;
-    // The splits of a symbol that took effect by the day, onto the lots acquired before them
-    const splitThrough = (symbol: string, day: string) => {
-        for (const split of splits) {
-            const key = `${split.ticker}|${split.exDate}`;
-            if (split.ticker.toUpperCase() !== symbol || split.exDate > day || applied.has(key)) continue;
-            applied.add(key);
-            const open = lots.get(symbol) ?? [];
-            const before = open.filter(lot => dayOf(lot.acquiredAt) < split.exDate);
-            const split_ = applySplit(before, split.factor);
-            lots.set(symbol, [...open.filter(lot => !before.includes(lot)), ...split_.map(lot => ({ ...lot, originalQty: (original.get(lot.id) ?? lot.qty) * split.factor }))]);
-            for (const lot of split_) original.set(lot.id, (original.get(lot.id) ?? lot.qty) * split.factor);
-            // The acquisitions are kept in today's terms, as the wash sale rule compares shares, and so are the shares sold before it
-            for (const acquisition of acquisitions) if (acquisition.symbol === symbol && dayOf(acquisition.acquiredAt) < split.exDate) acquisition.qty *= split.factor;
-            for (const disposal of disposals) if (disposal.symbol === symbol && dayOf(disposal.closedAt) < split.exDate) disposal.sharesNow = (disposal.sharesNow ?? disposal.qty) * split.factor;
-        }
+    const withOriginal = (lot: Lot): ReplayedLot => ({ ...lot, originalQty: original.get(lot.id) ?? lot.qty });
+
+    // A split onto the lots acquired before it; the acquisitions are kept in today's terms, as the wash sale rule compares shares
+    const applySplitToLots = (split: Split) => {
+        const symbol = split.ticker.toUpperCase();
+        const open = lots.get(symbol) ?? [];
+        const before = open.filter(lot => dayOf(lot.acquiredAt) < split.exDate);
+        const split_ = applySplit(before, split.factor);
+        for (const lot of split_) original.set(lot.id, (original.get(lot.id) ?? lot.qty) * split.factor);
+        lots.set(symbol, [...open.filter(lot => !before.includes(lot)), ...split_.map(withOriginal)]);
+        for (const acquisition of acquisitions) if (acquisition.symbol === symbol && dayOf(acquisition.acquiredAt) < split.exDate) acquisition.qty *= split.factor;
     };
-    for (const fill of fills) {
-        splitThrough(fill.symbol, dayOf(fill.at));
+    // Another action onto the lots of its symbol acquired before it: their new shares, prices and symbols, the new lots it opens (not
+    // purchases, so they replace no shares sold at a loss), and its closings for cash or nothing
+    const applyShareAction = ({ action, prices }: ShareAction) => {
+        const open = lots.get(action.symbol) ?? [];
+        const before = open.filter(lot => dayOf(lot.acquiredAt) < action.exDate && lot.qty > 0);
+        if (before.length === 0) return;
+        const lieu = cashInLieu.has(`${action.symbol}|${action.exDate}`) || (action.newSymbol !== null && cashInLieu.has(`${action.newSymbol}|${action.exDate}`));
+        const effect = applyActionToLots(before, action, { prices, cashInLieu: lieu });
+        const byId = new Map(before.map(lot => [lot.id, lot]));
+        const updated = new Set(effect.updates.map(({ id }) => id));
+        lots.set(action.symbol, open.filter(lot => !updated.has(lot.id)));
+        const add = (lot: ReplayedLot) => lots.set(lot.symbol, [...(lots.get(lot.symbol) ?? []), lot]);
+        for (const update of effect.updates) {
+            const lot = byId.get(update.id)!;
+            if (!(update.qty > 0)) continue;
+            const ratio = update.qty / lot.qty;
+            original.set(lot.id, (original.get(lot.id) ?? lot.qty) * ratio);
+            add(withOriginal({ ...lot, symbol: update.symbol, qty: update.qty, price: update.price }));
+            const acquisition = acquisitionOf.get(lot.id);
+            if (acquisition) {
+                acquisition.qty *= ratio;
+                acquisition.symbol = update.symbol;
+            }
+        }
+        const opened = effect.opened.map((entry, index): ReplayedLot => {
+            const id = `${entry.sourceLotId}|${action.type}|${action.exDate}|${index}`;
+            original.set(id, entry.qty);
+            return { id, symbol: entry.symbol, side: entry.side, qty: entry.qty, price: entry.price, acquiredAt: entry.acquiredAt, originalQty: entry.qty };
+        });
+        for (const lot of opened) if (lot.qty > 0) add(lot);
+        const closedAt = easternTime(action.exDate, "09:30").toISOString();
+        for (const closing of effect.closings) {
+            const lot = closing.lotId !== null ? byId.get(closing.lotId)! : opened[closing.openedIndex!];
+            // Cash in lieu is paid on the shares received, under their symbol
+            const symbol = closing.tag === "cil" ? (closing.lotId !== null ? effect.updates.find(({ id }) => id === closing.lotId)?.symbol ?? lot.symbol : lot.symbol) : action.symbol;
+            disposals.push({
+                id: `${action.type}|${action.symbol}|${action.exDate}|${lot.id}|${closing.tag}`, lotId: lot.id, symbol, side: lot.side, qty: closing.qty, lotPrice: closing.lotPrice, price: closing.price,
+                acquiredAt: lot.acquiredAt, closedAt, kind: closing.tag === "cil" ? "cash_in_lieu" : DISPOSAL_KINDS[action.type] ?? "merger"
+            });
+        }
+        realized += effect.realized;
+    };
+    // Every split and action that took effect by the day, oldest first, once each
+    const pending = [
+        ...splits.map(split => ({ exDate: split.exDate, symbol: split.ticker.toUpperCase(), apply: () => applySplitToLots(split) })),
+        ...actions.map(entry => ({ exDate: entry.action.exDate, symbol: entry.action.symbol, apply: () => applyShareAction(entry) }))
+    ].sort((a, b) => a.exDate.localeCompare(b.exDate) || a.symbol.localeCompare(b.symbol));
+    const changesThrough = (day: string) => {
+        while (pending.length > 0 && pending[0].exDate <= day) pending.shift()!.apply();
+    };
+
+    // The shares an exercise or assignment delivers, waiting for their FILL
+    const deliveries: { underlying: string; side: "buy" | "sell"; shares: number; lotPrice: number; at: number }[] = [];
+    const applyOptionEvent = (event: OptionEvent) => {
+        const open = [...(lots.get(event.symbol) ?? [])].sort((a, b) => a.acquiredAt.localeCompare(b.acquiredAt) || a.id.localeCompare(b.id));
+        if (open.length === 0) return;
+        const multiplier = contractMultiplier(event.symbol);
+        if (event.kind === "expiry") {
+            // Closed at nothing: a long's premium lost, a short's kept
+            for (const lot of open) {
+                disposals.push({ id: `${event.id}|${lot.id}`, lotId: lot.id, symbol: event.symbol, side: lot.side, qty: lot.qty * multiplier, lotPrice: lot.price, price: 0, acquiredAt: lot.acquiredAt, closedAt: event.at, kind: "sale" });
+                realized += (lot.side === "long" ? -1 : 1) * lot.price * lot.qty * multiplier;
+            }
+            lots.set(event.symbol, []);
+            return;
+        }
+        // The contracts taken, oldest first, closed without P&L; their average premium goes into the shares delivered
+        let left = event.qty, taken = 0, paid = 0;
+        const remaining: ReplayedLot[] = [];
+        for (const lot of open) {
+            const qty = Math.min(lot.qty, left);
+            if (qty > 0) {
+                taken += qty;
+                paid += qty * lot.price;
+                left -= qty;
+            }
+            if (lot.qty - qty > 1e-9) remaining.push({ ...lot, qty: lot.qty - qty });
+        }
+        lots.set(event.symbol, remaining);
+        const contract = parseOptionSymbol(event.symbol);
+        if (!contract || !(taken > 0)) return;
+        const delivery = deliveryFor({ type: contract.type, strike: contract.strike, qty: open[0].side === "long" ? taken : -taken, premium: paid / taken });
+        deliveries.push({ underlying: contract.underlying, side: delivery.side, shares: delivery.shares, lotPrice: delivery.lotPrice, at: Date.parse(event.at) });
+    };
+    // The delivery a FILL completes: the underlying's shares on the side and in the number delivered, within a minute of the event
+    const deliveryFill = (fill: BrokerFill) => {
+        const index = deliveries.findIndex(delivery => delivery.underlying === fill.symbol && delivery.side === fill.side && Math.abs(delivery.shares - fill.qty) < 1e-6
+            && Math.abs(Date.parse(fill.at) - delivery.at) <= 60000);
+        return index >= 0 ? deliveries.splice(index, 1)[0] : null;
+    };
+
+    const applyTrade = (fill: BrokerFill) => {
         const multiplier = contractMultiplier(fill.symbol);
+        // An exercise's or assignment's shares take their lots' price with the premium in
+        const price = deliveryFill(fill)?.lotPrice ?? fill.price;
         const open = lots.get(fill.symbol) ?? [];
-        const result = applyFill(open, { side: fill.side, qty: fill.qty, price: fill.price, at: fill.at }, `lot-${fill.id}`, fill.symbol, multiplier);
+        const result = applyFill(open, { side: fill.side, qty: fill.qty, price, at: fill.at }, `lot-${fill.id}`, fill.symbol, multiplier);
         const byId = new Map(open.map(lot => [lot.id, lot]));
         for (const closing of result.closings) {
             const lot = byId.get(closing.lotId)!;
             disposals.push({
-                id: `${fill.id}|${closing.lotId}`, lotId: closing.lotId, symbol: fill.symbol, side: lot.side, qty: closing.qty * multiplier, lotPrice: closing.price, price: fill.price,
+                id: `${fill.id}|${closing.lotId}`, lotId: closing.lotId, symbol: fill.symbol, side: lot.side, qty: closing.qty * multiplier, lotPrice: closing.price, price,
                 acquiredAt: lot.acquiredAt, closedAt: fill.at, kind: "sale"
             });
         }
         if (result.opened) {
             original.set(result.opened.id, result.opened.qty);
-            acquisitions.push({ lotId: result.opened.id, symbol: fill.symbol, side: result.opened.side, qty: result.opened.qty * multiplier, acquiredAt: fill.at });
+            const acquisition = { lotId: result.opened.id, symbol: fill.symbol, side: result.opened.side, qty: result.opened.qty * multiplier, acquiredAt: fill.at };
+            acquisitions.push(acquisition);
+            acquisitionOf.set(result.opened.id, acquisition);
         }
-        lots.set(fill.symbol, result.lots.map(lot => ({ ...lot, originalQty: original.get(lot.id) ?? lot.qty })));
+        lots.set(fill.symbol, result.lots.map(withOriginal));
         realizedByFill.set(fill.id, result.closings.length > 0 ? roundCents(result.realized) : null);
         realized += result.realized;
+    };
+
+    // Fills and option events in time order, an event before the fill delivering its shares
+    const steps = [
+        ...optionEvents.map(event => ({ at: event.at, rank: 0, id: event.id, run: () => applyOptionEvent(event) })),
+        ...fills.map(fill => ({ at: fill.at, rank: 1, id: fill.id, run: () => applyTrade(fill) }))
+    ].sort((a, b) => a.at.localeCompare(b.at) || a.rank - b.rank || a.id.localeCompare(b.id));
+    for (const step of steps) {
+        changesThrough(dayOf(step.at));
+        step.run();
     }
-    for (const symbol of lots.keys()) splitThrough(symbol, today);
+    changesThrough(today);
+
+    // Shares sold in today's terms, and the symbol they're matched under now (as the simulator's tax inputs: sharesSince)
+    const changes: ShareChange[] = [
+        ...splits.filter(split => split.exDate <= today).map(split => ({ type: "SPLIT", ticker: split.ticker.toUpperCase(), newTicker: null, exDate: split.exDate, factor: split.factor, taxable: null })),
+        ...actions.filter(({ action }) => SHARE_CHANGE_TYPES.has(action.type) && action.exDate <= today)
+            .map(({ action }) => ({ type: action.type, ticker: action.symbol, newTicker: action.newSymbol, exDate: action.exDate, factor: action.factor, taxable: action.taxable ?? null }))
+    ];
+    for (const disposal of disposals) {
+        const day = dayOf(disposal.closedAt);
+        disposal.sharesNow = disposal.qty * sharesSince(changes, disposal.symbol, day).factor;
+        const renamed = sharesSince(changes, disposal.symbol, day, true).symbol;
+        if (renamed !== disposal.symbol) disposal.matchSymbol = renamed;
+    }
+    for (const acquisition of acquisitions) acquisition.symbol = sharesSince(changes, acquisition.symbol, dayOf(acquisition.acquiredAt), true).symbol;
     return { lots: [...lots.values()].flat(), realizedByFill, realized: roundCents(realized), acquisitions, disposals };
 };
 
@@ -163,11 +322,11 @@ const sumOf = (rows: CashActivityRow[], types: CashActivityRow["type"][]) =>
     roundCents(rows.filter(({ type }) => types.includes(type)).reduce((sum, { type, amount }) => sum + (type.endsWith("_OUT") ? -Number(amount) : Number(amount)), 0));
 
 // The ledger figures the account summary and the pages use, from the trading account, the positions and the activities
-export const ledgerOf = ({ trade, positions, activities, splits, today = easternParts(new Date()).dateKey }: {
-    trade: TradeAccount; positions: BrokerPosition[]; activities: Activity[]; splits: Split[]; today?: string;
+export const ledgerOf = ({ trade, positions, activities, splits, actions = [], today = easternParts(new Date()).dateKey }: {
+    trade: TradeAccount; positions: BrokerPosition[]; activities: Activity[]; splits: Split[]; actions?: ShareAction[]; today?: string;
 }) => {
     const fills = fillsOf(activities);
-    const replay = replayFills(fills, splits, today);
+    const replay = replayFills(fills, splits, today, { actions, optionEvents: optionEventsOf(activities), cashInLieu: cashInLieuOf(activities) });
     const cash = cashRowsOf(activities, "");
     // Sales that settle after today (T+1): tradable, not yet withdrawable
     const unsettledProceeds = roundCents(fills.filter(fill => fill.side === "sell" && settlementDate(dayOf(fill.at)) > today)
