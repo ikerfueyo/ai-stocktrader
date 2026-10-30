@@ -1,0 +1,11 @@
+.env
+.env*
+!.env.example
+.next
+node_modules
+.git
+.claude
+terraform
+*.tsbuildinfo
+npm-debug.log*
+.DS_Store

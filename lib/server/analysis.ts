@@ -15,7 +15,9 @@ import type { AnalysisDetails, AnalysisSource, CompanyOverview, PositionAnalysis
 const MODEL = "gpt-6-luna";
 // Logged with each verdict (verdict_log), so the track record compares prompts and inputs. Bump it when either changes.
 export const PROMPT_VERSION = 4;
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 1 });
+// Made on first use: the constructor throws without OPENAI_API_KEY, which `next build` (collecting the routes' page data) doesn't have
+let client: OpenAI | null = null;
+const openai = () => client ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 30000, maxRetries: 1 });
 
 
 // Alpha Vantage's UTC "20261020T223723" -> "2026-10-20 18:37 ET", the time zone of the daily closes the prompt compares it with
@@ -31,7 +33,7 @@ const formatNews = (news: NewsItem[]) => news.map(item => `Published: ${formatPu
 type AnalystOptions = Pick<ChatCompletionCreateParamsNonStreaming, "response_format" | "temperature">;
 
 const askAnalyst = async (content: string, options: AnalystOptions = {}) => {
-    const response = await openai.chat.completions.create({
+    const response = await openai().chat.completions.create({
         model: MODEL,
         // Reasoning off: it didn't change Luna's verdicts on this prompt, and temperature (0 for the JSON calls) is only accepted without it
         reasoning_effort: "none",

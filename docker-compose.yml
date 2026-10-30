@@ -1,0 +1,46 @@
+# Runs the app and Postgres locally the way it runs on AWS: `docker compose up --build`, then http://localhost:3000 (APP_PORT
+# picks another port).
+# Reads the API keys from .env.local (Alpha Vantage, OpenAI, Clerk, optionally Alpaca); the database settings here override it.
+# The Clerk publishable key is needed at build time too: export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY before building.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_stocktrader
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_stocktrader"]
+      interval: 2s
+      retries: 30
+
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+        NEXT_PUBLIC_DEMO: ${NEXT_PUBLIC_DEMO:-true}
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: ai_stocktrader
+      DB_SSL: "false"
+      BROKER: sim
+      SIM_FUNDING_FAST_SECONDS: "10"
+      SIM_KYC_SECONDS: "5"
+      SIM_KYC_REVIEW_SECONDS: "30"
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

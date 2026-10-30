@@ -8,3 +8,11 @@ next-env.d.ts
 
 # Claude Code session worktrees
 .claude/worktrees/
+
+# Terraform
+terraform/**/.terraform/
+terraform/**/*.tfstate
+terraform/**/*.tfstate.*
+terraform/**/.terraform.tfstate.lock.info
+terraform/terraform.tfvars
+terraform/backend.hcl
