@@ -279,11 +279,11 @@ const AccountSettings = () => {
 
             {isIra ? (
                 <Section title="Beneficiaries">
-                    <Beneficiaries accountId={account.id} state={account.contact?.state} onSaved={load} />
+                    <Beneficiaries accountId={account.id} state={account.contact?.state} maritalStatus={account.identity?.marital_status} onSaved={load} />
                 </Section>
             ) : (
                 <Section title="Retirement accounts (IRAs)">
-                    <OpenIra state={account.contact?.state} onOpened={refreshAccounts} />
+                    <OpenIra state={account.contact?.state} maritalStatus={account.identity?.marital_status} onOpened={refreshAccounts} />
                 </Section>
             )}
 
@@ -346,7 +346,7 @@ const AccountSettings = () => {
 
             {isIra ? (
                 <Section title="Taxes">
-                    <p className="text-muted">An IRA isn&apos;t subject to backup withholding, and its trades and dividends aren&apos;t reported each year. Its tax forms are the 1099-R (distributions) and the 5498 (contributions and year-end value), on the Documents page.</p>
+                    <p className="text-muted">An IRA isn&apos;t subject to backup withholding, and its trades and dividends aren&apos;t reported each year. Its tax forms are the 1099-R (distributions) and the 5498 (contributions and year-end value), on the Documents page, with an RMD notice each year a traditional IRA&apos;s required minimum distribution is due.</p>
                 </Section>
             ) : (
                 <Section title="Tax certification (W-9)">

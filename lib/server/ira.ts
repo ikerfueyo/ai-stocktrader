@@ -5,7 +5,7 @@ import { brokerMode, getBroker } from "./broker";
 import { HttpError } from "./httpError";
 import { clientIp, FINAL_STATUSES, listAccountRows } from "./brokerAccounts";
 import {
-    beneficiaryErrors, contributionDeadline, contributionError, contributionLimit, contributionTaxYears, DISTRIBUTION_REASONS, distributionReasonsFor, IRA_LABELS, spousalConsentMayBeNeeded,
+    beneficiaryErrors, contributionDeadline, contributionError, contributionLimit, contributionTaxYears, DISTRIBUTION_REASONS, distributionReasonsFor, IRA_LABELS, rmdDue, spousalConsentMayBeNeeded,
     type BeneficiaryInput, type IraSubType
 } from "../ira";
 import { easternParts } from "../marketHours";
@@ -39,7 +39,8 @@ export const contributionsByYear = async (userId: string): Promise<Map<number, n
 const dateOfBirthOf = (account: BrokerAccount) => (account.identity as { date_of_birth?: string } | undefined)?.date_of_birth ?? "1900-01-01";
 
 // GET /api/ira: the tax years open for contributions with the user's limit, what's been contributed across their IRAs and what's left,
-// and for an IRA account its type, the distribution reasons that fit now, its beneficiaries and whether spousal consent may be needed
+// and for an IRA account its type, the distribution reasons that fit now, its beneficiaries, whether spousal consent may be needed and
+// any required minimum distribution due this year (none for an IRA opened this year: it had no value at the last one's end)
 export const iraOverview = async (userId: string, accountId: string | null): Promise<IraOverview> => {
     const today = easternParts(new Date()).dateKey;
     const rows = await listAccountRows(userId);
@@ -65,7 +66,8 @@ export const iraOverview = async (userId: string, accountId: string | null): Pro
             distributionReasons: distributionReasonsFor(subType, { dateOfBirth, day: today, firstContributionYear })
                 .map(reason => ({ reason, label: DISTRIBUTION_REASONS[reason].label, code: DISTRIBUTION_REASONS[reason].code })),
             beneficiaries: account.beneficiaries ?? [],
-            spousalConsentMayBeNeeded: spousalConsentMayBeNeeded(account.contact?.state, account.beneficiaries ?? [])
+            spousalConsentMayBeNeeded: spousalConsentMayBeNeeded(account.contact?.state, account.beneficiaries ?? [], account.identity?.marital_status),
+            rmd: account.created_at.slice(0, 4) < today.slice(0, 4) ? rmdDue(Number(today.slice(0, 4)), subType, dateOfBirth) : null
         }
     };
 };

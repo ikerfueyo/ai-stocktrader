@@ -100,7 +100,7 @@ const TransfersPage = () => {
                                 return (
                                     <tr key={transfer.id}>
                                         <td>{formatEastern(transfer.created_at, { withDay: true })}</td>
-                                        <td>{transfer.type === "ach" ? "ACH" : "Wire"} {transfer.direction === "INCOMING" ? "deposit" : "withdrawal"}</td>
+                                        <td>{transfer.type === "ach" ? "ACH" : "Wire"} {transfer.ira ? (transfer.direction === "INCOMING" ? `IRA contribution for ${transfer.ira.tax_year}` : "IRA distribution") : transfer.direction === "INCOMING" ? "deposit" : "withdrawal"}</td>
                                         <td className={transfer.direction === "INCOMING" ? "price-change positive" : "price-change negative"}>
                                             {transfer.direction === "INCOMING" ? "+" : "−"}{formatCurrency(Number(transfer.amount))}
                                             {fee > 0 && <small className="text-muted d-block">+{formatCurrency(fee)} fee</small>}

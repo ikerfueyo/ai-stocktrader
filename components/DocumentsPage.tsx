@@ -12,7 +12,7 @@ export type DocumentsTab = "documents" | "gains";
 
 const TYPE_LABELS: Record<string, string> = {
     trade_confirmation: "Trade confirmation", trade_confirmation_json: "Trade confirmation (JSON)", account_statement: "Account statement",
-    tax_statement: "Tax statement (1099, 1099-R, 5498)", account_application: "Account application"
+    tax_statement: "Tax statement (1099, 1099-R, 5498, RMD notice)", account_application: "Account application"
 };
 const thisYear = new Date().getFullYear();
 const YEARS = Array.from({ length: 6 }, (_, i) => thisYear - i);

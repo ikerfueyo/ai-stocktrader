@@ -1,7 +1,8 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { backupWithholding, form1099R, form5498, reportSales, rmdAge, sharesSince, taxYear, termOf, unrealizedRows, type Acquisition, type Disposal } from "./tax";
+import { backupWithholding, form1099R, form5498, reportSales, rmdNotice, sharesSince, taxYear, termOf, unrealizedRows, type Acquisition, type Disposal } from "./tax";
 import { renderDocument } from "./documentRender";
+import { rmdAge } from "../../../ira";
 
 const buy = (lotId: string, qty: number, acquiredAt: string, symbol = "XYZ"): Acquisition => ({ lotId, symbol, side: "long", qty, acquiredAt: `${acquiredAt}T15:00:00Z` });
 const sell = (id: string, lotId: string, qty: number, lotPrice: number, price: number, acquiredAt: string, closedAt: string, kind: Disposal["kind"] = "sale"): Disposal =>
@@ -193,6 +194,17 @@ describe("IRA forms", () => {
         assert.equal(form5498({ year: 2026, subType: "traditional", contributions, fairMarketValue: 0, dateOfBirth: "1960-05-01" }).rmdNextYear, false, "75 only in 2035");
         assert.deepEqual([rmdAge("1950-06-01"), rmdAge("1955-06-01"), rmdAge("1960-06-01")], [72, 73, 75]);
     });
+
+    test("RMD notices: the first year's due April 1 of the next, later ones December 31, none for a Roth, under the age or with no value", () => {
+        assert.deepEqual(rmdNotice({ year: 2027, subType: "traditional", dateOfBirth: "1954-05-01", priorYearEndValue: 50000.004 }),
+            { year: 2027, firstYear: true, deadline: "2028-04-01", priorYearEndValue: 50000 });
+        assert.deepEqual(rmdNotice({ year: 2028, subType: "traditional", dateOfBirth: "1954-05-01", priorYearEndValue: 1 }),
+            { year: 2028, firstYear: false, deadline: "2028-12-31", priorYearEndValue: 1 });
+        assert.equal(rmdNotice({ year: 2026, subType: "traditional", dateOfBirth: "1954-05-01", priorYearEndValue: 50000 }), null, "72 in 2026");
+        assert.equal(rmdNotice({ year: 2034, subType: "traditional", dateOfBirth: "1960-01-01", priorYearEndValue: 50000 }), null, "75 only in 2035");
+        assert.equal(rmdNotice({ year: 2030, subType: "roth", dateOfBirth: "1950-01-01", priorYearEndValue: 50000 }), null);
+        assert.equal(rmdNotice({ year: 2030, subType: "traditional", dateOfBirth: "1950-01-01", priorYearEndValue: 0 }), null);
+    });
 });
 
 describe("Documents render as printable pages", () => {
@@ -206,6 +218,14 @@ describe("Documents render as printable pages", () => {
         });
         for (const text of ["1099-DIV", "1099-INT", "1099-B", "$250.00 W", "Simulated document", "Ada &lt;Lovelace&gt;", "$12.00"]) assert.ok(html.includes(text), text);
         assert.ok(!html.includes("<Lovelace>"));
+    });
+
+    test("an RMD notice gives the deadline and the value the amount comes from, without an amount", () => {
+        const html = renderDocument({
+            type: "tax_statement", name: "RMD notice for 2027", date: "2027-01-31", preliminary: false,
+            payload: { holder, iraType: "traditional", form: "rmd_notice", rmdNotice: { year: 2027, firstYear: true, deadline: "2028-04-01", priorYearEndValue: 50000 } }
+        });
+        for (const text of ["Required minimum distribution notice for 2027", "2028-04-01", "December 31, 2026", "$50,000.00", "doesn't calculate the amount", "first"]) assert.ok(html.includes(text), text);
     });
 
     test("a trade confirmation lists each fill", () => {

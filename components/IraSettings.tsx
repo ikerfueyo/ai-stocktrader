@@ -47,7 +47,7 @@ export const BeneficiaryFields = ({ beneficiaries, setBeneficiaries }: { benefic
 };
 
 // The IRA's beneficiaries, replaced all at once (PATCH /api/accounts/[id] { beneficiaries }), as Alpaca replaces them
-export const Beneficiaries = ({ accountId, state, onSaved }: { accountId: string; state?: string; onSaved: () => void }) => {
+export const Beneficiaries = ({ accountId, state, maritalStatus, onSaved }: { accountId: string; state?: string; maritalStatus?: string | null; onSaved: () => void }) => {
     const [overview, setOverview] = useState<IraOverview | null>(null);
     const [editing, setEditing] = useState<BeneficiaryInput[] | null>(null);
     const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
@@ -84,7 +84,7 @@ export const Beneficiaries = ({ accountId, state, onSaved }: { accountId: string
                 </ul>
             )}
             {overview?.account?.spousalConsentMayBeNeeded && (
-                <p className="text-warning small">You live in a community property state{state ? ` (${state})` : ""}: if you&apos;re married and your spouse isn&apos;t a primary beneficiary, your spouse&apos;s consent is needed.</p>
+                <p className="text-warning small">You live in a community property state{state ? ` (${state})` : ""}: {maritalStatus === "MARRIED" ? "your spouse isn't a beneficiary, so your spouse's consent is needed" : "if you're married and your spouse isn't a primary beneficiary, your spouse's consent is needed"}. We&apos;ll contact you to collect it.</p>
             )}
             {editing ? (
                 <Fragment>
@@ -111,7 +111,7 @@ const DESCRIPTIONS: Record<IraSubType, string> = {
 
 // Opens a traditional or Roth IRA from the individual account (POST /api/accounts/ira): the IRA's type, the SSN again, beneficiaries
 // and the agreements. It's reviewed like any application, then appears in the account menu.
-export const OpenIra = ({ state, onOpened }: { state?: string; onOpened: () => void }) => {
+export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; maritalStatus?: string | null; onOpened: () => void }) => {
     const [overview, setOverview] = useState<IraOverview | null>(null);
     const [subType, setSubType] = useState<IraSubType | null>(null);
     const [taxId, setTaxId] = useState("");
@@ -177,7 +177,11 @@ export const OpenIra = ({ state, onOpened }: { state?: string; onOpened: () => v
                     </label>
                     <span className="transfer-field-label">Beneficiaries (optional now, can be added later)</span>
                     <BeneficiaryFields beneficiaries={beneficiaries} setBeneficiaries={setBeneficiaries} />
-                    {spousalConsentMayBeNeeded(state, beneficiaries) && <p className="text-warning small">In a community property state, a married owner whose spouse isn&apos;t a primary beneficiary needs the spouse&apos;s consent.</p>}
+                    {spousalConsentMayBeNeeded(state, beneficiaries, maritalStatus) && (
+                        <p className="text-warning small">
+                            {maritalStatus === "MARRIED" ? "You live in a community property state and your spouse isn't a beneficiary, so your spouse's consent is needed; we'll contact you to collect it." : "In a community property state, a married owner whose spouse isn't a primary beneficiary needs the spouse's consent."}
+                        </p>
+                    )}
                     <label className="onboarding-check">
                         <input type="checkbox" checked={agreements} onChange={event => setAgreements(event.target.checked)} />
                         I accept the <Link href="/agreements/customer_agreement" target="_blank">customer agreement</Link> and the <Link href="/agreements/account_agreement" target="_blank">account agreement</Link> for the IRA

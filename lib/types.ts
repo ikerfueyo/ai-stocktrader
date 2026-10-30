@@ -592,7 +592,7 @@ export interface TransferRequest {
 
 // GET /api/ira: the tax years open for IRA contributions, each with the user's limit (by age), what they've contributed across their
 // IRAs and what's left; the IRA kinds they have open; and for an IRA as the active account, its type, the distribution reasons that
-// fit now (lib/ira.ts), its beneficiaries and whether spousal consent may be needed
+// fit now (lib/ira.ts), its beneficiaries, whether spousal consent may be needed and any required minimum distribution due this year
 export interface IraOverview {
     years: { taxYear: number; limit: number; contributed: number; remaining: number; deadline: string }[];
     openKinds: BrokerAccountKind[];
@@ -602,6 +602,7 @@ export interface IraOverview {
         distributionReasons: { reason: string; label: string; code: string }[];
         beneficiaries: { given_name: string; middle_name?: string | null; family_name: string; date_of_birth: string; relationship: "spouse" | "other"; type: "primary" | "contingent"; share_pct: string }[];
         spousalConsentMayBeNeeded: boolean;
+        rmd: { year: number; firstYear: boolean; deadline: string } | null;
     } | null;
 }
 

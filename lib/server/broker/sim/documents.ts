@@ -10,7 +10,7 @@ import { getAccount } from "./accounts";
 import { fillsAsTrades } from "./positions";
 import { subjectToBackupWithholding } from "./withholding";
 import { renderDocument, type ApplicationPayload, type DocumentPayload, type Holder, type RenderableDocument, type StatementPayload, type TaxStatementPayload, type TradeConfirmationPayload } from "./documentRender";
-import { form1099R, form5498, reportSales, sharesSince, taxYear, unrealizedRows, type Acquisition, type Disposal, type ReportedSale, type ShareChange, type TaxYear } from "./tax";
+import { form1099R, form5498, reportSales, rmdNotice, sharesSince, taxYear, unrealizedRows, type Acquisition, type Disposal, type ReportedSale, type ShareChange, type TaxYear } from "./tax";
 import { DISTRIBUTION_REASONS } from "../../../ira";
 import type { SimAccountRow } from "./shapes";
 import type { AccountDocument, ListDocumentsQuery } from "../types";
@@ -190,6 +190,18 @@ export const unrealizedLots = async (accountId: string) => {
     ));
 };
 
+// The account's value at a year's last close (0 before it had one)
+const yearEndValue = async (accountId: string, year: number) => {
+    const { rows: [close] } = await pool.query<{ equity: string }>(`SELECT equity FROM sim_daily_balances WHERE account_id = $1 AND "date" <= $2 ORDER BY "date" DESC LIMIT 1`, [accountId, `${year}-12-31`]);
+    return Number(close?.equity ?? 0);
+};
+
+const dateOfBirthOf = (row: SimAccountRow) => (row.identity as { date_of_birth?: string } | null)?.date_of_birth ?? "1900-01-01";
+
+// A traditional IRA's RMD notice for a year, when a distribution is due then and the account had a value at the prior year's end
+const iraRmdNotice = async (row: SimAccountRow, year: number) =>
+    rmdNotice({ year, subType: (row.account_sub_type ?? "traditional") as "traditional" | "roth", dateOfBirth: dateOfBirthOf(row), priorYearEndValue: await yearEndValue(row.id, year - 1) });
+
 // An IRA's 1099-R and 5498 for a year: its distributions (dated when they left the account, with their withholding and code), the
 // contributions for the tax year, and its value at the year's last close
 const iraForms = async (row: SimAccountRow, year: number) => {
@@ -203,12 +215,10 @@ const iraForms = async (row: SimAccountRow, year: number) => {
         code: DISTRIBUTION_REASONS[transfer.ira.distribution_reason]?.code ?? "1"
     }));
     const contributions = transfers.filter(({ direction }) => direction === "INCOMING").map(transfer => ({ taxYear: Number(transfer.ira.tax_year), amount: Number(transfer.amount) }));
-    const { rows: [close] } = await pool.query<{ equity: string }>(`SELECT equity FROM sim_daily_balances WHERE account_id = $1 AND "date" <= $2 ORDER BY "date" DESC LIMIT 1`, [row.id, `${year}-12-31`]);
-    const dateOfBirth = (row.identity as { date_of_birth?: string } | null)?.date_of_birth ?? "1900-01-01";
     return {
         subType,
         form1099R: form1099R({ year, subType, distributions }),
-        form5498: form5498({ year, subType, contributions, fairMarketValue: Number(close?.equity ?? 0), dateOfBirth })
+        form5498: form5498({ year, subType, contributions, fairMarketValue: await yearEndValue(row.id, year), dateOfBirth: dateOfBirthOf(row) })
     };
 };
 
@@ -259,8 +269,17 @@ export const generateDocuments = async (accountId: string, now = new Date()) => 
         made++;
     }
     // An IRA's tax forms: the 1099-R by January 31 for a year with distributions, the 5498 by May 31 (after the April 15 deadline for the
-    // year's contributions) for a year with contributions or a value at its end. No 1099-B, DIV or INT.
+    // year's contributions) for a year with contributions or a value at its end, and an RMD notice by January 31 of each year a required
+    // minimum distribution is due (Alpaca's AccountDocumentType has no type for it, so it's a tax statement). No 1099-B, DIV or INT.
     if (row.account_type === "ira") {
+        for (let year = Number(createdDay.slice(0, 4)) + 1; year <= Number(day.slice(0, 4)); year++) {
+            const start = `${year}-01-01`;
+            if (has("tax_statement", start, "rmd_notice") || day < `${year}-01-31`) continue;
+            const notice = await iraRmdNotice(row, year);
+            if (!notice) continue;
+            await store(accountId, { type: "tax_statement", subType: "rmd_notice", name: `RMD notice for ${year}`, date: `${year}-01-31`, periodStart: start, periodEnd: `${year}-12-31`, payload: { holder, iraType: "traditional", form: "rmd_notice", rmdNotice: notice } });
+            made++;
+        }
         for (let year = Number(createdDay.slice(0, 4)); year < Number(day.slice(0, 4)); year++) {
             const start = `${year}-01-01`;
             const forms = await iraForms(row, year);
@@ -300,6 +319,8 @@ export const generatePreliminaryDocuments = async (accountId: string, year: numb
         const period = { date: day, periodStart: `${year}-01-01`, periodEnd: `${year}-12-31`, preliminary: true };
         await store(accountId, { type: "tax_statement", subType: "1099-R", name: `Form 1099-R for ${year} (preliminary)`, ...period, payload: { holder, iraType: forms.subType, form: "1099-R", form1099R: forms.form1099R } });
         await store(accountId, { type: "tax_statement", subType: "5498", name: `Form 5498 for ${year} (preliminary)`, ...period, payload: { holder, iraType: forms.subType, form: "5498", form5498: forms.form5498 } });
+        const notice = await iraRmdNotice(row, year);
+        if (notice) await store(accountId, { type: "tax_statement", subType: "rmd_notice", name: `RMD notice for ${year} (preliminary)`, ...period, payload: { holder, iraType: "traditional", form: "rmd_notice", rmdNotice: notice } });
         return;
     }
     const figures = figuresOnly(await accountTaxYear(accountId, year));

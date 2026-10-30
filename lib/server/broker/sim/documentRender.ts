@@ -1,7 +1,7 @@
 // The simulator's account documents as printable HTML pages (a PDF through the browser's print), from the data each keeps. Pure, so
 // it can be unit tested; ./documents.ts stores the data. Every page says it's simulated: no account exists at any broker, and the
 // figures aren't for filing.
-import type { Form1099R, Form5498, TaxYear } from "./tax";
+import type { Form1099R, Form5498, RmdNotice, TaxYear } from "./tax";
 
 export interface Holder {
     name: string;
@@ -53,13 +53,14 @@ export interface TaxStatementPayload {
     backupWithholding: boolean;
 }
 
-// An IRA's tax form: the 1099-R (distributions) or the 5498 (contributions and the year-end value)
+// An IRA's tax form: the 1099-R (distributions), the 5498 (contributions and the year-end value) or an RMD notice
 export interface IraTaxPayload {
     holder: Holder;
     iraType: "traditional" | "roth";
-    form: "1099-R" | "5498";
+    form: "1099-R" | "5498" | "rmd_notice";
     form1099R?: Form1099R;
     form5498?: Form5498;
+    rmdNotice?: RmdNotice;
 }
 
 export type DocumentPayload = TradeConfirmationPayload | StatementPayload | ApplicationPayload | TaxStatementPayload | IraTaxPayload;
@@ -186,6 +187,17 @@ ${table(["Box", "Amount"], [
             ["11 Required minimum distribution for next year", escape(form.rmdNextYear ? "Yes (an RMD notice follows; the simulator doesn't work out the amount)" : "No")]
         ], { numeric: [1] })}
 <p class="muted">Contributions are reported as made; whether they're deductible (traditional) or allowed (Roth, by income) is for the owner's return.</p>`;
+    }
+    if (payload.form === "rmd_notice" && payload.rmdNotice) {
+        const notice = payload.rmdNotice;
+        return `${holderBlock(payload.holder)}
+<p>Required minimum distribution notice for ${notice.year} (${escape(label)}). As the owner of a traditional IRA of RMD age, you must take a required minimum distribution for ${notice.year} by ${escape(notice.deadline)}${notice.firstYear ? `: this is your first, which can wait until April 1, ${notice.year + 1}, though the one for ${notice.year + 1} is then due by December 31, ${notice.year + 1} as well` : ""}.</p>
+${table(["Item", "Value"], [
+            ["Distribution year", String(notice.year)],
+            ["Deadline", escape(notice.deadline)],
+            [`Account value on December 31, ${notice.year - 1}`, escape(money(notice.priorYearEndValue))]
+        ], { numeric: [1] })}
+<p>The custodian doesn't calculate the amount. It's the December 31 value above divided by your distribution period in the IRS's Uniform Lifetime Table (or the Joint Life Table if your spouse, the sole beneficiary, is more than 10 years younger), IRS Publication 590-B. RMDs for several traditional IRAs may be taken from any of them. An amount not taken by the deadline is subject to a 25% excise tax (10% if corrected in time).</p>`;
     }
     const form = payload.form1099R!;
     return `${holderBlock(payload.holder)}

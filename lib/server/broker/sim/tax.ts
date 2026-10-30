@@ -16,6 +16,8 @@
 //   1099-DIV: every dividend is ordinary (qualified status isn't known); dividends charged to shorts aren't income, and stock
 //   dividends aren't taxable. 1099-INT: interest paid to the account (none: the simulator only charges margin interest).
 
+import { rmdDue } from "../../../ira";
+
 const DAY_MS = 86400000;
 export const WASH_WINDOW_DAYS = 30;
 export const BACKUP_WITHHOLDING_RATE = 0.24;
@@ -369,17 +371,27 @@ export interface Form5498 {
     rmdNextYear: boolean;
 }
 
-// The age required minimum distributions start (SECURE 2.0): 73 for those born 1951 to 1959, 75 from 1960, 72 before
-export const rmdAge = (dateOfBirth: string): number => {
-    const year = Number(dateOfBirth.slice(0, 4));
-    return year >= 1960 ? 75 : year >= 1951 ? 73 : 72;
-};
-
 export const form5498 = ({ year, subType, contributions, fairMarketValue, dateOfBirth }: { year: number; subType: "traditional" | "roth"; contributions: { taxYear: number; amount: number }[]; fairMarketValue: number; dateOfBirth: string }): Form5498 => ({
     year,
     contributions: cents(contributions.filter(({ taxYear }) => taxYear === year).reduce((sum, { amount }) => sum + amount, 0)),
     traditional: subType === "traditional",
     fairMarketValue: cents(fairMarketValue),
     // Roth owners take no required distributions in their lifetime
-    rmdNextYear: subType === "traditional" && year + 1 - Number(dateOfBirth.slice(0, 4)) >= rmdAge(dateOfBirth)
+    rmdNextYear: rmdDue(year + 1, subType, dateOfBirth) !== null
 });
+
+export interface RmdNotice {
+    // The year the distribution is for, and whether it's the owner's first (due by April 1 of the next year; later ones by December 31)
+    year: number;
+    firstYear: boolean;
+    deadline: string;
+    // The account's value at the prior year's end, which the amount is worked out from
+    priorYearEndValue: number;
+}
+
+// The notice a traditional IRA's owner of RMD age gets by January 31 of the year a distribution is due (Alpaca sends one, without the
+// amount); none when the account had no value at the prior year's end
+export const rmdNotice = ({ year, subType, dateOfBirth, priorYearEndValue }: { year: number; subType: "traditional" | "roth"; dateOfBirth: string; priorYearEndValue: number }): RmdNotice | null => {
+    const due = rmdDue(year, subType, dateOfBirth);
+    return due && priorYearEndValue > 0 ? { ...due, priorYearEndValue: cents(priorYearEndValue) } : null;
+};

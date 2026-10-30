@@ -81,5 +81,9 @@ describe("Beneficiaries", () => {
         assert.equal(spousalConsentMayBeNeeded("CA", [person({ relationship: "other" })]), true);
         assert.equal(spousalConsentMayBeNeeded("CA", [person()]), false);
         assert.equal(spousalConsentMayBeNeeded("IL", []), false);
+        assert.equal(spousalConsentMayBeNeeded("TX", [], "MARRIED"), true);
+        assert.equal(spousalConsentMayBeNeeded("TX", [], "SINGLE"), false, "known not to be married");
+        assert.equal(spousalConsentMayBeNeeded("TX", [], null), true, "marital status unknown");
+        assert.equal(spousalConsentMayBeNeeded("TX", [person()], "MARRIED"), false, "the spouse is a beneficiary");
     });
 });

@@ -67,6 +67,24 @@ export const contributionError = ({ amount, taxYear, day, dateOfBirth, contribut
     return null;
 };
 
+// The age required minimum distributions start (SECURE 2.0): 73 for those born 1951 to 1959, 75 from 1960, 72 before
+export const rmdAge = (dateOfBirth: string): number => {
+    const year = Number(dateOfBirth.slice(0, 4));
+    return year >= 1960 ? 75 : year >= 1951 ? 73 : 72;
+};
+
+// Whether a required minimum distribution is due for a year, and by when: a traditional IRA's owner takes one each year from the year
+// they reach the RMD age (Roth owners take none in their lifetime), the first by April 1 of the next year and later ones by December
+// 31. The amount is the prior December 31 value divided by the IRS's Uniform Lifetime Table factor (Publication 590-B); Alpaca sends
+// owners of RMD age a notice but doesn't work out the amount, so neither does the app.
+export const rmdDue = (year: number, subType: IraSubType, dateOfBirth: string): { year: number; firstYear: boolean; deadline: string } | null => {
+    if (subType !== "traditional") return null;
+    const age = year - Number(dateOfBirth.slice(0, 4));
+    if (age < rmdAge(dateOfBirth)) return null;
+    const firstYear = age === rmdAge(dateOfBirth);
+    return { year, firstYear, deadline: firstYear ? `${year + 1}-04-01` : `${year}-12-31` };
+};
+
 export interface DistributionReason {
     label: string;
     // The 1099-R's box 7 code
@@ -174,7 +192,8 @@ export const maskBeneficiaries = (beneficiaries: BeneficiaryInput[]) => benefici
 // Where a married owner who doesn't name their spouse as a beneficiary needs the spouse's consent (Alpaca's list, October 2024)
 export const COMMUNITY_PROPERTY_STATES = ["AZ", "CA", "ID", "LA", "NV", "NM", "TX", "WA", "WI"];
 
-// Whether to ask about spousal consent: the owner lives in a community property state and no spouse is a beneficiary (marital status
-// isn't part of the application, so the page asks)
-export const spousalConsentMayBeNeeded = (state: string | undefined, beneficiaries: Pick<BeneficiaryInput, "relationship">[]): boolean =>
-    COMMUNITY_PROPERTY_STATES.includes((state ?? "").toUpperCase()) && !beneficiaries.some(({ relationship }) => relationship === "spouse");
+// Whether to ask about spousal consent: the owner lives in a community property state, no spouse is a beneficiary, and they're married
+// or their marital status isn't known (the options suitability questions ask it, the application doesn't). Alpaca flags these accounts
+// to the partner, who collects the consent by hand.
+export const spousalConsentMayBeNeeded = (state: string | undefined, beneficiaries: Pick<BeneficiaryInput, "relationship">[], maritalStatus?: string | null): boolean =>
+    COMMUNITY_PROPERTY_STATES.includes((state ?? "").toUpperCase()) && !beneficiaries.some(({ relationship }) => relationship === "spouse") && (!maritalStatus || maritalStatus === "MARRIED");

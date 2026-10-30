@@ -99,8 +99,10 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
             setStatus({
                 ok: true,
                 message: isDeposit
-                    ? `Deposit of ${formatCurrency(Number(data.amount))} requested. ${instant > 0 ? `${formatCurrency(instant)} is available to trade now; ` : ""}it settles by ${expected(data.expires_at!)}.`
-                    : `Withdrawal of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. It should arrive by ${expected(data.expires_at!)}.`
+                    ? `${isIra ? `Contribution for ${year?.taxYear}` : "Deposit"} of ${formatCurrency(Number(data.amount))} requested. ${instant > 0 ? `${formatCurrency(instant)} is available to trade now; ` : ""}it settles by ${expected(data.expires_at!)}.`
+                    : isIra && withholding
+                        ? `Distribution of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. After withholding, ${formatCurrency(withholding.net)} should arrive by ${expected(data.expires_at!)}.`
+                        : `Withdrawal of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. It should arrive by ${expected(data.expires_at!)}.`
             });
             await Promise.all([refreshAccount(), reload()]);
             setIraVersion(version => version + 1);
@@ -162,6 +164,11 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
                             : "Federal and state withholding can't add up to more than 100%."}
                         {" "}Federal withholding is 10% unless you set it to 0%.{ira.account.subType === "traditional" ? " Distributions before 59½ usually owe a 10% penalty too." : ""}
                     </small>
+                    {ira.account.rmd && (
+                        <small className="text-warning">
+                            A required minimum distribution is due for {ira.account.rmd.year} by {ira.account.rmd.deadline}; the amount isn&apos;t worked out here (your RMD notice in Documents has the value it&apos;s based on).
+                        </small>
+                    )}
                 </section>
             )}
             {!isDeposit && account && (
@@ -230,7 +237,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
                     )}
                 </div>
                 <button type="submit" disabled={!canSubmit} className={`transfer-submit ${isDeposit ? "buy-btn" : "sell-btn"}`}>
-                    {submitting ? "Processing…" : `${isDeposit ? "Deposit" : "Withdraw"} ${formatCurrency(value)}`}
+                    {submitting ? "Processing…" : `${isDeposit ? (isIra ? "Contribute" : "Deposit") : isIra ? "Take" : "Withdraw"} ${formatCurrency(value)}`}
                 </button>
             </form>
             {status && <p className={`mt-3 ${status.ok ? "text-success" : "text-danger"}`}>{status.message}</p>}
