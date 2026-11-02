@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars (gitignored). image_tag is passed by scripts/deploy.sh.
+aws_region      = "us-east-1"
+domain          = "stocktrader.example.com"
+route53_zone_id = "" # the hosted zone ID if the domain is in Route 53
+alert_email     = "you@example.com"
+monthly_budget  = 100
+
+clerk_publishable_key = "pk_live_..."
+clerk_secret_key      = "sk_live_..."
+alpha_vantage_api_key = "..."
+openai_api_key        = "sk-..."
+alpaca_api_key_id     = ""
+alpaca_api_secret_key = ""
+
+extra_env = {
+  # ALPACA_DATA_FEED = "iex"
+}

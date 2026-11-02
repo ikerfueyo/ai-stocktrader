@@ -1,11 +1,46 @@
 {
   "name": "ai-stocktrader",
   "version": "1.0.0",
+  "private": true,
   "scripts": {
-    "install-all": "npm install --prefix client && npm install --prefix server",
-    "start": "concurrently \"npm start --prefix client\" \"npm start --prefix server\""
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test lib/orders.test.ts lib/server/account.test.ts lib/server/history.test.ts lib/server/technicals.test.ts lib/server/earnings.test.ts lib/server/trackRecord.test.ts lib/marketHours.test.ts lib/server/universe.test.ts lib/server/schedule.test.ts lib/server/broker/conformance.test.ts lib/kyc.test.ts lib/server/broker/sim/kyc.test.ts lib/server/broker/sim/shapes.test.ts lib/server/broker/sim/funding.test.ts lib/server/broker/sim/ledger.test.ts lib/server/broker/sim/orders.test.ts lib/server/broker/sim/margin.test.ts lib/server/broker/sim/intradayMargin.test.ts lib/server/broker/sim/corporateActions.test.ts lib/server/broker/sim/tax.test.ts lib/automation.test.ts lib/ira.test.ts lib/server/broker/sim/options.test.ts lib/server/broker/alpaca/alpaca.test.ts lib/server/brokerLedger.test.ts lib/accounts.test.ts",
+    "test:scenarios": "node --conditions=react-server --import tsx --test lib/server/broker/sim/scenarios.sim.ts",
+    "test:scenarios:sandbox": "node --conditions=react-server --import tsx --test lib/server/broker/alpaca/scenarios.sandbox.ts",
+    "gen:alpaca-types": "npx -y openapi-typescript@7 vendor/alpaca/broker-api.json -o lib/server/broker/generated/brokerApi.ts && npx -y openapi-typescript@7 vendor/alpaca/trading-api.json -o lib/server/marketData/generated/tradingApi.ts && npx -y openapi-typescript@7 vendor/alpaca/market-data-api.json -o lib/server/marketData/generated/marketDataApi.ts"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^7.9.19",
+    "axios": "^1.20.0",
+    "bootstrap": "4.6.2",
+    "next": "16.4.2",
+    "openai": "^7.41.0",
+    "pg": "^8.23.1",
+    "plotly.js": "^3.0.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-plotly.js": "^2.6.0",
+    "server-only": "^0.0.1",
+    "ulid": "^3.0.2"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "@types/node": "^22",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/react-plotly.js": "^2.6.4",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "autoprefixer": "^10.6.1",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.2",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
   }
 }
