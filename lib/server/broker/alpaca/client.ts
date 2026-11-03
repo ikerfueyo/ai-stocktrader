@@ -4,7 +4,7 @@ import type { Broker, BrokerEvent, BrokerEventStream } from "../broker";
 import type {
     Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, ACHRelationship, Activity, Asset, Bank, CalendarDay, Clock,
     CreateACHRelationshipRequest, CreateBankRequest, CreateOrderRequest, CreateTransferRequest, ListActivitiesQuery, ListAssetsQuery, ListDocumentsQuery,
-    ListOrdersQuery, ListTransfersQuery, OptionContract, OptionsApprovalRequest, OptionsApprovalResponse, Order, OwnerDocumentUploadRequest, PortfolioHistory,
+    ListOrdersQuery, ListTransfersQuery, Order, OwnerDocumentUploadRequest, PortfolioHistory,
     PortfolioHistoryQuery, Position, TradeAccount, Transfer, UpdateOrderRequest
 } from "../types";
 import type { AlpacaBrokerConfig } from "./config";
@@ -16,7 +16,6 @@ import { subscribeToStreams, type SubscriptionOptions } from "./sse";
 // - Tax IDs: an application's full SSN goes to Alpaca in the request and nowhere else (the routes don't store it, and nothing here
 //   logs a body); accounts coming back have the tax ID masked to its last 4 digits and beneficiaries' to xxx-xx-xxxx, as the
 //   simulator returns them, so no full SSN reaches the pages or the database even if Alpaca echoed one.
-// - Lists Alpaca pages (option contracts, options approvals) are followed to the end, or to the limit asked for.
 // - Trading configurations: the API has no GET of its own; they're the trading account's user_configurations (null until set).
 // - Locates: Alpaca offers them in the Trading API only (per-account keys, not partner credentials), so they're refused as 501.
 // - Documents: the download redirects to a pre-signed link, fetched without the bearer token.
@@ -135,42 +134,6 @@ export class AlpacaBroker implements Broker {
     createLocate = async (): Promise<never> => this.noLocates();
     listLocates = async (): Promise<never> => this.noLocates();
     getLocate = async (): Promise<never> => this.noLocates();
-
-    // Options
-    exerciseOption(accountId: string, symbol: string, request: { qty?: string } = {}) {
-        return this.http.json<{ qty_exercised: string; qty_remaining: string }>("POST", this.trading(accountId, `/positions/${enc(symbol)}/exercise`), { body: request });
-    }
-    async doNotExercise(accountId: string, symbol: string) {
-        await this.http.json("POST", this.trading(accountId, `/positions/${enc(symbol)}/do-not-exercise`));
-    }
-    requestOptionsApproval(accountId: string, request: OptionsApprovalRequest) {
-        return this.http.json<OptionsApprovalResponse>("POST", `/v1/accounts/${enc(accountId)}/options/approval`, { body: request });
-    }
-    async listOptionsApprovals(accountId: string) {
-        const approvals: OptionsApprovalResponse[] = [];
-        let pageToken: string | undefined;
-        do {
-            const page = await this.get<{ options_approvals?: OptionsApprovalResponse[]; next_page_token?: string | null }>("/v1/accounts/options/approvals", { account_id: accountId, page_token: pageToken });
-            approvals.push(...page.options_approvals ?? []);
-            pageToken = page.next_page_token ?? undefined;
-        } while (pageToken);
-        return approvals.sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
-    }
-    async listOptionContracts(query: Parameters<Broker["listOptionContracts"]>[0]) {
-        // Alpaca's default page is 100 and its largest 10,000
-        const limit = Math.min(10000, Number(query.limit ?? 100) || 100);
-        const contracts: OptionContract[] = [];
-        let pageToken: string | undefined;
-        do {
-            const page = await this.get<{ option_contracts?: OptionContract[]; next_page_token?: string | null }>("/v1/options/contracts", { ...query, limit: limit - contracts.length, page_token: pageToken });
-            contracts.push(...page.option_contracts ?? []);
-            pageToken = page.next_page_token ?? undefined;
-        } while (pageToken && contracts.length < limit);
-        return contracts.slice(0, limit);
-    }
-    getOptionContract(symbol: string) {
-        return this.get<OptionContract>(`/v1/options/contracts/${enc(symbol)}`);
-    }
 
     // IRAs
     async listIraExcessContributions() {

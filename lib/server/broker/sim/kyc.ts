@@ -1,9 +1,8 @@
 // How the simulator reviews accounts the way Alpaca does (its account statuses: SUBMITTED, then ACTION_REQUIRED, APPROVAL_PENDING,
-// APPROVED or REJECTED, then ACTIVE; ACCOUNT_UPDATED while edited personal details are reviewed), options approvals and trading
-// configurations. Pure, so it can be unit tested; ./accounts.ts stores the results. Outcomes are deterministic, triggered by the
-// applicant's last name for testing: "Reject", "ActionRequired" or "Review" (case-insensitive).
+// APPROVED or REJECTED, then ACTIVE; ACCOUNT_UPDATED while edited personal details are reviewed) and trading configurations. Pure,
+// so it can be unit tested; ./accounts.ts stores the results. Outcomes are deterministic, triggered by the applicant's last name for
+// testing: "Reject", "ActionRequired" or "Review" (case-insensitive).
 import type { AccountApplication, AgreementName } from "../../../kyc";
-import { IRA_MAX_OPTIONS_LEVEL } from "../../../ira";
 import type { AccountConfigurations, AccountStatus, KYCResults } from "../types";
 
 // How long each automatic step takes, in seconds (environment overrides for testing)
@@ -113,7 +112,7 @@ export const updateNeedsReview = (current: Record<keyof typeof REVIEWED_FIELDS, 
 };
 
 // The trading configurations an account starts with: margin up to 2x with the margin agreement (4x intraday is opt-in), else 1x;
-// options up to the approved level; fractional trading on; trade confirmations by email
+// options off (the app trades stocks only); fractional trading on; trade confirmations by email
 // (Alpaca dropped dtbp_check and pdt_check with the pattern day trader rule.)
 export const defaultConfigurations = (agreements: AgreementName[]): Required<AccountConfigurations> => ({
     fractional_trading: true,
@@ -127,30 +126,15 @@ export const defaultConfigurations = (agreements: AgreementName[]): Required<Acc
 });
 
 // Why a configuration change isn't allowed, or null: margin above 1x and shorting need the margin agreement (which an IRA can't have),
-// options trading can't exceed the approved level (at most 2 in an IRA), and overnight trading isn't offered
-export const configurationError = (update: AccountConfigurations, { hasMarginAgreement, approvedOptionsLevel, ira = false }: { hasMarginAgreement: boolean; approvedOptionsLevel: number; ira?: boolean }): string | null => {
+// and neither options nor overnight trading is offered
+export const configurationError = (update: AccountConfigurations, { hasMarginAgreement, ira = false }: { hasMarginAgreement: boolean; ira?: boolean }): string | null => {
     if (ira && update.max_margin_multiplier !== undefined && update.max_margin_multiplier !== "1") return "IRAs can't use margin";
     if (ira && update.no_shorting === false) return "IRAs can't sell short";
-    if (ira && update.max_options_trading_level !== undefined && update.max_options_trading_level > IRA_MAX_OPTIONS_LEVEL) return `IRAs can trade options up to level ${IRA_MAX_OPTIONS_LEVEL}`;
     if (update.max_margin_multiplier !== undefined && !["1", "2", "4"].includes(update.max_margin_multiplier)) return "max_margin_multiplier must be 1, 2 or 4";
     if (update.max_margin_multiplier !== undefined && update.max_margin_multiplier !== "1" && !hasMarginAgreement) return "Margin needs the margin agreement";
     if (update.no_shorting === false && !hasMarginAgreement) return "Short selling needs a margin account (the margin agreement)";
-    if (update.max_options_trading_level !== undefined && update.max_options_trading_level > approvedOptionsLevel) {
-        return `Options trading is approved up to level ${approvedOptionsLevel}`;
-    }
+    if (update.max_options_trading_level !== undefined && update.max_options_trading_level !== 0) return "Options trading isn't offered";
     if (update.disable_overnight_trading === false) return "Overnight trading isn't offered";
     if (update.trade_confirm_email !== undefined && !["all", "none"].includes(update.trade_confirm_email)) return "trade_confirm_email must be all or none";
     return null;
-};
-
-// The outcome of an options approval request: it needs the options agreement; spreads (level 3) need some options experience,
-// and buying options (level 2) any trading experience, otherwise a lower level is approved
-export const decideOptionsApproval = (requested: number, { agreements, stocksExperience, optionsExperience }: {
-    agreements: AgreementName[]; stocksExperience?: string; optionsExperience?: string;
-}): { status: "APPROVED" | "LOWER_LEVEL_APPROVED" | "REJECTED"; approvedLevel: number } => {
-    if (!agreements.includes("options_agreement") || requested < 1 || requested > 3) return { status: "REJECTED", approvedLevel: 0 };
-    const hasOptions = optionsExperience !== undefined && optionsExperience !== "none";
-    const hasStocks = stocksExperience !== undefined && stocksExperience !== "none";
-    const allowed = hasOptions ? 3 : hasStocks ? 2 : 1;
-    return requested <= allowed ? { status: "APPROVED", approvedLevel: requested } : { status: "LOWER_LEVEL_APPROVED", approvedLevel: allowed };
 };

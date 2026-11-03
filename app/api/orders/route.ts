@@ -6,13 +6,11 @@ import { HttpError, withUser } from "@/lib/server/errors";
 import { isForeignListing } from "@/lib/server/marketData";
 import { enforceMargin, forgetBrokerLedger, ledgerAccountId, withAccountLock, withReasons } from "@/lib/server/portfolio";
 import { isHttpError } from "@/lib/server/httpError";
-import { parseOptionSymbol } from "@/lib/options";
 import type { AppOrder, BrokerOrderRequest } from "@/lib/types";
 
-// Place an order on the active account: Alpaca's CreateOrderRequest (symbol, side, type, time_in_force, qty or notional, prices,
-// extended_hours, order_class with take_profit and stop_loss, position_intent, client_order_id), an option contract's order, or an
-// mleg order (order_class mleg, qty, type, limit_price (positive a debit, negative a credit), time_in_force and 2 to 4 legs of symbol,
-// side, ratio_qty and position_intent). The broker checks it against its
+// Place a stock order on the active account: Alpaca's CreateOrderRequest (symbol, side, type, time_in_force, qty or notional, prices,
+// extended_hours, order_class with take_profit and stop_loss, position_intent, client_order_id). The app trades stocks only, so a
+// multi-leg (options) order is refused, and an option contract's symbol isn't in the universe. The broker checks the order against its
 // rules and buying power (403 or 422 with its reason), stores it and matches it at once, so a marketable order during its session
 // comes back filled; one placed outside its session is accepted for the open. A fill runs the margin check after it.
 export const POST = withUser(async (request, context, userId) => {
@@ -20,18 +18,14 @@ export const POST = withUser(async (request, context, userId) => {
     if (!body || typeof body !== "object") throw new HttpError("An order is required", 400);
     const symbol = String(body.symbol ?? "").trim().toUpperCase();
     if (isForeignListing(symbol)) throw new HttpError("Only U.S. listings can be traded", 400);
+    if (body.order_class === "mleg") throw new HttpError("Multi-leg (options) orders aren't offered: the app trades stocks only", 422);
     const { accountId } = await requireAccount(request, userId, "trade");
-    // A position in a symbol that has left the universe (delisted, or renamed before the universe syncs) can still be closed. An option's
-    // underlying (an mleg order's legs') must be in the universe for an order that opens.
-    const legs = Array.isArray((body as { legs?: unknown }).legs) ? (body as { legs: { symbol?: string }[] }).legs : [];
-    const contracts = symbol ? [symbol] : legs.map(leg => String(leg?.symbol ?? "").trim().toUpperCase());
-    const held = async (contract: string) => Number((await getBroker().getPosition(accountId, contract).catch(error => {
+    // A position in a symbol that has left the universe (delisted, or renamed before the universe syncs) can still be closed
+    const held = Number((await getBroker().getPosition(accountId, symbol).catch(error => {
         if (isHttpError(error) && error.status === 404) return null;
         throw error;
     }))?.qty ?? 0) !== 0;
-    for (const contract of contracts) {
-        if (contract && !(await held(contract))) await requireTradableStock(parseOptionSymbol(contract)?.underlying ?? contract);
-    }
+    if (!held) await requireTradableStock(symbol);
     const label = `POST /api/orders ${symbol}`;
     const order = await withAccountLock(userId, async db => {
         const placed = await getBroker().createOrder(accountId, { ...body, symbol } as BrokerOrderRequest);

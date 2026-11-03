@@ -44,8 +44,6 @@ export interface ScenarioHarness {
     // Transfers wait for advance before each step, so one can be canceled while it's requested, and a deposit with test cents ($x.01)
     // comes back as R01 after it completes, with this return fee (the simulator's funding rules)
     transferSteps?: { returnFee: number };
-    // A listed option contract to trade (the sandbox's), with its underlying
-    optionContract?: { symbol: string; underlying: string };
     // What the app records itself once an account is opened (its W-9 certification, without which sales and dividends are subject
     // to backup withholding)
     onboarded?(account: Account): Promise<void>;
@@ -60,24 +58,18 @@ export interface ScenarioHarness {
     close?(): Promise<void>;
 }
 
-type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "basisTrueUp" | "enforceMargin" | "intradayMargin" | "transferSteps" | "optionContract";
+type Capability = "appLedger" | "thinlyTraded" | "setPrice" | "backdate" | "corporateAction" | "basisTrueUp" | "enforceMargin" | "intradayMargin" | "transferSteps";
 
 const STOCKS = 4;
 const roundCents = (value: number) => Math.round(value * 100) / 100;
-
-// Alpaca requires these suitability answers for options (in identity, though its spec marks them deprecated there); the app asks
-// them only with options, when applying or in Settings
-const SUITABILITY = {
-    liquidity_needs: "somewhat_important", risk_tolerance: "moderate", investment_objective: "growth", investment_time_horizon: "3_to_5_years", marital_status: "SINGLE", number_of_dependents: 0
-} as const;
 
 // An agreement as the app's account routes sign it
 const signedNow = (agreement: string) => ({ agreement, signed_at: new Date().toISOString(), ip_address: "127.0.0.1" }) as never;
 
 // An application as the app sends it, with fake details
-export const testApplication = (options: { margin?: boolean; options?: boolean; ira?: "traditional" | "roth" } = {}): AccountCreationRequest => {
+export const testApplication = (options: { margin?: boolean; ira?: "traditional" | "roth" } = {}): AccountCreationRequest => {
     const signed = { signed_at: new Date().toISOString(), ip_address: "127.0.0.1" };
-    const agreements = ["customer_agreement", "account_agreement", ...(options.margin ? ["margin_agreement"] : []), ...(options.options ? ["options_agreement"] : [])];
+    const agreements = ["customer_agreement", "account_agreement", ...(options.margin ? ["margin_agreement"] : [])];
     return {
         account_type: options.ira ? "ira" : "trading",
         ...(options.ira ? { account_sub_type: options.ira } : {}),
@@ -86,12 +78,12 @@ export const testApplication = (options: { margin?: boolean; options?: boolean; 
             given_name: "Scenario", family_name: "Tester", date_of_birth: "1980-01-15", tax_id: "587-42-3816", tax_id_type: "USA_SSN",
             country_of_citizenship: "USA", country_of_birth: "USA", country_of_tax_residence: "USA", funding_source: ["employment_income"],
             annual_income_min: "50000", annual_income_max: "100000", liquid_net_worth_min: "50000", liquid_net_worth_max: "100000", total_net_worth_min: "100000", total_net_worth_max: "200000",
-            investment_experience_with_stocks: "over_5_years", ...(options.options ? { ...SUITABILITY, investment_experience_with_options: "1_to_5_years" } : {})
+            investment_experience_with_stocks: "over_5_years"
         },
         disclosures: { is_control_person: false, is_affiliated_exchange_or_finra: false, is_politically_exposed: false, immediate_family_exposed: false, employment_status: "retired" },
         agreements: agreements.map(agreement => ({ agreement, ...signed })),
         ...(options.ira ? { beneficiaries: [{ given_name: "Test", family_name: "Beneficiary", date_of_birth: "2000-02-02", tax_id: "587-42-3825", tax_id_type: "USA_SSN", relationship: "other", type: "primary", share_pct: "100" }] } : {}),
-        enabled_assets: options.options ? ["us_equity", "us_option"] : ["us_equity"]
+        enabled_assets: ["us_equity"]
     } as AccountCreationRequest;
 };
 
@@ -575,44 +567,16 @@ export const SCENARIOS: Scenario[] = [
         }
     },
     {
-        name: "options: a level 2 approval is requested and granted",
-        async run(h) {
-            const account = await onboard(h, { options: true });
-            await h.broker.requestOptionsApproval(account.id, { level: 2 });
-            const approval = await waitFor(h, "the options approval", async () => (await h.broker.listOptionsApprovals(account.id)).find(({ status }) => status === "APPROVED"));
-            assert.equal(approval.approved_level, 2);
-        }
-    },
-    {
-        name: "options: a call is bought and closed",
-        needs: ["optionContract"],
-        async run(h) {
-            const accountId = await fundedAccount(h, 10000, { options: true });
-            await h.broker.requestOptionsApproval(accountId, { level: 2 });
-            await waitFor(h, "the options approval", async () => (await h.broker.listOptionsApprovals(accountId)).some(({ status }) => status === "APPROVED"));
-            const contract = await h.broker.getOptionContract(h.optionContract!.symbol);
-            assert.equal(contract.underlying_symbol, h.optionContract!.underlying);
-            await filled(h, accountId, await placed(h, accountId, { symbol: contract.symbol, side: "buy", qty: "1" }));
-            assert.equal(await positionQty(h, accountId, contract.symbol), 1);
-            await filled(h, accountId, await h.broker.closePosition(accountId, contract.symbol));
-            assert.equal(await positionQty(h, accountId, contract.symbol), 0);
-            if (h.appLedger) await sameBothWays(h, accountId);
-        }
-    },
-    {
-        name: "options later: a cash account adds the options agreement with the suitability answers, as Settings does, and is approved",
+        name: "stocks only: an option contract's order and a multi-leg order are refused",
         async run(h) {
             const account = await onboard(h);
-            const experience = { investment_experience_with_options: "1_to_5_years" };
-            // Without the answers the agreement isn't accepted (the simulator; Alpaca refuses an options application without them)
-            await assert.rejects(h.broker.updateAccount(account.id, { agreements: [signedNow("options_agreement")], identity: experience } as never),
-                (error: { status?: number }) => error.status === 422);
-            await h.broker.updateAccount(account.id, { agreements: [signedNow("options_agreement")], identity: { ...experience, ...SUITABILITY } } as never);
-            await h.broker.requestOptionsApproval(account.id, { level: 2 });
-            const approval = await waitFor(h, "the options approval", async () => (await h.broker.listOptionsApprovals(account.id)).find(({ status }) => status === "APPROVED"));
-            assert.equal(approval.approved_level, 2);
-            // Settings doesn't change enabled_assets: approval turns options on
-            assert.ok((await h.broker.getAccount(account.id)).enabled_assets?.includes("us_option"));
+            const refused = (error: { status?: number }) => error.status !== undefined && error.status >= 400 && error.status < 500;
+            await assert.rejects(h.broker.createOrder(account.id, { symbol: "F261120C00012000", side: "buy", type: "market", time_in_force: "day", qty: "1", client_order_id: randomUUID() }), refused);
+            await assert.rejects(h.broker.createOrder(account.id, {
+                order_class: "mleg", type: "limit", limit_price: "0.5", time_in_force: "day", qty: "1", client_order_id: randomUUID(),
+                legs: [{ symbol: "F261120C00012000", side: "buy", ratio_qty: "1" }, { symbol: "F261120C00013000", side: "sell", ratio_qty: "1" }]
+            } as never), refused);
+            assert.equal((await h.broker.getAccount(account.id)).enabled_assets?.includes("us_option") ?? false, false);
         }
     },
     {

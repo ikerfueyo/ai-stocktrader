@@ -5,18 +5,17 @@ import pool from "../../db";
 import { BrokerError } from "../errors";
 import { maskTaxId, validateApplication, type AccountApplication, type AgreementName } from "../../../kyc";
 import { easternParts } from "../../../marketHours";
-import { beneficiaryErrors, IRA_MAX_OPTIONS_LEVEL, maskBeneficiaries, type BeneficiaryInput } from "../../../ira";
-import { configurationError, decideOptionsApproval, defaultConfigurations, nextReviewStep, submittedDueAt, updateNeedsReview } from "./kyc";
-import { toAccount, toOptionsApproval, type SimAccountRow } from "./shapes";
+import { beneficiaryErrors, maskBeneficiaries, type BeneficiaryInput } from "../../../ira";
+import { configurationError, defaultConfigurations, nextReviewStep, submittedDueAt, updateNeedsReview } from "./kyc";
+import { toAccount, type SimAccountRow } from "./shapes";
 import type { BrokerEventStream } from "../broker";
-import type { Account, AccountConfigurations, AccountCreationRequest, AccountStatus, AccountUpdateRequest, OptionsApprovalResponse, OwnerDocumentUploadRequest } from "../types";
+import type { Account, AccountConfigurations, AccountCreationRequest, AccountStatus, AccountUpdateRequest, OwnerDocumentUploadRequest } from "../types";
 
 // The simulator's accounts: Alpaca's account endpoints on the sim_accounts table, with the review steps of ./kyc.ts. Reviews advance
 // when they're due, both from the background job (advanceAccounts) and whenever an account is read, so a polling client sees them
 // promptly.
 
 const nextUlid = monotonicFactory();
-const OPTIONS_REVIEW_SECONDS = Number(process.env.SIM_KYC_SECONDS ?? 5);
 
 // Appends an event to one of the simulator's streams (sim_events), like Alpaca's SSE streams
 export const emitEvent = async (accountId: string, stream: BrokerEventStream, payload: Record<string, unknown>, at = new Date(), db: Pick<typeof pool, "query"> = pool) => {
@@ -34,7 +33,7 @@ const statusEvent = (row: Pick<SimAccountRow, "id" | "account_number">, from: st
 const agreementNames = (agreements: { agreement?: string }[] | undefined) => (agreements ?? []).map(({ agreement }) => agreement as AgreementName);
 
 // Checks a request with the same rules as the onboarding form (lib/kyc.ts), less the parts the app keeps itself (the W-9 and the
-// delivered disclosures) and the options level, which is asked for separately. An update is checked against the stored details,
+// delivered disclosures). An update is checked against the stored details,
 // whose tax ID is masked (and can't change), so its tax ID isn't checked.
 const requestErrors = (request: AccountCreationRequest | (Account & { identity: NonNullable<Account["identity"]> }), { storedTaxId = false } = {}): string[] => {
     const application = {
@@ -43,7 +42,6 @@ const requestErrors = (request: AccountCreationRequest | (Account & { identity: 
         disclosures: { ...request.disclosures },
         trusted_contact: request.trusted_contact,
         agreements: agreementNames(request.agreements),
-        options_level: 1,
         w9: { certified: true, backup_withholding: false },
         disclosures_delivered: { form_crs: true, privacy_notice: true }
     } as unknown as AccountApplication;
@@ -83,49 +81,20 @@ const advance = async (row: SimAccountRow, now = new Date()): Promise<SimAccount
     return current;
 };
 
-// Decides the account's options approval requests that are due, raising its approved level (and enabling options). Requests made
-// with the application wait until the account is active.
-const advanceOptionsApprovals = async (row: SimAccountRow, now = new Date()) => {
-    if (row.status !== "ACTIVE" && row.status !== "ACCOUNT_UPDATED") return;
-    const { rows } = await pool.query<{ id: string; requested_level: number }>(
-        "SELECT id, requested_level FROM sim_options_approvals WHERE account_id = $1 AND status = 'PENDING' AND due_at <= $2", [row.id, now]
-    );
-    for (const request of rows) {
-        const { status, approvedLevel } = decideOptionsApproval(request.requested_level, {
-            agreements: agreementNames(row.agreements),
-            stocksExperience: row.identity?.investment_experience_with_stocks,
-            optionsExperience: row.identity?.investment_experience_with_options
-        });
-        await pool.query("UPDATE sim_options_approvals SET status = $2, approved_level = $3, updated_at = now() WHERE id = $1", [request.id, status, approvedLevel]);
-        if (approvedLevel > row.options_approved_level) {
-            await pool.query(
-                `UPDATE sim_accounts SET options_approved_level = $2, enabled_assets = (SELECT ARRAY(SELECT DISTINCT unnest(enabled_assets || '{us_option}'))),
-                     configurations = jsonb_set(configurations, '{max_options_trading_level}', to_jsonb($2::int)), updated_at = now() WHERE id = $1`,
-                [row.id, approvedLevel]
-            );
-        }
-        await statusEvent(row, row.status, row.status, { options: { status, approved_level: approvedLevel, requested_level: request.requested_level } });
-    }
-};
-
-// Advances every account with a review step or options decision due (the background job's sim-accounts job)
+// Advances every account with a review step due (the background job's sim-accounts job)
 export const advanceAccounts = async (now = new Date()): Promise<number> => {
     const { rows } = await pool.query<SimAccountRow>(
         `SELECT * FROM sim_accounts
          WHERE (status IN ('SUBMITTED', 'APPROVAL_PENDING', 'ACCOUNT_UPDATED') AND status_due_at <= $1) OR status = 'APPROVED'
-            OR (status = 'ACTION_REQUIRED' AND jsonb_array_length(documents) > 0)
-            OR id IN (SELECT account_id FROM sim_options_approvals WHERE status = 'PENDING' AND due_at <= $1)`,
+            OR (status = 'ACTION_REQUIRED' AND jsonb_array_length(documents) > 0)`,
         [now]
     );
-    for (const row of rows) {
-        await advanceOptionsApprovals(await advance(row, now), now);
-    }
+    for (const row of rows) await advance(row, now);
     return rows.length;
 };
 
 const readRow = async (accountId: string) => {
-    const row = await advance(await loadRow(accountId));
-    await advanceOptionsApprovals(row);
+    await advance(await loadRow(accountId));
     return loadRow(accountId);
 };
 
@@ -247,29 +216,9 @@ export const getConfigurations = async (accountId: string): Promise<AccountConfi
 // PATCH /v1/trading/accounts/{id}/account/configurations (configurationError's rules)
 export const updateConfigurations = async (accountId: string, update: AccountConfigurations): Promise<AccountConfigurations> => {
     const row = await readRow(accountId);
-    const error = configurationError(update, { hasMarginAgreement: agreementNames(row.agreements).includes("margin_agreement"), approvedOptionsLevel: row.options_approved_level, ira: row.account_type === "ira" });
+    const error = configurationError(update, { hasMarginAgreement: agreementNames(row.agreements).includes("margin_agreement"), ira: row.account_type === "ira" });
     if (error) throw invalid([error]);
     const configurations = { ...row.configurations, ...update };
     await pool.query("UPDATE sim_accounts SET configurations = $2, updated_at = now() WHERE id = $1", [accountId, JSON.stringify(configurations)]);
     return configurations;
-};
-
-// POST /v1/accounts/{id}/options/approval: PENDING, decided a few seconds later (decideOptionsApproval), once the account is active
-export const requestOptionsApproval = async (accountId: string, level: number): Promise<OptionsApprovalResponse> => {
-    const row = await readRow(accountId);
-    if (row.status === "REJECTED" || row.status === "ACCOUNT_CLOSED") throw new BrokerError(422, 42210000, `options can't be requested for an account in status ${row.status}`);
-    if (![1, 2, 3].includes(level)) throw invalid(["level must be 1, 2 or 3"]);
-    if (row.account_type === "ira" && level > IRA_MAX_OPTIONS_LEVEL) throw invalid([`IRAs can trade options up to level ${IRA_MAX_OPTIONS_LEVEL}`]);
-    const { rows: [approval] } = await pool.query(
-        `INSERT INTO sim_options_approvals (id, account_id, requested_level, due_at) VALUES ($1, $2, $3, now() + make_interval(secs => $4)) RETURNING *`,
-        [randomUUID(), accountId, level, OPTIONS_REVIEW_SECONDS]
-    );
-    return toOptionsApproval(approval);
-};
-
-// The account's options approval requests, newest first (the app shows the latest)
-export const listOptionsApprovals = async (accountId: string): Promise<OptionsApprovalResponse[]> => {
-    await readRow(accountId);
-    const { rows } = await pool.query("SELECT * FROM sim_options_approvals WHERE account_id = $1 ORDER BY created_at DESC", [accountId]);
-    return rows.map(toOptionsApproval);
 };

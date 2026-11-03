@@ -203,7 +203,6 @@ export interface UnrealizedLot {
     id: string;
     symbol: string;
     side: "long" | "short";
-    // In the lot's units (contracts for an option)
     qty: number;
     acquiredAt: string;
     // The acquisition date the holding period runs from
@@ -218,13 +217,13 @@ export interface UnrealizedLot {
 }
 
 // An open lot's unrealized gain as the tax report shows it: a row for each group of its shares wash sales adjusted (ids after the
-// first suffixed #2, #3...), then one for the rest. washed comes from reportSales' adjustments, in shares; multiplier is the contract's.
+// first suffixed #2, #3...), then one for the rest. washed comes from reportSales' adjustments.
 export const unrealizedRows = (
-    lot: { id: string; symbol: string; side: "long" | "short"; qty: number; price: number; acquiredAt: string; multiplier: number },
+    lot: { id: string; symbol: string; side: "long" | "short"; qty: number; price: number; acquiredAt: string },
     washed: WashedShares[] = [], marketPrice: number | null, now: string
 ): UnrealizedLot[] => {
     const groups: WashedShares[] = [];
-    let left = lot.qty * lot.multiplier;
+    let left = lot.qty;
     for (const group of washed) {
         if (left <= EPSILON) break;
         const qty = Math.min(left, group.qty);
@@ -239,7 +238,7 @@ export const unrealizedRows = (
         const marketValue = marketPrice === null ? null : cents(group.qty * marketPrice);
         const dateAcquired = group.carriedDays > 0 ? shiftDays(lot.acquiredAt, group.carriedDays) : lot.acquiredAt;
         return {
-            id: i === 0 ? lot.id : `${lot.id}#${i + 1}`, symbol: lot.symbol, side: lot.side, qty: groups.length === 1 ? lot.qty : group.qty / lot.multiplier,
+            id: i === 0 ? lot.id : `${lot.id}#${i + 1}`, symbol: lot.symbol, side: lot.side, qty: groups.length === 1 ? lot.qty : group.qty,
             acquiredAt: lot.acquiredAt, dateAcquired, price: lot.price, costBasis, washAdjustment: wash, marketValue,
             unrealized: marketValue === null ? null : cents(lot.side === "long" ? marketValue - costBasis : costBasis - marketValue),
             term: lot.side === "long" ? termOf(dateAcquired, now) : "short"

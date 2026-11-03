@@ -1,9 +1,8 @@
 // The simulator's stored rows as Alpaca's reply objects. Pure, so the tests can check them against the OpenAPI spec.
 import { createHash } from "node:crypto";
 import { addDays, easternParts, marketStatus, sessionOn, settlementDate } from "../../../marketHours";
-import { contractName, isOptionSymbol } from "../../../options";
 import type { AssetRow } from "../../universe";
-import type { ACHRelationship, Account, AccountConfigurations, Asset, Bank, CalendarDay, Clock, KYCResults, NonTradeActivity, OptionContract, OptionsApprovalResponse, Order, TradeActivity, Transfer } from "../types";
+import type { ACHRelationship, Account, AccountConfigurations, Asset, Bank, CalendarDay, Clock, KYCResults, NonTradeActivity, Order, TradeActivity, Transfer } from "../types";
 
 // A sim_accounts row as pg returns it (JSONB columns parsed)
 export interface SimAccountRow {
@@ -23,7 +22,6 @@ export interface SimAccountRow {
     enabled_assets: string[];
     kyc_results: KYCResults | null;
     configurations: AccountConfigurations;
-    options_approved_level: number;
     documents: { id: string; document_type: string; document_sub_type?: string; mime_type: string; created_at: string; size: number; sha256: string }[];
     trading_blocked: boolean;
     transfers_blocked: boolean;
@@ -112,18 +110,6 @@ export const toClock = (now: Date): Clock => {
     return { timestamp: now.toISOString(), is_open: status.open, next_open: status.nextOpen, next_close: nextClose };
 };
 
-// A sim_options_approvals row as Alpaca's reply
-export const toOptionsApproval = (row: { id: string; account_id: string; requested_level: number; approved_level: number; status: string; created_at: Date; updated_at: Date }): OptionsApprovalResponse => ({
-    id: row.id,
-    account_id: row.account_id,
-    requested_level: row.requested_level as OptionsApprovalResponse["requested_level"],
-    approved_level: row.approved_level as OptionsApprovalResponse["approved_level"],
-    status: row.status as OptionsApprovalResponse["status"],
-    requester: "CORRESPONDENT",
-    created_at: row.created_at.toISOString(),
-    updated_at: row.updated_at.toISOString()
-});
-
 const decimal = (value: string | number | null) => value === null ? null : String(Number(value));
 
 // sim_ach_relationships, sim_recipient_banks, sim_transfers and sim_activities rows as pg returns them (NUMERIC as strings)
@@ -153,11 +139,10 @@ export interface SimActivityRow {
 // A sim_orders row as pg returns it (NUMERIC as strings)
 export interface SimOrderRow {
     id: string; account_id: string; client_order_id: string; symbol: string; side: "buy" | "sell"; type: Order["type"] & string;
-    time_in_force: Order["time_in_force"] & string; order_class: "simple" | "bracket" | "oco" | "oto" | "mleg"; position_intent: Order["position_intent"] | null;
+    time_in_force: Order["time_in_force"] & string; order_class: "simple" | "bracket" | "oco" | "oto"; position_intent: Order["position_intent"] | null;
     qty: string | null; notional: string | null; limit_price: string | null; stop_price: string | null; trail_price: string | null;
     trail_percent: string | null; hwm: string | null; extended_hours: boolean; status: string; filled_qty: string; filled_notional: string;
-    filled_avg_price: string | null; parent_id: string | null; group_id: string | null; group_role: "entry" | "take_profit" | "stop_loss" | "leg" | null;
-    ratio_qty?: number | null; buying_power_held?: string | null;
+    filled_avg_price: string | null; parent_id: string | null; group_id: string | null; group_role: "entry" | "take_profit" | "stop_loss" | null;
     replaces: string | null; replaced_by: string | null; stop_triggered_at: Date | null; expires_at: Date; reason: string | null;
     created_at: Date; updated_at: Date; submitted_at: Date; filled_at: Date | null; expired_at: Date | null; canceled_at: Date | null;
     failed_at: Date | null; replaced_at: Date | null; cancel_requested_at: Date | null; liquidation?: boolean;
@@ -173,17 +158,15 @@ export const toOrder = (row: SimOrderRow, { legs, assetId: id }: { legs?: SimOrd
     submitted_at: row.submitted_at.toISOString(), filled_at: iso(row.filled_at), expired_at: iso(row.expired_at), canceled_at: iso(row.canceled_at),
     failed_at: iso(row.failed_at), replaced_at: iso(row.replaced_at), replaced_by: row.replaced_by, replaces: row.replaces,
     cancel_requested_at: iso(row.cancel_requested_at),
-    asset_id: row.order_class === "mleg" ? "" : id ?? assetId(row.symbol), symbol: row.symbol,
-    asset_class: row.order_class === "mleg" || isOptionSymbol(row.symbol) ? "us_option" : "us_equity",
+    asset_id: id ?? assetId(row.symbol), symbol: row.symbol, asset_class: "us_equity",
     notional: decimal(row.notional), qty: decimal(row.qty), filled_qty: decimal(row.filled_qty)!, filled_avg_price: decimal(row.filled_avg_price),
     order_class: row.order_class, order_type: row.type, type: row.type, side: row.side, time_in_force: row.time_in_force,
     limit_price: decimal(row.limit_price), stop_price: decimal(row.stop_price), status: row.status as Order["status"], extended_hours: row.extended_hours,
     ...(row.position_intent ? { position_intent: row.position_intent } : {}),
     ...(row.trail_price !== null ? { trail_price: decimal(row.trail_price) } : {}), ...(row.trail_percent !== null ? { trail_percent: decimal(row.trail_percent) } : {}),
     hwm: decimal(row.hwm),
-    ...(row.group_id ? { group_id: row.group_id } : {}), ...(row.group_role && row.group_role !== "leg" ? { group_role: row.group_role } : {}),
-    ...(row.ratio_qty ? { ratio_qty: String(row.ratio_qty) } : {}),
-    legs: legs && legs.length > 0 ? legs.map(leg => toLeg(leg, row.order_class === "mleg" ? assetId(leg.symbol) : id)) : null,
+    ...(row.group_id ? { group_id: row.group_id } : {}), ...(row.group_role ? { group_role: row.group_role } : {}),
+    legs: legs && legs.length > 0 ? legs.map(leg => toLeg(leg, id)) : null,
     commission: "0"
 });
 
@@ -233,14 +216,4 @@ export const toActivity = (row: SimActivityRow): NonTradeActivity & { id: string
     status: row.status as NonTradeActivity["status"], currency: "USD",
     ...(row.transfer_id ? { transfer_id: row.transfer_id } : {}), ...(row.symbol ? { symbol: row.symbol } : {}),
     ...(row.qty ? { qty: decimal(row.qty)! } : {}), ...(row.per_share_amount ? { per_share_amount: decimal(row.per_share_amount)! } : {})
-});
-
-// A listed option contract as Alpaca's /v1/options/contracts returns it, from the chain (its id a name-based UUID, as assets without
-// Alpaca's get; standard contracts only, 100 shares of the underlying)
-export const toOptionContract = (contract: { symbol: string; underlying: string; expiration: string; type: "call" | "put"; strike: number; date: string; openInterest: number | null; mark: number | null; last: number | null }): OptionContract => ({
-    id: assetId(contract.symbol), symbol: contract.symbol, name: contractName(contract.symbol), status: "active", tradable: true,
-    expiration_date: contract.expiration, root_symbol: contract.underlying, underlying_symbol: contract.underlying, underlying_asset_id: assetId(contract.underlying),
-    type: contract.type, style: "american", strike_price: String(contract.strike), multiplier: "100", size: "100", ppind: true,
-    ...(contract.openInterest !== null ? { open_interest: String(contract.openInterest), open_interest_date: contract.date } : {}),
-    ...(contract.last !== null || contract.mark !== null ? { close_price: String(contract.last ?? contract.mark), close_price_date: contract.date } : {})
 });

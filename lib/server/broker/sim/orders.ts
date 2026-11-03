@@ -20,8 +20,6 @@ import { locatedShares, consumeLocates } from "./locates";
 import { applyReplace, orderExpiry, parseOrderRequest, validateOrder, type OpenOrderSummary, type OrderSpec } from "./orderRules";
 import { evaluateOrder, reservationPrice, trailingStop, tradesIn, type LiveOrder, type MatchContext, type MatchFill, type Session } from "./matching";
 import { toOrder, type SimOrderRow } from "./shapes";
-import { checkOptionFill, createOptionOrder, matchMlegOrder, replaceOptionOrder, sharesCoveringCallsIn } from "./optionOrders";
-import { contractMultiplier, isOptionSymbol } from "../../../options";
 import type { CreateOrderRequest, ListOrdersQuery, Order, UpdateOrderRequest } from "../types";
 import type { Quote } from "../../../types";
 
@@ -81,13 +79,10 @@ const summarize = (row: SimOrderRow): OpenOrderSummary => ({
 
 const assetIdFor = async (symbol: string) => (await findAsset(symbol))?.alpacaId ?? undefined;
 
-// A trade_updates event for the order (Alpaca's TradeUpdateEventV2), on the trades stream; an mleg order's carries its legs
+// A trade_updates event for the order (Alpaca's TradeUpdateEventV2), on the trades stream
 export const orderEvent = async (db: PoolClient, row: SimOrderRow, event: string, extra: Record<string, unknown> = {}) => {
     const at = new Date();
-    const legs = row.order_class === "mleg" && row.group_role !== "leg"
-        ? (await db.query<SimOrderRow>("SELECT * FROM sim_orders WHERE parent_id = $1 ORDER BY created_at, id", [row.id])).rows
-        : undefined;
-    await emitEvent(row.account_id, "trades", { account_id: row.account_id, event, order: toOrder(row, { legs }), timestamp: at.toISOString(), ...extra }, at, db);
+    await emitEvent(row.account_id, "trades", { account_id: row.account_id, event, order: toOrder(row), timestamp: at.toISOString(), ...extra }, at, db);
 };
 
 export const updateOrder = async (db: PoolClient, id: string, fields: Record<string, unknown>): Promise<SimOrderRow> => {
@@ -107,8 +102,8 @@ export const marketContext = async (): Promise<Omit<MatchContext, "now">> => {
 
 // The trading account's state, or the BrokerError Alpaca answers an account that can't trade with
 export const tradingAccount = async (db: PoolClient, accountId: string) => {
-    const { rows: [row] } = await db.query<{ status: string; configurations: { fractional_trading?: boolean; no_shorting?: boolean; suspend_trade?: boolean; max_options_trading_level?: number }; trading_blocked: boolean; account_blocked: boolean; options_approved_level: number }>(
-        "SELECT status, configurations, trading_blocked, account_blocked, options_approved_level FROM sim_accounts WHERE id = $1", [accountId]
+    const { rows: [row] } = await db.query<{ status: string; configurations: { fractional_trading?: boolean; no_shorting?: boolean; suspend_trade?: boolean }; trading_blocked: boolean; account_blocked: boolean }>(
+        "SELECT status, configurations, trading_blocked, account_blocked FROM sim_accounts WHERE id = $1", [accountId]
     );
     if (!row) throw new BrokerError(404, 40410000, "account not found");
     if (!["ACTIVE", "ACCOUNT_UPDATED"].includes(row.status) || row.trading_blocked || row.account_blocked || row.configurations?.suspend_trade) {
@@ -168,20 +163,16 @@ export interface NewOrder {
     hwm?: number | null;
     expiresAt: Date;
     liquidation?: boolean;
-    // Option orders: an mleg leg's contracts per unit, and the buying power the order holds back while open
-    ratioQty?: number | null;
-    buyingPowerHeld?: number | null;
 }
 
-export const insertOrder = async (db: PoolClient, accountId: string, { spec, status, parentId = null, groupId = null, groupRole = null, replaces = null, hwm = null, expiresAt, liquidation = false, ratioQty = null, buyingPowerHeld = null }: NewOrder) => {
+export const insertOrder = async (db: PoolClient, accountId: string, { spec, status, parentId = null, groupId = null, groupRole = null, replaces = null, hwm = null, expiresAt, liquidation = false }: NewOrder) => {
     const { rows: [row] } = await db.query<SimOrderRow>(
         `INSERT INTO sim_orders (id, account_id, client_order_id, symbol, side, "type", time_in_force, order_class, position_intent, qty, notional, limit_price,
-                                 stop_price, trail_price, trail_percent, hwm, extended_hours, status, parent_id, group_id, group_role, replaces, expires_at, liquidation,
-                                 ratio_qty, buying_power_held)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) RETURNING *`,
+                                 stop_price, trail_price, trail_percent, hwm, extended_hours, status, parent_id, group_id, group_role, replaces, expires_at, liquidation)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) RETURNING *`,
         [randomUUID(), accountId, spec.clientOrderId ?? randomUUID(), spec.symbol, spec.side, spec.type, spec.timeInForce, spec.orderClass, spec.positionIntent,
             spec.qty, spec.notional, spec.limitPrice, spec.stopPrice, spec.trailPrice, spec.trailPercent, hwm, spec.extendedHours, status, parentId, groupId, groupRole,
-            replaces, expiresAt, liquidation, ratioQty, buyingPowerHeld]
+            replaces, expiresAt, liquidation]
     );
     return row;
 };
@@ -196,8 +187,6 @@ export const requireUniqueClientId = async (db: PoolClient, accountId: string, c
 // OCO legs, then matched at once, so a marketable order comes back filled. liquidation marks the simulator's own orders that meet a
 // margin call (their fills are LIQUIDATION).
 export const createOrder = async (accountId: string, request: CreateOrderRequest, { liquidation = false }: { liquidation?: boolean } = {}): Promise<Order> => {
-    // Options and multi-leg orders have their own rules (./optionOrders.ts)
-    if (request?.order_class === "mleg" || isOptionSymbol(String(request?.symbol ?? ""))) return createOptionOrder(accountId, request, { liquidation });
     const spec = parseOrderRequest(request);
     // An OCO order's own limit is its take profit
     if (spec.orderClass === "oco" && spec.takeProfit) spec.limitPrice = spec.takeProfit.limitPrice;
@@ -222,7 +211,6 @@ export const createOrder = async (accountId: string, request: CreateOrderRequest
         }
         validateOrder(spec, {
             now, price: quote.price, position, openOrders: (await openOrdersIn(db, accountId, spec.symbol)).map(summarize), configurations: account.configurations ?? {},
-            lockedShares: await sharesCoveringCallsIn(db, accountId, spec.symbol),
             asset: asset ? { tradable: asset.tradable, fractionable: asset.fractionable, shortable: asset.shortable, attributes: asset.attributes } : null
         });
         if (spec.side === "sell" && position <= 0 && hardToBorrow(spec.symbol, asset)) await requireLocate(db, accountId, spec.symbol, spec.qty ?? 0);
@@ -378,7 +366,7 @@ const fillOrder = async (db: PoolClient, row: SimOrderRow, fill: MatchFill, quot
         qty = closable;
         capped = true;
     }
-    const total = roundCents(qty * fill.price * contractMultiplier(row.symbol));
+    const total = roundCents(qty * fill.price);
     if (!(qty > 0) || total < 0.01) {
         await endOrder(db, row, "canceled", "The order is too small to fill");
         return null;
@@ -387,8 +375,7 @@ const fillOrder = async (db: PoolClient, row: SimOrderRow, fill: MatchFill, quot
     const ledger = await ledgerState(db, row.account_id);
     if (!reducesPosition({ positions: ledger.positions, trade })) {
         try {
-            if (isOptionSymbol(row.symbol)) await checkOptionFill(db, row, qty, fill.price);
-            else await checkBuyingPower(db, row.account_id, { symbol: row.symbol, side: row.side, qty, notional: null }, fill.price, [row.id]);
+            await checkBuyingPower(db, row.account_id, { symbol: row.symbol, side: row.side, qty, notional: null }, fill.price, [row.id]);
         } catch (error) {
             if (!(error instanceof BrokerError)) return null;
             await endOrder(db, row, "canceled", error.message);
@@ -414,8 +401,7 @@ const fillOrder = async (db: PoolClient, row: SimOrderRow, fill: MatchFill, quot
     const now = new Date();
     const updated = await updateOrder(db, row.id, {
         status: complete ? "filled" : "partially_filled", filled_qty: cumQty, filled_notional: filledNotional,
-        // Per share (an option's notional is × 100 per contract)
-        filled_avg_price: (filledNotional / cumQty / contractMultiplier(row.symbol)).toFixed(6), ...(complete ? { filled_at: now } : {}),
+        filled_avg_price: (filledNotional / cumQty).toFixed(6), ...(complete ? { filled_at: now } : {}),
         // A notional order's shares are known once it fills; a capped close fills what was left of the position
         ...(row.notional === null && capped ? { qty: cumQty } : {})
     });
@@ -525,16 +511,6 @@ export const matchOrders = async ({ accountId, orderIds }: { accountId?: string;
     if (rows.length === 0) return 0;
     const context = await marketContext();
     let changed = 0;
-    // An mleg order fills all its legs together (./optionOrders.ts); its legs aren't matched on their own
-    for (const row of rows.filter(({ order_class, group_role }) => order_class === "mleg" && group_role !== "leg")) {
-        try {
-            if (await matchMlegOrder(row.id, row.account_id, context)) changed++;
-        } catch (error) {
-            console.error(`${LABEL}: ${row.id} (mleg): ${error instanceof Error ? error.message : error}`);
-        }
-    }
-    rows.splice(0, rows.length, ...rows.filter(({ order_class }) => order_class !== "mleg"));
-    if (rows.length === 0) return changed;
     const symbols = [...new Set(rows.map(({ symbol }) => symbol))];
     const needsQuotes = context.session !== "closed" || rows.some(({ time_in_force }) => time_in_force === "cls");
     const { quotes, staleTickers } = needsQuotes ? await fetchPrices(symbols, LABEL) : { quotes: {} as Record<string, Quote>, staleTickers: [] as string[] };
@@ -591,8 +567,6 @@ export const cancelAllOrders = async (accountId: string): Promise<{ id: string; 
 // ways); checked like a new order, with the old one's reservation released. Legs follow a replaced entry.
 export const replaceOrder = async (accountId: string, orderId: string, update: UpdateOrderRequest): Promise<Order> => {
     const original = await orderRow(pool, accountId, orderId);
-    if (original.order_class === "mleg") throw new BrokerError(422, 40010001, "mleg orders can't be replaced; cancel and resubmit");
-    if (isOptionSymbol(original.symbol)) return replaceOptionOrder(accountId, orderId, update);
     const asset = await findAsset(original.symbol);
     const quote = await fetchQuote(original.symbol);
     const id = await withAccountTx(accountId, async db => {

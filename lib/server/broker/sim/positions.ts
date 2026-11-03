@@ -14,7 +14,6 @@ import { applyFill, isLongTerm, positionsFromLots, type Lot } from "./ledger";
 import { applyActionToLots, spinoffDescription, trueUpBasis, type ActionPrices, type CorporateAction, type CorporateActionType, type LotEffect, type StoredAllocation } from "./corporateActions";
 import { FEE_DESCRIPTIONS, feesFor, roundFeeUp, type FeeAccrual } from "./feeSchedule";
 import { assetId, type SimAccountRow, type SimActivityRow } from "./shapes";
-import { contractMultiplier, contractName } from "../../../options";
 import { toAlpacaPosition } from "./tradeAccount";
 import type { Position as AlpacaPosition } from "../types";
 import type { Position, Quote } from "../../../types";
@@ -288,9 +287,10 @@ export const positionQty = async (db: Db, accountId: string, symbol: string): Pr
     positionsFromLots(await openLots(db, accountId, symbol)).find(({ ticker }) => ticker === symbol)?.quantity ?? 0;
 
 // The account's fills as trades to replay (oldest first, quantities as filled), for dividends and the equity history, with the shares
-// corporate actions moved as trades at no cost (shares received as buys, removed as sells; their cash is in the cash ledger), option
-// contracts an exercise, assignment or expiry closed (likewise), and the trades before a symbol change under the new symbol. Splits are
-// replayed from the stored splits.
+// corporate actions moved as trades at no cost (shares received as buys, removed as sells; their cash is in the cash ledger), and the
+// trades before a symbol change under the new symbol. Splits are replayed from the stored splits. OPEXP, OPEXC and OPASN are option
+// contracts closed by an expiry, exercise or assignment, from before the simulator stopped offering options: replayed likewise, so an
+// account traded then still closes them.
 export const fillsAsTrades = async (db: Db, accountId: string): Promise<Trade[]> => {
     // One after the other: db may be a pool client, which runs one query at a time (pg@9 rejects overlapping ones)
     const { rows } = await db.query<{ activity_type: string; activity_sub_type: string | null; symbol: string; side: string | null; price: string | null; qty: string; net_amount: string; created_at: Date }>(
@@ -340,12 +340,10 @@ export interface FillRequest {
     side: "buy" | "sell";
     qty: number;
     price: number;
-    // What the fill pays or receives, rounded to the cent (qty × price × the contract multiplier for an option)
+    // What the fill pays or receives, rounded to the cent
     total: number;
-    // LIQUIDATION for orders meeting a margin call; EXERCISE and ASSIGNMENT for the shares an option delivers
-    reason?: "LIQUIDATION" | "EXERCISE" | "ASSIGNMENT";
-    // The price the lots use when it differs from the cash price: the strike with an exercised or assigned option's premium rolled in
-    lotPrice?: number;
+    // LIQUIDATION for orders meeting a margin call
+    reason?: "LIQUIDATION";
     quoteTime?: string | null;
     fillPolicy?: string;
     // The order it fills, with its shares filled so far and still to fill after this fill (the order engine emits its trade event)
@@ -372,14 +370,11 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     await applyCorporateActions(db, accountId, [symbol], at);
     const lots = await openLots(db, accountId, symbol);
     const newLotId = randomUUID();
-    const multiplier = contractMultiplier(symbol);
-    const lotPrice = fill.lotPrice ?? fill.price;
-    const { closings, opened, realized } = applyFill(lots, { side: fill.side, qty: fill.qty, price: lotPrice, at: at.toISOString() }, newLotId, symbol, multiplier);
+    const { closings, opened, realized } = applyFill(lots, { side: fill.side, qty: fill.qty, price: fill.price, at: at.toISOString() }, newLotId, symbol);
     const day = dayOf(at);
     const verb = fill.side === "buy" ? "Bought" : "Sold";
-    const what = multiplier > 1 ? `${parseFloat(fill.qty.toFixed(9))} ${contractName(symbol)}` : `${parseFloat(fill.qty.toFixed(9))} ${symbol}`;
-    const why = fill.reason === "LIQUIDATION" ? " (margin call liquidation)" : fill.reason === "EXERCISE" ? " (option exercise)" : fill.reason === "ASSIGNMENT" ? " (option assignment)" : "";
-    const description = `${verb} ${what} at $${fill.price}${why}`;
+    const why = fill.reason === "LIQUIDATION" ? " (margin call liquidation)" : "";
+    const description = `${verb} ${parseFloat(fill.qty.toFixed(9))} ${symbol} at $${fill.price}${why}`;
     const { rows: [row] } = await db.query<SimActivityRow>(
         `INSERT INTO sim_activities (id, account_id, activity_type, "date", created_at, net_amount, description, symbol, qty, side, price, leaves_qty, cum_qty,
                                      realized_pl, settle_date, reason, quote_time, fill_policy, order_id)
@@ -394,7 +389,7 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
         await db.query("UPDATE sim_lots SET qty = qty - $2 WHERE id = $1", [closing.lotId, closing.qty]);
         await db.query(
             `INSERT INTO sim_lot_closings (account_id, lot_id, fill_id, qty, lot_price, close_price, realized, closed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [accountId, closing.lotId, row.id, closing.qty, lot.price, lotPrice, roundCents(closing.realized).toFixed(2), at]
+            [accountId, closing.lotId, row.id, closing.qty, lot.price, fill.price, roundCents(closing.realized).toFixed(2), at]
         );
     }
     if (opened) {
@@ -405,12 +400,10 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
     }
     // Backup withholding on the gross proceeds of the shares it closed (a long's sale price, a short's original sale price)
     if (closings.length > 0) {
-        const proceeds = closings.reduce((sum, closing) => sum + closing.qty * multiplier * (fill.side === "sell" ? lotPrice : lots.find(({ id }) => id === closing.lotId)!.price), 0);
+        const proceeds = closings.reduce((sum, closing) => sum + closing.qty * (fill.side === "sell" ? fill.price : lots.find(({ id }) => id === closing.lotId)!.price), 0);
         await withhold(db, accountId, { amount: roundCents(proceeds), on: "proceeds", symbol, at });
     }
-    // Shares an exercise or assignment delivers aren't an exchange trade, so they pay no transaction fees
-    const fees = fill.reason === "EXERCISE" || fill.reason === "ASSIGNMENT" ? [] : feesFor({ side: fill.side, qty: fill.qty, price: fill.price, date: day, multiplier });
-    for (const { type, amount } of fees) {
+    for (const { type, amount } of feesFor({ side: fill.side, qty: fill.qty, price: fill.price, date: day })) {
         await db.query(`INSERT INTO sim_fee_accruals (account_id, "date", fee_type, amount, fill_id) VALUES ($1, $2, $3, $4, $5)`, [accountId, day, type, amount, row.id]);
     }
     if (!fill.orderId) {
@@ -500,7 +493,7 @@ export const listLots = async (accountId: string, symbol?: string) => {
     );
     return rows.map(row => ({
         id: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty), originalQty: Number(row.original_qty), price: Number(row.price),
-        costBasis: roundCents(Number(row.qty) * Number(row.price) * contractMultiplier(row.symbol)), acquiredAt: row.acquired_at.toISOString(), longTerm: isLongTerm(row.acquired_at.toISOString(), now)
+        costBasis: roundCents(Number(row.qty) * Number(row.price)), acquiredAt: row.acquired_at.toISOString(), longTerm: isLongTerm(row.acquired_at.toISOString(), now)
     }));
 };
 
@@ -514,7 +507,7 @@ export const listFills = async (db: Db, accountId: string, { since, orderIds }: 
     )).rows;
 
 // The end of the trading day (the eod job): deducts each account's accrued regulatory fees, per day and type, rounded up to the cent
-// (FEE activities with sub-types REG, TAF, CAT, ORF and OCC); ./calls.ts then keeps the closing balances and runs the margin checks.
+// (FEE activities with sub-types REG, TAF and CAT, and ORF and OCC from the options once offered); ./calls.ts then keeps the closing balances and runs the margin checks.
 // Only days whose trading has ended (8:00 p.m. ET, the after-hours close) are deducted, so a run during the day (the job runs at
 // every startup) doesn't take part of today's fees early and round the rest up again apart.
 export const endOfDay = async (now = new Date()): Promise<{ fees: number }> => {

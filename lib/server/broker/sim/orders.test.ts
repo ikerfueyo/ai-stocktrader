@@ -40,6 +40,10 @@ describe("order validation", () => {
         check({ qty: "0.5" });
     });
 
+    test("stocks only: a multi-leg (options) order is refused", () => {
+        rejects(() => parseOrderRequest(request({ order_class: "mleg" })), 422, /multi-leg orders aren't offered/);
+    });
+
     test("qty and notional: exactly one, a notional of at least $1 in cents, up to 9 decimals of shares", () => {
         rejects(() => check({ qty: undefined }), 422, /qty or notional is required/);
         rejects(() => check({ notional: "10" }), 422, /only one of qty or notional/);

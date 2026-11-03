@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-    accountSummary, cashRowsOf, fillsOf, ledgerOf, listAllActivities, optionEventsOf, orderFillRows, replayFills, taxLotsOf, taxReportOf, toAppPositions, tradesOf,
+    accountSummary, cashRowsOf, fillsOf, ledgerOf, listAllActivities, orderFillRows, replayFills, taxLotsOf, taxReportOf, toAppPositions, tradesOf,
     transactionRowsOf, type ShareAction
 } from "./brokerLedger";
 import type { CorporateAction } from "./broker/sim/corporateActions";
@@ -51,15 +51,12 @@ describe("FIFO replay", () => {
         assert.deepEqual(replay.lots.map(({ qty, price }) => [qty, price]), [[3, 110]]);
     });
 
-    test("a short realizes the reverse, and option contracts count 100 shares", () => {
+    test("a short realizes the reverse", () => {
         const replay = replayFills(fillsOf([
             fill("1", "F", "sell", 5, 50, "2026-09-01T15:00:00Z"),
-            fill("2", "F", "buy", 2, 40, "2026-09-02T15:00:00Z"),
-            fill("3", "F261120C00012000", "buy", 1, 2, "2026-09-03T15:00:00Z"),
-            fill("4", "F261120C00012000", "sell", 1, 3.5, "2026-09-04T15:00:00Z")
+            fill("2", "F", "buy", 2, 40, "2026-09-02T15:00:00Z")
         ]), [], "2026-10-28");
         assert.equal(replay.realizedByFill.get("2"), 20);
-        assert.equal(replay.realizedByFill.get("4"), 150);
         assert.deepEqual(replay.lots.map(({ symbol, side, qty }) => [symbol, side, qty]), [["F", "short", 3]]);
     });
 
@@ -91,7 +88,7 @@ describe("FIFO replay", () => {
 const action = (fields: Partial<CorporateAction> & Pick<CorporateAction, "type" | "symbol" | "exDate">, prices = { symbol: null, newSymbol: null } as ShareAction["prices"]): ShareAction =>
     ({ action: { newSymbol: null, factor: null, cash: null, ...fields }, prices });
 
-describe("corporate actions and option events in the replay", () => {
+describe("corporate actions in the replay", () => {
     test("a stock merger moves the lots to the acquirer at its ratio, keeping their basis and acquisition date", () => {
         const replay = replayFills(fillsOf([
             fill("1", "AAA", "buy", 10, 100, "2026-09-01T15:00:00Z"),
@@ -141,39 +138,6 @@ describe("corporate actions and option events in the replay", () => {
         const report = taxReportOf({ replay, activities, year: 2026, prices: new Map([["NEW", 18]]), now: "2026-10-28T00:00:00Z" });
         assert.equal(report.form1099B.sales[0].washDisallowed, 50);
     });
-
-    test("an expired contract closes at nothing", () => {
-        const activities = [
-            fill("1", "F261120C00012000", "buy", 1, 2, "2026-09-03T15:00:00Z"),
-            cash("2", "OPEXP", 0, "2026-11-20", { symbol: "F261120C00012000", qty: "-1", created_at: "2026-11-20T21:45:00Z" })
-        ];
-        const replay = replayFills(fillsOf(activities), [], "2026-11-21", { optionEvents: optionEventsOf(activities) });
-        assert.equal(replay.realized, -200);
-        assert.equal(replay.lots.length, 0);
-        assert.deepEqual(replay.disposals.map(({ qty, lotPrice, price }) => [qty, lotPrice, price]), [[100, 2, 0]]);
-    });
-
-    test("an exercised call closes without P&L and puts its premium into the shares' basis", () => {
-        const activities = [
-            fill("1", "F261120C00012000", "buy", 2, 2, "2026-09-03T15:00:00Z"),
-            cash("2", "OPEXC", 0, "2026-10-01", { symbol: "F261120C00012000", qty: "-1", created_at: "2026-10-01T15:00:00Z" }),
-            fill("3", "F", "buy", 100, 12, "2026-10-01T15:00:00Z", "")
-        ];
-        const replay = replayFills(fillsOf(activities), [], "2026-10-28", { optionEvents: optionEventsOf(activities) });
-        assert.equal(replay.realized, 0);
-        assert.equal(replay.disposals.length, 0, "an exercise isn't a disposal");
-        assert.deepEqual(replay.lots.map(({ symbol, qty, price }) => [symbol, qty, price]), [["F261120C00012000", 1, 2], ["F", 100, 14]]);
-    });
-
-    test("an assigned short put buys the shares at the strike less the premium", () => {
-        const activities = [
-            fill("1", "F261120P00012000", "sell", 1, 1.5, "2026-09-03T15:00:00Z"),
-            cash("2", "OPASN", 0, "2026-10-01", { symbol: "F261120P00012000", qty: "1", created_at: "2026-10-01T20:45:00Z" }),
-            fill("3", "F", "buy", 100, 12, "2026-10-01T20:45:00Z", "")
-        ];
-        const replay = replayFills(fillsOf(activities), [], "2026-10-28", { optionEvents: optionEventsOf(activities) });
-        assert.deepEqual(replay.lots.map(({ symbol, qty, price }) => [symbol, qty, price]), [["F", 100, 10.5]]);
-    });
 });
 
 describe("rows", () => {
@@ -207,8 +171,8 @@ describe("rows", () => {
 describe("the account summary", () => {
     const trade = {
         cash: "-4000.00", pending_transfer_out: "100.00", accrued_fees: "0.03", equity: "6000", maintenance_margin: "3000", initial_margin: "5000", buying_power: "2000",
-        regt_buying_power: "1000", non_marginable_buying_power: "500", options_buying_power: "500", multiplier: "2", long_market_value: "10000", short_market_value: "0",
-        sma: "1000", cash_withdrawable: "0", shorting_enabled: true, options_approved_level: 2, options_trading_level: 2
+        regt_buying_power: "1000", non_marginable_buying_power: "500", multiplier: "2", long_market_value: "10000", short_market_value: "0",
+        sma: "1000", cash_withdrawable: "0", shorting_enabled: true
     } as unknown as TradeAccount;
     const positions = [{ symbol: "AAPL", qty: "50", side: "long", avg_entry_price: "190", unrealized_pl: "500" }] as Position[];
     const activities = [
@@ -236,7 +200,6 @@ describe("the account summary", () => {
         assert.equal(account.multiplier, 2);
         assert.equal(account.maxMultiplier, 4);
         assert.equal(account.unrealizedPnl, 500);
-        assert.equal(account.optionsLevel, 2);
         assert.equal(account.shortingBlockedReason, null);
         assert.equal(account.marginStatus, "ok");
         assert.deepEqual(account.positions, [{ ticker: "AAPL", quantity: 50 }]);

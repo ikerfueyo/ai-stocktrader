@@ -21,7 +21,6 @@ import { postDividends } from "./portfolio";
 import { notifyNewDocuments, startEventConsumer } from "./automation/events";
 import { runRecurring } from "./automation/recurring";
 import { checkAlerts } from "./automation/alerts";
-import { closeUnexercisable, processExpirations } from "./broker/sim/optionEvents";
 import { brokerMode } from "./broker";
 
 // The background jobs, checked every SIM_ORDER_MATCH_MS (default 5s). Each job is due every ORDER_MATCH_INTERVAL_MS (default 30s),
@@ -124,7 +123,7 @@ export const JOBS: Job[] = [
     { name: "accounts", simOnly: true, leaderOnly: true, run: updateAccounts },
     // The simulator's order engine: fills, triggers, expiries and leg activations for every working order
     { name: "sim-orders", simOnly: true, leaderOnly: true, everyMs: ORDER_MATCH_MS > 0 ? ORDER_MATCH_MS : INTERVAL_MS, run: () => matchOrders() },
-    // The simulator's account reviews and options approvals that are due (reading an account advances it too)
+    // The simulator's account reviews that are due (reading an account advances it too)
     { name: "sim-accounts", simOnly: true, leaderOnly: true, run: () => advanceAccounts() },
     // The simulator's transfers that are due to clear, complete or come back (reading an account's transfers advances them too)
     { name: "sim-transfers", simOnly: true, leaderOnly: true, run: () => advanceTransfers() },
@@ -133,10 +132,6 @@ export const JOBS: Job[] = [
     { name: "eod", simOnly: true, slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
     // Corporate actions apply before the pre-market opens (reading an account, and every order match, apply them too)
     { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
-    // Options expiring today that the account couldn't exercise are sold in the hour before expiry; after the close, expired options
-    // are exercised, assigned or expire, and short calls likely assigned before tomorrow's ex-dates are assigned early
-    { name: "expiring-options", simOnly: true, slots: ["15:00"], leaderOnly: true, run: () => closeUnexercisable() },
-    { name: "options-expiration", simOnly: true, slots: ["16:45"], leaderOnly: true, run: () => processExpirations() },
     // Documents that are due: the previous trading day's confirmations, statements after a month's first weekend, 1099s from Feb 15
     { name: "documents", slots: ["06:30"], leaderOnly: true, run: async () => ({ made: brokerMode() === "sim" ? await generateAllDocuments() : 0, notified: await notifyNewDocuments() }) },
     // The app's consumer of the broker's events (notifications and dividend reinvestment), started once in the leader

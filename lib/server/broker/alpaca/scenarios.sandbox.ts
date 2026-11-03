@@ -3,12 +3,11 @@
 // credentials. Each run opens new sandbox accounts with fake identities and moves sandbox money only. Alpaca does its work on its
 // own clock, so advance waits (SCENARIO_WAIT_MS, default 5s) up to SCENARIO_PATIENCE times (default 60); market orders fill only
 // while the market is open. What only the simulator can do (fix prices, age positions, post corporate actions, force a margin
-// check, fill in parts) is skipped. SCENARIO_SYMBOLS (default AAPL,F) are the stocks traded; SCENARIO_OPTION_CONTRACT (an OCC symbol
-// such as F261120C00012000) turns on the option trade. SCENARIO picks the scenarios whose names include it.
+// check, fill in parts) is skipped. SCENARIO_SYMBOLS (default AAPL,F) are the stocks traded. SCENARIO picks the scenarios whose names
+// include it.
 import { defineScenarioTests, type ScenarioHarness } from "../scenarios";
 import { alpacaConfigFromEnv } from "./config";
 import { AlpacaBroker } from "./client";
-import { parseOptionSymbol } from "../../../options";
 
 try {
     process.loadEnvFile(".env.local");
@@ -21,13 +20,11 @@ const makeHarness = async (): Promise<ScenarioHarness> => {
     const broker = new AlpacaBroker(alpacaConfigFromEnv());
     const [stock = "AAPL", other = "F"] = (process.env.SCENARIO_SYMBOLS ?? "").split(",").map(symbol => symbol.trim().toUpperCase()).filter(Boolean);
     const wait = Number(process.env.SCENARIO_WAIT_MS ?? 5000);
-    const contract = process.env.SCENARIO_OPTION_CONTRACT;
     return {
         broker,
         symbols: { stock, other },
         patience: Number(process.env.SCENARIO_PATIENCE ?? 60),
-        advance: () => new Promise(resolve => setTimeout(resolve, wait)),
-        ...(contract ? { optionContract: { symbol: contract, underlying: parseOptionSymbol(contract)?.underlying ?? "" } } : {})
+        advance: () => new Promise(resolve => setTimeout(resolve, wait))
     };
 };
 

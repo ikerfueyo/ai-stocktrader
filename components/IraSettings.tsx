@@ -157,7 +157,7 @@ export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; ma
     return (
         <Fragment>
             <p className="text-muted">
-                A separate account for retirement, using this account&apos;s details. IRAs trade without margin or short selling, with options up to level 2.
+                A separate account for retirement, using this account&apos;s details. IRAs trade without margin or short selling.
                 {limit ? ` The ${limit.taxYear} contribution limit is $${limit.limit.toLocaleString("en-US")} across all your IRAs.` : ""}
             </p>
             <div className="ira-types">

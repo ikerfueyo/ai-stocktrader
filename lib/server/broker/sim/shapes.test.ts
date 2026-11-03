@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { conformanceErrors } from "../conformance";
-import { assetId, toAccount, toAchRelationship, toActivity, toAsset, toBank, toCalendar, toClock, toFillActivity, toOptionsApproval, toOrder, toTransfer, type SimAccountRow, type SimActivityRow, type SimOrderRow } from "./shapes";
+import { assetId, toAccount, toAchRelationship, toActivity, toAsset, toBank, toCalendar, toClock, toFillActivity, toOrder, toTransfer, type SimAccountRow, type SimActivityRow, type SimOrderRow } from "./shapes";
 import { defaultConfigurations } from "./kyc";
 import { toAlpacaPosition, toTradeAccount } from "./tradeAccount";
 
@@ -23,7 +23,6 @@ const row: SimAccountRow = {
     enabled_assets: ["us_equity"],
     kyc_results: { summary: "pass" },
     configurations: defaultConfigurations(["customer_agreement", "account_agreement"]),
-    options_approved_level: 0,
     documents: [{ id: "0d18ae51-3c94-4511-b209-101e1666416b", document_type: "identity_verification", document_sub_type: "passport", mime_type: "image/jpeg", created_at: "2026-10-27T15:00:00Z", size: 10, sha256: "x" }],
     trading_blocked: false, transfers_blocked: false, account_blocked: false,
     created_at: new Date("2026-10-27T15:00:00Z"), updated_at: new Date("2026-10-27T15:00:00Z"), closed_at: null
@@ -65,11 +64,6 @@ describe("The simulator's replies conform to Alpaca's spec", () => {
         assert.equal(closed.next_open, "2026-10-26T13:30:00.000Z");
         assert.equal(closed.next_close, "2026-10-26T20:00:00.000Z");
         assert.deepEqual(conformanceErrors(closed, "legacy_clock"), []);
-    });
-
-    test("an options approval", () => {
-        const approval = toOptionsApproval({ id: "0d18ae51-3c94-4511-b209-101e1666416b", account_id: row.id, requested_level: 3, approved_level: 2, status: "LOWER_LEVEL_APPROVED", created_at: row.created_at, updated_at: row.updated_at });
-        assert.deepEqual(conformanceErrors(approval, "OptionsApprovalResponse"), []);
     });
 
     const created = new Date("2026-10-27T15:00:00Z");
@@ -114,7 +108,7 @@ describe("The trading account and positions conform to Alpaca's spec", () => {
         account: {
             id: "6c1b2f0e-6a77-4d5e-9a3a-1f4b7f6d0a11", account_number: "912345678", status: "ACTIVE", created_at: new Date("2026-10-27T15:00:00Z"),
             trading_blocked: false, transfers_blocked: false, account_blocked: false,
-            configurations: { max_margin_multiplier: "2", no_shorting: false, max_options_trading_level: 1 as const, suspend_trade: false }, options_approved_level: 1, hasMarginAgreement: true
+            configurations: { max_margin_multiplier: "2", no_shorting: false, max_options_trading_level: 0 as const, suspend_trade: false }, hasMarginAgreement: true
         },
         state: { cash: 1500, longMarketValue: 1000, shortMarketValue: 400, buyingPower: 2800, regtBuyingPower: 2800, nonMarginableBuyingPower: 1400, initialMargin: 700, maintenanceMargin: 500, sma: 1400 },
         multiplier: 2, shortingEnabled: true, withdrawable: 800,

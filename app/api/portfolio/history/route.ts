@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { isOptionSymbol } from "@/lib/options";
 import { withUser } from "@/lib/server/errors";
 import { fetchDailyCloses } from "@/lib/server/marketData";
 import { loadCorporateActions } from "@/lib/server/corporateActions";
+import { isFormerOptionContract } from "@/lib/server/account";
 import { cumulativeReturns, equityHistory, rebase } from "@/lib/server/history";
 import { getTrades, loadCashActivity } from "@/lib/server/portfolio";
 import { addDays, easternParts, isTradingDay } from "@/lib/marketHours";
@@ -34,8 +34,8 @@ export const GET = withUser(async (request, context, userId) => {
     const today = easternParts(new Date()).dateKey;
     const first = firstDates[0];
     const outputsize = first < addDays(today, -COMPACT_DAYS) ? "full" : "compact";
-    // Option contracts have no daily closes here: they're valued at their cost
-    const tickers = [...new Set(trades.map(({ ticker }) => ticker.toUpperCase()))].filter(ticker => !isOptionSymbol(ticker));
+    // Option contracts from when options were offered have no daily closes: they're valued at their cost
+    const tickers = [...new Set(trades.map(({ ticker }) => ticker.toUpperCase()))].filter(ticker => !isFormerOptionContract(ticker));
     const [{ splits }, ...results] = await Promise.all([
         loadCorporateActions(tickers),
         ...[BENCHMARK, ...tickers].map(ticker => fetchDailyCloses(ticker, outputsize).catch(error => {

@@ -2,17 +2,15 @@
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Beneficiaries, OpenIra } from "./IraSettings";
-import { IRA_MAX_OPTIONS_LEVEL } from "@/lib/ira";
 import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
 import W9Certification from "./W9Certification";
-import { EXPERIENCE_LEVELS, US_STATES, optionsSuitabilityErrors, type AccountApplication, type ExperienceLevel } from "@/lib/kyc";
-import { EXPERIENCE_LABELS, Field, RANGES, SUITABILITY_FIELDS, SuitabilityFields, type SuitabilityAnswers } from "./OptionsSuitability";
-import type { AccountConfigurations, BrokerAccount, OptionsApprovalResponse } from "@/lib/types";
+import { MARITAL_STATUSES, US_STATES, type MaritalStatus } from "@/lib/kyc";
+import { MARITAL_LABELS } from "./FormFields";
+import type { AccountConfigurations, BrokerAccount } from "@/lib/types";
 
-const OPTIONS_LEVEL_LABELS = ["None", "Level 1: covered calls and cash-secured puts", "Level 2: also buying calls and puts", "Level 3: also spreads"];
 const STATUS_LABELS: Record<string, string> = { ACTIVE: "Active", ACCOUNT_UPDATED: "Active, updated details under review" };
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -22,26 +20,19 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
     </section>
 );
 
-// Account settings: the account's details, contact and employment (an edited address, name or employer is reviewed), the trusted
-// contact, trading configurations, upgrades to margin and options, the W-9 certification, and closing the account
+// Account settings: the account's details, contact and employment (an edited address, name or employer is reviewed), marital status,
+// the trusted contact, trading configurations, the upgrade to margin, the W-9 certification, and closing the account
 const AccountSettings = () => {
     const { active, refreshAccounts } = useBrokerAccount();
     const [account, setAccount] = useState<BrokerAccount | null>(null);
     const [configurations, setConfigurations] = useState<AccountConfigurations | null>(null);
-    const [approvals, setApprovals] = useState<OptionsApprovalResponse[]>([]);
     const [error, setError] = useState<string | null>(null);
     // The section that last saved, and a message for it
     const [notice, setNotice] = useState<{ section: string; text: string; error?: boolean } | null>(null);
     const [contact, setContact] = useState({ email_address: "", phone_number: "", street: "", street2: "", city: "", state: "", postal_code: "" });
     const [employment, setEmployment] = useState({ employment_status: "", employer_name: "", employment_position: "" });
+    const [maritalStatus, setMaritalStatus] = useState<MaritalStatus | "">("");
     const [trusted, setTrusted] = useState({ given_name: "", family_name: "", email_address: "", phone_number: "" });
-    const [optionsLevel, setOptionsLevel] = useState(1);
-    const [stocksExperience, setStocksExperience] = useState<ExperienceLevel | "">("");
-    const [optionsExperience, setOptionsExperience] = useState<ExperienceLevel | "">("");
-    // What an options request adds to the account's identity when it lacks them: annual income and the suitability answers
-    const [annualIncome, setAnnualIncome] = useState(-1);
-    const [suitability, setSuitability] = useState<SuitabilityAnswers>({});
-    const [acceptOptions, setAcceptOptions] = useState(false);
     const [acceptMargin, setAcceptMargin] = useState(false);
     const [confirmClose, setConfirmClose] = useState(false);
 
@@ -49,15 +40,13 @@ const AccountSettings = () => {
     const load = useCallback(async () => {
         if (!id) return;
         try {
-            const [accountResponse, configurationsResponse, approvalsResponse] = await Promise.all([
+            const [accountResponse, configurationsResponse] = await Promise.all([
                 axios.get<BrokerAccount>(`/api/accounts/${id}`),
-                axios.get<AccountConfigurations>(`/api/accounts/${id}/configurations`),
-                axios.get<OptionsApprovalResponse[]>(`/api/accounts/${id}/options`)
+                axios.get<AccountConfigurations>(`/api/accounts/${id}/configurations`)
             ]);
             const loaded = accountResponse.data;
             setAccount(loaded);
             setConfigurations(configurationsResponse.data);
-            setApprovals(approvalsResponse.data);
             const [street = "", street2 = ""] = loaded.contact?.street_address ?? [];
             setContact({
                 email_address: loaded.contact?.email_address ?? "", phone_number: loaded.contact?.phone_number ?? "", street, street2,
@@ -67,6 +56,7 @@ const AccountSettings = () => {
                 employment_status: loaded.disclosures?.employment_status ?? "", employer_name: loaded.disclosures?.employer_name ?? "",
                 employment_position: loaded.disclosures?.employment_position ?? ""
             });
+            setMaritalStatus((loaded.identity?.marital_status ?? "") as MaritalStatus | "");
             const trustedContact = loaded.trusted_contact as Partial<typeof trusted> | undefined;
             setTrusted({
                 given_name: trustedContact?.given_name ?? "", family_name: trustedContact?.family_name ?? "",
@@ -84,14 +74,6 @@ const AccountSettings = () => {
         // eslint-disable-next-line react-hooks/set-state-in-effect
         load();
     }, [load]);
-
-    // Polls while an options request is being decided
-    const pendingApproval = approvals.some(({ status }) => status === "PENDING");
-    useEffect(() => {
-        if (!pendingApproval) return;
-        const timer = setInterval(load, 3000);
-        return () => clearInterval(timer);
-    }, [pendingApproval, load]);
 
     // Runs a change, reloads the account and shows success (or, as a function, what to say given the request's result)
     const save = async <T,>(section: string, request: () => Promise<T>, success: string | ((result: T) => string)) => {
@@ -119,25 +101,6 @@ const AccountSettings = () => {
     const agreements = (account.agreements ?? []).map(({ agreement }) => agreement);
     const isMargin = agreements.includes("margin_agreement");
     const isIra = account.account_type === "ira";
-    // IRAs trade options up to level 2
-    const maxLevel = isIra ? IRA_MAX_OPTIONS_LEVEL : 3;
-    const approvedLevel = configurations.max_options_trading_level ?? 0;
-    const latestApproval = approvals[0];
-    // The levels that can be requested; the choice falls back to the lowest when it isn't one of them (such as after an approval)
-    const levelChoices = [1, 2, 3].filter(level => level > approvedLevel && level <= maxLevel);
-    const requestLevel = levelChoices.includes(optionsLevel) ? optionsLevel : levelChoices[0];
-    // An account opened without options lacks the answers Alpaca requires for them, which the request then adds
-    const identity = (account.identity ?? {}) as AccountApplication["identity"];
-    const needsIncome = identity.annual_income_min === undefined;
-    const needsSuitability = SUITABILITY_FIELDS.some(field => identity[field] === undefined);
-    const income = RANGES[annualIncome];
-    const identityChanges: Partial<AccountApplication["identity"]> = {
-        ...(stocksExperience && stocksExperience !== identity.investment_experience_with_stocks ? { investment_experience_with_stocks: stocksExperience } : {}),
-        ...(optionsExperience && optionsExperience !== identity.investment_experience_with_options ? { investment_experience_with_options: optionsExperience } : {}),
-        ...(needsIncome && income ? { annual_income_min: income.min, annual_income_max: income.max } : {}),
-        ...(needsSuitability ? suitability : {})
-    };
-    const optionsReady = Object.keys(optionsSuitabilityErrors({ ...identity, ...identityChanges })).length === 0;
 
     const onContact = (event: FormEvent) => {
         event.preventDefault();
@@ -151,6 +114,10 @@ const AccountSettings = () => {
     const onEmployment = (event: FormEvent) => {
         event.preventDefault();
         save("employment", () => patchAccount({ disclosures: { ...employment, employment_status: employment.employment_status || undefined } }), reviewNotice);
+    };
+    const onMaritalStatus = (event: FormEvent) => {
+        event.preventDefault();
+        if (maritalStatus) save("marital", () => patchAccount({ identity: { marital_status: maritalStatus } }), "Saved.");
     };
     const onTrusted = (event: FormEvent) => {
         event.preventDefault();
@@ -172,16 +139,6 @@ const AccountSettings = () => {
         }
     }, raised => raised ? "Your account is now a margin account."
         : "The margin agreement is signed, but the broker hasn't raised your limit above 1x yet (margin needs $2,000 of equity). Choose 2× under Maximum margin once it does.");
-    const onRequestOptions = () => save("options", async () => {
-        if (!agreements.includes("options_agreement") || Object.keys(identityChanges).length > 0) {
-            await patchAccount({
-                ...(agreements.includes("options_agreement") ? {} : { agreements: [{ agreement: "options_agreement" }] }),
-                ...(Object.keys(identityChanges).length > 0 ? { identity: identityChanges } : {})
-            });
-        }
-        await axios.post(`/api/accounts/${id}/options`, { level: requestLevel });
-    // No notice: the latest request's line says it's pending, then how it was decided
-    }, "");
     const onClose = () => save("close", async () => {
         await axios.post(`/api/accounts/${id}/close`);
     }, "Your account is closed.");
@@ -195,7 +152,6 @@ const AccountSettings = () => {
                     <dt>Account number</dt><dd>{account.account_number}</dd>
                     <dt>Status</dt><dd>{STATUS_LABELS[account.status] ?? account.status}</dd>
                     <dt>Type</dt><dd>{isMargin ? "Margin" : "Cash"} account</dd>
-                    <dt>Options</dt><dd>{OPTIONS_LEVEL_LABELS[approvedLevel]}</dd>
                     <dt>Opened</dt><dd>{new Date(account.created_at).toLocaleDateString("en-US", { dateStyle: "medium" })}</dd>
                     <dt>Name</dt><dd>{[account.identity?.given_name, account.identity?.family_name].join(" ")}</dd>
                     <dt>Tax ID</dt><dd>{account.identity?.tax_id}</dd>
@@ -236,6 +192,18 @@ const AccountSettings = () => {
                     )}
                     {noticeFor("employment")}
                     <button type="submit" className="btn btn-dark">Save employment</button>
+                </form>
+            </Section>
+
+            <Section title="Marital status">
+                <form className="transfer-fields" onSubmit={onMaritalStatus}>
+                    <p className="text-muted mb-0">For a retirement account, it tells whether your spouse&apos;s consent may be needed for its beneficiaries.</p>
+                    <select className="form-control" aria-label="Marital status" value={maritalStatus} onChange={event => setMaritalStatus(event.target.value as MaritalStatus | "")}>
+                        <option value="" disabled>Choose…</option>
+                        {MARITAL_STATUSES.map(status => <option key={status} value={status}>{MARITAL_LABELS[status]}</option>)}
+                    </select>
+                    {noticeFor("marital")}
+                    <button type="submit" className="btn btn-dark" disabled={!maritalStatus || maritalStatus === account.identity?.marital_status}>Save marital status</button>
                 </form>
             </Section>
 
@@ -311,51 +279,6 @@ const AccountSettings = () => {
                     <button type="button" className="btn btn-dark" disabled={!acceptMargin} onClick={onUpgradeMargin}>Upgrade to margin</button>
                 </Section>
             )}
-
-            <Section title="Options trading">
-                {latestApproval?.status && <p className="text-muted">Latest request: level {latestApproval.requested_level}, {latestApproval.status.toLowerCase().replaceAll("_", " ")}{latestApproval.status !== "PENDING" && latestApproval.status !== "REJECTED" ? ` (level ${latestApproval.approved_level} approved)` : ""}{latestApproval.status === "PENDING" ? "; the decision takes a few seconds" : ""}.</p>}
-                {approvedLevel < maxLevel && !pendingApproval && (
-                    <div className="transfer-fields">
-                        <select className="form-control" aria-label="Options level" value={requestLevel} onChange={event => setOptionsLevel(Number(event.target.value))}>
-                            {levelChoices.map(level => <option key={level} value={level}>{OPTIONS_LEVEL_LABELS[level]}</option>)}
-                        </select>
-                        {/* The experience decides the level approved: level 2 needs experience trading stocks, level 3 trading options */}
-                        <Field label="Your experience trading stocks">
-                            <select className="form-control" value={stocksExperience || identity.investment_experience_with_stocks || ""} onChange={event => setStocksExperience(event.target.value as ExperienceLevel | "")}>
-                                <option value="">Choose…</option>
-                                {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
-                            </select>
-                        </Field>
-                        <Field label="Your experience trading options">
-                            <select className="form-control" value={optionsExperience || identity.investment_experience_with_options || ""} onChange={event => setOptionsExperience(event.target.value as ExperienceLevel | "")}>
-                                <option value="">Choose…</option>
-                                {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
-                            </select>
-                        </Field>
-                        <p className="text-muted">Level 2 needs experience trading stocks and level 3 trading options; a request beyond your experience is approved at a lower level.</p>
-                        {needsIncome && (
-                            <Field label="Annual income">
-                                <select className="form-control" value={annualIncome} onChange={event => setAnnualIncome(Number(event.target.value))}>
-                                    <option value={-1}>Choose…</option>
-                                    {RANGES.map(({ label }, index) => <option key={label} value={index}>{label}</option>)}
-                                </select>
-                            </Field>
-                        )}
-                        {needsSuitability && <SuitabilityFields answers={{ ...identity, ...suitability }} onChange={changes => setSuitability(previous => ({ ...previous, ...changes }))} />}
-                        {!agreements.includes("options_agreement") && (
-                            <label className="onboarding-check">
-                                <input type="checkbox" checked={acceptOptions} onChange={event => setAcceptOptions(event.target.checked)} />
-                                I&apos;ve read and accept the <Link href="/agreements/options_agreement" target="_blank">options agreement</Link>
-                            </label>
-                        )}
-                        {noticeFor("options")}
-                        <button type="button" className="btn btn-dark"
-                            disabled={(!agreements.includes("options_agreement") && !acceptOptions) || !optionsReady}
-                            onClick={onRequestOptions}>Request options approval</button>
-                    </div>
-                )}
-                {isIra && <p className="text-muted">IRAs can trade options up to level 2: covered calls, cash-secured puts, and buying calls and puts.</p>}
-            </Section>
 
             {isIra ? (
                 <Section title="Taxes">

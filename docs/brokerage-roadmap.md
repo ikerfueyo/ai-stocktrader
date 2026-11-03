@@ -15,7 +15,7 @@ Today the app is a self-invented mock:
 
 **Decisions made:**
 - Stocks only, no ETFs. SPY stays as a benchmark only.
-- Extras to include: recurring buys and DRIP, price alerts, options, and IRAs.
+- Extras to include: recurring buys and DRIP, price alerts, options, and IRAs. (Options were built in Phase 9 and removed on 2026-11-03: the app trades stocks only.)
 - KYC fields are validated, and the SSN is stored as its last 4 digits only.
 - **Alpha Vantage premium stays the primary data source** for everything it provides today: quotes for fills, daily and intraday bars, news with sentiment, overview, earnings, estimates, the earnings calendar, splits and dividends, search and market status. No AI inputs change.
 - **Alpaca's free market data** (Basic plan, ready for SIP) is used only for what Alpha Vantage lacks: asset flags, the calendar and clock, bid/ask sizes, extended-hours quotes, mergers, spinoffs and symbol changes, and options chains when Alpha Vantage's options plan doesn't cover them.
@@ -294,7 +294,10 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - Price alerts are checked every 30 seconds during the regular session only (not the extended sessions); a level alert must be set on the side the price will cross from.
   - Documents notify from the documents job (documents aren't events). Notifications for actions the user takes themselves (placing or cancelling an order, requesting a transfer) aren't sent.
 
-### Phase 9: Options (Alpaca levels 1–3)
+### Phase 9: Options (Alpaca levels 1–3) — removed
+
+**Removed on 2026-11-03.** The app trades stocks only, to go live on a stocks-only Alpaca correspondent: the code below is gone, and `db/migrations/026_no_options.sql` refuses to deploy while an account holds option contracts or has an option order working. The options tables and columns stay unused until a later migration drops them. What follows is the phase as it was built.
+
 - **Approval:** `max_options_trading_level` and `options_approved_level`, the options agreement and an experience questionnaire.
   - Level 1: covered calls and cash-secured puts.
   - Level 2: buying calls and puts.

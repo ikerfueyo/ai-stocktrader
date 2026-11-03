@@ -21,7 +21,7 @@ const PRACTICE_MISSES = Number(process.env.SIM_INTRADAY_PRACTICE_MISSES ?? 2);
 
 const dayOf = (date: Date) => easternParts(date).dateKey;
 
-// Runs fn (a fill, or an option exercise or assignment, inside the account's transaction) and records the margin level after it when
+// Runs fn (a fill, inside the account's transaction) and records the margin level after it when
 // it lowered the level below zero, on margin accounts only. A failure to price the account is logged and doesn't stop the fill.
 export const trackMarginLevel = async <T>(db: PoolClient, accountId: string, fn: () => Promise<T>, { symbol, at = new Date() }: { symbol?: string; at?: Date } = {}): Promise<T> => {
     const before = await marginLevel(db, accountId, at).catch(error => {

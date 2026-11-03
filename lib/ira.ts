@@ -10,9 +10,6 @@ export type IraSubType = "traditional" | "roth";
 
 export const IRA_LABELS: Record<IraSubType, string> = { traditional: "Traditional IRA", roth: "Roth IRA" };
 
-// IRAs trade at 1x (no margin borrowing, no shorting) and options up to level 2 (covered calls, cash-secured puts, buying calls and puts)
-export const IRA_MAX_OPTIONS_LEVEL = 2;
-
 // The IRS's limits per tax year (IRS Notice 2024-80 for 2025; Notice 2025-67, IR-2025-111, for 2026: $7,500 and a $1,100 catch-up). A
 // later year uses the newest one known until it's added here.
 export const IRA_LIMITS: Record<number, { base: number; catchUp: number }> = {
@@ -193,7 +190,7 @@ export const maskBeneficiaries = (beneficiaries: BeneficiaryInput[]) => benefici
 export const COMMUNITY_PROPERTY_STATES = ["AZ", "CA", "ID", "LA", "NV", "NM", "TX", "WA", "WI"];
 
 // Whether to ask about spousal consent: the owner lives in a community property state, no spouse is a beneficiary, and they're married
-// or their marital status isn't known (the options suitability questions ask it, the application doesn't). Alpaca flags these accounts
+// or their marital status isn't known (the application asks it, but accounts opened before it did may not have it). Alpaca flags these accounts
 // to the partner, who collects the consent by hand.
 export const spousalConsentMayBeNeeded = (state: string | undefined, beneficiaries: Pick<BeneficiaryInput, "relationship">[], maritalStatus?: string | null): boolean =>
     COMMUNITY_PROPERTY_STATES.includes((state ?? "").toUpperCase()) && !beneficiaries.some(({ relationship }) => relationship === "spouse") && (!maritalStatus || maritalStatus === "MARRIED");

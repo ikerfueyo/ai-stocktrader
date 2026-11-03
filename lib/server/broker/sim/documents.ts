@@ -5,7 +5,6 @@ import { BrokerError } from "../errors";
 import { fetchQuotes } from "../../marketData";
 import { positionsAt, roundCents, type Split } from "../../account";
 import { addDays, easternParts } from "../../../marketHours";
-import { contractMultiplier } from "../../../options";
 import { getAccount } from "./accounts";
 import { fillsAsTrades } from "./positions";
 import { subjectToBackupWithholding } from "./withholding";
@@ -114,7 +113,7 @@ const statementPayload = async (accountId: string, holder: Holder, start: string
             realized: roundCents(activities.reduce((total, row) => total + Number(row.realized_pl ?? 0), 0))
         },
         activities: activities.map(row => ({ date: row.date, type: row.activity_type, description: row.description, amount: Number(row.net_amount) })),
-        positions: held.map(({ ticker, quantity, avgCost }) => ({ symbol: ticker, qty: quantity, avgCost, costBasis: roundCents(Math.abs(quantity) * avgCost * contractMultiplier(ticker)) }))
+        positions: held.map(({ ticker, quantity, avgCost }) => ({ symbol: ticker, qty: quantity, avgCost, costBasis: roundCents(Math.abs(quantity) * avgCost) }))
     };
 };
 
@@ -144,11 +143,10 @@ const taxInputs = async (accountId: string) => {
     ]);
     const changes: ShareChange[] = changeRows.map(row => ({ type: row.type, ticker: row.ticker, newTicker: row.new_ticker, exDate: row.ex_date, factor: row.factor === null ? null : Number(row.factor), taxable: row.taxable }));
     const kinds: Record<string, Disposal["kind"]> = { FILL: "sale", MA: "merger", CIL: "cash_in_lieu", REORG: "worthless" };
-    // Option contracts are counted in shares (× 100), as their prices are per share; an exercised or assigned contract isn't a
-    // disposal (its premium is in the shares' basis or proceeds), and an expired one is reported as sold for nothing. Sales and
-    // purchases are matched under the symbol the stock goes by now.
+    // Sales and purchases are matched under the symbol the stock goes by now. (An option contract exercised or assigned while options
+    // were offered isn't a disposal: its premium is in the shares' basis or proceeds.)
     const disposals: Disposal[] = closings.map(row => {
-        const qty = Number(row.qty) * contractMultiplier(row.symbol);
+        const qty = Number(row.qty);
         return {
             id: String(row.id), lotId: row.lot_id, symbol: row.symbol, side: row.side, qty, lotPrice: Number(row.lot_price), price: Number(row.close_price),
             acquiredAt: row.acquired_at.toISOString(), closedAt: row.closed_at.toISOString(), kind: kinds[row.activity_type] ?? "sale",
@@ -156,7 +154,7 @@ const taxInputs = async (accountId: string) => {
         };
     });
     const acquisitions: Acquisition[] = lots.map(row => ({
-        lotId: row.id, symbol: sharesSince(changes, row.symbol, row.acquired_day, true).symbol, side: row.side, qty: Number(row.qty) * contractMultiplier(row.symbol), acquiredAt: row.acquired_at.toISOString()
+        lotId: row.id, symbol: sharesSince(changes, row.symbol, row.acquired_day, true).symbol, side: row.side, qty: Number(row.qty), acquiredAt: row.acquired_at.toISOString()
     }));
     return {
         disposals, acquisitions,
@@ -185,7 +183,7 @@ export const unrealizedLots = async (accountId: string) => {
     const prices = new Map(symbols.flatMap((symbol, i) => quotes[i].status === "fulfilled" ? [[symbol, (quotes[i] as PromiseFulfilledResult<{ price: number }>).value.price] as const] : []));
     const now = new Date().toISOString();
     return rows.flatMap(row => unrealizedRows(
-        { id: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty), price: Number(row.price), acquiredAt: row.acquired_at.toISOString(), multiplier: contractMultiplier(row.symbol) },
+        { id: row.id, symbol: row.symbol, side: row.side, qty: Number(row.qty), price: Number(row.price), acquiredAt: row.acquired_at.toISOString() },
         adjustments.get(row.id), prices.get(row.symbol) ?? null, now
     ));
 };

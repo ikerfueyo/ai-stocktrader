@@ -72,12 +72,12 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
     // An IRA contribution is also capped at what's left of the year's limit
     const maxAmount = isDeposit ? Math.min(terms?.dailyAch ?? 0, isIra && year ? year.remaining : Infinity) : Math.max(0, roundCents(withdrawable - fee));
     const marginCall = account?.marginStatus !== undefined && account.marginStatus !== "ok";
-    // Cash the broker holds back without margin explaining it: what open orders and options hold, sales not yet settled, and the rest
+    // Cash the broker holds back without margin explaining it: what open orders hold, sales not yet settled, and the rest
     // deposits it still holds (Alpaca keeps a completed ACH deposit out of cash_withdrawable for a while)
     const held = account && account.initialMargin === 0 && account.debitBalance === 0 && !marginCall ? roundCents(account.totalCash - withdrawable) : 0;
     const heldReasons: string[] = [];
     let unexplained = held;
-    for (const [amount, reason] of [[account?.reservedCash ?? 0, "held for open orders"], [account?.optionRequirement ?? 0, "covering options"], [account?.unsettledProceeds ?? 0, "sales not yet settled"]] as const) {
+    for (const [amount, reason] of [[account?.reservedCash ?? 0, "held for open orders"], [account?.unsettledProceeds ?? 0, "sales not yet settled"]] as const) {
         const part = Math.min(amount, unexplained);
         if (part >= 0.01) heldReasons.push(reason);
         unexplained -= Math.max(part, 0);

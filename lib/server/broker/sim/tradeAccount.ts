@@ -3,7 +3,6 @@
 import type { AccountConfigurations, Position as AlpacaPosition, TradeAccount } from "../types";
 import type { Position } from "../../../types";
 import type { MarginState } from "./margin";
-import { contractMultiplier } from "../../../options";
 
 const money = (value: number) => (Math.round(value * 100) / 100).toFixed(2);
 const decimal = (value: number) => String(Math.round(value * 1e6) / 1e6);
@@ -11,7 +10,7 @@ const decimal = (value: number) => String(Math.round(value * 1e6) / 1e6);
 export interface TradeAccountInput {
     account: {
         id: string; account_number: string; status: string; created_at: Date; trading_blocked: boolean; transfers_blocked: boolean;
-        account_blocked: boolean; configurations: AccountConfigurations; options_approved_level: number; hasMarginAgreement: boolean;
+        account_blocked: boolean; configurations: AccountConfigurations; hasMarginAgreement: boolean;
     };
     // The margin figures, with cash as the ledger's (every activity's net amount), before queued withdrawals leave it
     state: Pick<MarginState, "cash" | "longMarketValue" | "shortMarketValue" | "buyingPower" | "regtBuyingPower" | "nonMarginableBuyingPower" | "initialMargin" | "maintenanceMargin" | "sma">;
@@ -47,7 +46,6 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
         regt_buying_power: money(state.regtBuyingPower),
         effective_buying_power: money(state.buyingPower),
         non_marginable_buying_power: money(state.nonMarginableBuyingPower),
-        options_buying_power: money(state.nonMarginableBuyingPower),
         accrued_fees: money(accrued),
         pending_reg_taf_fees: money(input.accruedFees.REG + input.accruedFees.TAF),
         equity: money(equity),
@@ -61,9 +59,6 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
         sma: money(state.sma),
         multiplier: String(input.multiplier),
         shorting_enabled: input.shortingEnabled,
-        options_approved_level: account.options_approved_level as TradeAccount["options_approved_level"],
-        // The effective level: the lower of the approved one and the account's own maximum
-        options_trading_level: Math.min(account.options_approved_level, account.configurations.max_options_trading_level ?? 0) as TradeAccount["options_trading_level"],
         trading_blocked: account.trading_blocked,
         transfers_blocked: account.transfers_blocked,
         account_blocked: account.account_blocked,
@@ -82,22 +77,20 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
 };
 
 // A position as Alpaca returns it, from the lots' position, its asset and quote (price null without a current one: valued at cost)
-// (an option's quantity in contracts, its prices per share and its values × 100)
 export const toAlpacaPosition = (position: Position, asset: { id: string; exchange: string; marginable: boolean }, quote: { price: number | null; previousClose: number | null }): AlpacaPosition => {
     const qty = Math.abs(position.quantity);
     const sign = position.quantity < 0 ? -1 : 1;
-    const multiplier = contractMultiplier(position.ticker);
     const price = quote.price ?? position.avgCost;
     const lastday = quote.previousClose ?? price;
-    const costBasis = sign * qty * position.avgCost * multiplier;
-    const marketValue = sign * qty * price * multiplier;
+    const costBasis = sign * qty * position.avgCost;
+    const marketValue = sign * qty * price;
     const unrealized = marketValue - costBasis;
-    const intraday = sign * qty * (price - lastday) * multiplier;
+    const intraday = sign * qty * (price - lastday);
     return {
         asset_id: asset.id,
         symbol: position.ticker,
         exchange: asset.exchange,
-        asset_class: multiplier > 1 ? "us_option" : "us_equity",
+        asset_class: "us_equity",
         asset_marginable: asset.marginable,
         qty: decimal(sign * qty),
         qty_available: decimal(sign * qty),
@@ -108,7 +101,7 @@ export const toAlpacaPosition = (position: Position, asset: { id: string; exchan
         unrealized_pl: money(unrealized),
         unrealized_plpc: decimal(costBasis !== 0 ? unrealized / Math.abs(costBasis) : 0),
         unrealized_intraday_pl: money(intraday),
-        unrealized_intraday_plpc: decimal(lastday > 0 ? intraday / (qty * lastday * multiplier) : 0),
+        unrealized_intraday_plpc: decimal(lastday > 0 ? intraday / (qty * lastday) : 0),
         current_price: decimal(price),
         lastday_price: decimal(lastday),
         change_today: decimal(lastday > 0 ? price / lastday - 1 : 0)

@@ -5,7 +5,7 @@
 import type {
     ACHRelationship, Bank, CreateBankRequest, Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, Activity,
     Asset, CalendarDay, Clock, CreateACHRelationshipRequest, CreateOrderRequest, CreateTransferRequest, ListActivitiesQuery,
-    ListAssetsQuery, ListDocumentsQuery, ListOrdersQuery, ListTransfersQuery, OptionContract, OptionsApprovalRequest, OptionsApprovalResponse, Order, OwnerDocumentUploadRequest,
+    ListAssetsQuery, ListDocumentsQuery, ListOrdersQuery, ListTransfersQuery, Order, OwnerDocumentUploadRequest,
     PortfolioHistory, PortfolioHistoryQuery, Position, TradeAccount, Transfer, UpdateOrderRequest, CreateLocateRequest, ListLocateQuotesResponse,
     ListLocatesResponse, Locate
 } from "./types";
@@ -63,16 +63,6 @@ export interface Broker {
     createLocate(accountId: string, request: CreateLocateRequest): Promise<Locate>;
     listLocates(accountId: string, query?: { status?: string; symbol?: string; limit?: number }): Promise<ListLocatesResponse>;
     getLocate(accountId: string, locateId: string): Promise<Locate>;
-
-    // Options: exercise (POST .../positions/{symbol}/exercise, all contracts or qty) and do-not-exercise (POST .../do-not-exercise),
-    // approval (POST /v1/accounts/{id}/options/approval), contracts (GET /v1/options/contracts and /{symbol_or_id})
-    exerciseOption(accountId: string, symbol: string, request?: { qty?: string }): Promise<{ qty_exercised: string; qty_remaining: string }>;
-    doNotExercise(accountId: string, symbol: string): Promise<void>;
-    requestOptionsApproval(accountId: string, request: OptionsApprovalRequest): Promise<OptionsApprovalResponse>;
-    // GET /v1/accounts/options/approvals?account_id=, newest first
-    listOptionsApprovals(accountId: string): Promise<OptionsApprovalResponse[]>;
-    listOptionContracts(query: { underlying_symbols?: string; expiration_date?: string; expiration_date_gte?: string; expiration_date_lte?: string; type?: "call" | "put"; strike_price_gte?: string; strike_price_lte?: string; limit?: number }): Promise<OptionContract[]>;
-    getOptionContract(symbol: string): Promise<OptionContract>;
 
     // IRAs: GET /v1/accounts/ira_excess_contributions, the IRAs whose contributions for a tax year exceed the limit for the owner's age
     listIraExcessContributions(): Promise<{ account_id: string; tax_year: number; total_contribution_amount: number }[]>;

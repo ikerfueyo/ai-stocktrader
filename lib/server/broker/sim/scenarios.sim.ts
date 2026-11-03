@@ -1,8 +1,8 @@
 // The shared brokerage scenarios (../scenarios.ts) against SimBroker, on a database of their own: npm run test:scenarios. It needs the
 // local Postgres from .env.local; the database is DB_NAME with _test added (SCENARIO_DB_NAME to pick another, which must end in
-// _test), created from db/schema.sql the first time. Prices are fixed (overridePrice) on made-up symbols per run, one with an option
-// chain (overrideOptionChain), the market is open (MARKET_HOURS_OVERRIDE), reviews are immediate (SIM_KYC_SECONDS=0) and transfers
-// move a step per advance (fastForwardTransfers), so nothing calls Alpha Vantage. Run it with the react-server condition, which turns server-only off.
+// _test), created from db/schema.sql the first time. Prices are fixed (overridePrice) on made-up symbols per run, the market is open
+// (MARKET_HOURS_OVERRIDE), reviews are immediate (SIM_KYC_SECONDS=0) and transfers move a step per advance (fastForwardTransfers),
+// so nothing calls Alpha Vantage. Run it with the react-server condition, which turns server-only off.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "pg";
@@ -16,17 +16,16 @@ try {
 const database = process.env.SCENARIO_DB_NAME ?? `${process.env.DB_NAME ?? "ai_stocktrader"}_test`;
 if (!database.endsWith("_test")) throw new Error(`The scenarios make accounts and orders: run them on a database whose name ends in _test, not ${database}`);
 const letters = () => Array.from({ length: 2 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join("");
-// Made-up symbols, new each run, so corporate actions stored by an earlier run don't apply to this one's positions; the last has
-// an option chain
+// Made-up symbols, new each run, so corporate actions stored by an earlier run don't apply to this one's positions
 const suffix = letters();
-const SYMBOLS = { stock: `ZS${suffix}`, other: `ZT${suffix}`, thin: `ZU${suffix}`, optioned: `ZO${suffix}` };
+const SYMBOLS = { stock: `ZS${suffix}`, other: `ZT${suffix}`, thin: `ZU${suffix}` };
 // The made-up user every scenario account belongs to
 const USER = "user_scenarios";
 Object.assign(process.env, {
     DB_NAME: database, MARKET_HOURS_OVERRIDE: "open", SIM_KYC_SECONDS: "0", SIM_KYC_REVIEW_SECONDS: "0", BACKGROUND_JOBS: "off",
     // One missed deficit makes a practice, so the intraday margin scenario's restriction comes from its one deficit
     SIM_INTRADAY_PRACTICE_MISSES: "1",
-    PRICE_OVERRIDES: JSON.stringify({ [SYMBOLS.stock]: 100, [SYMBOLS.other]: 50, [SYMBOLS.thin]: 20, [SYMBOLS.optioned]: 100 })
+    PRICE_OVERRIDES: JSON.stringify({ [SYMBOLS.stock]: 100, [SYMBOLS.other]: 50, [SYMBOLS.thin]: 20 })
 });
 
 const connection = () => ({
@@ -59,10 +58,10 @@ const prepareDatabase = async () => {
 const makeHarness = async (): Promise<ScenarioHarness> => {
     await prepareDatabase();
     // Loaded after the environment is set, since the modules read it when they load
-    const [{ SimBroker }, { default: pool }, accounts, transfers, orders, positions, calls, { overridePrice, overrideOptionChain }, { loadCorporateActions }, portfolio, { withLedgerAccount }, { TRANSFER_FEES }, marginAccount, { addDays, easternTime, isTradingDay, settlementDate }, { optionSymbol }] = await Promise.all([
+    const [{ SimBroker }, { default: pool }, accounts, transfers, orders, positions, calls, { overridePrice }, { loadCorporateActions }, portfolio, { withLedgerAccount }, { TRANSFER_FEES }, marginAccount, { easternTime, settlementDate }] = await Promise.all([
         import("./index"), import("../../db"), import("./accounts"), import("./transfers"), import("./orders"), import("./positions"), import("./calls"),
         import("../../alphaVantage"), import("../../corporateActions"), import("../../portfolio"), import("../../requestContext"), import("./funding"), import("./marginAccount"),
-        import("../../../marketHours"), import("../../../options")
+        import("../../../marketHours")
     ]);
     // Their corporate actions count as fetched, so none is looked up at Alpha Vantage
     await pool.query(
@@ -71,24 +70,11 @@ const makeHarness = async (): Promise<ScenarioHarness> => {
     // 1,000 shares traded today: the simulator fills a round lot per match
     overridePrice(SYMBOLS.thin, 20, 1000);
     const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
-    // A closing chain for the optioned symbol: a call and a put at 100, expiring on the first trading Friday about five weeks out, at
-    // 30% implied volatility (quoted by the model from the stock's price)
-    let expiration = addDays(today(), 35);
-    while (new Date(`${expiration}T12:00:00Z`).getUTCDay() !== 5 || !isTradingDay(expiration)) expiration = addDays(expiration, 1);
-    const contract = (type: "call" | "put") => {
-        const symbol = optionSymbol({ underlying: SYMBOLS.optioned, expiration, type, strike: 100 });
-        return {
-            contractID: symbol, symbol: SYMBOLS.optioned, expiration, strike: "100.00", type, last: "3.45", mark: "3.45", bid: "3.40", bid_size: "10", ask: "3.50", ask_size: "10",
-            volume: "100", open_interest: "1000", date: today(), implied_volatility: "0.30"
-        };
-    };
-    overrideOptionChain(SYMBOLS.optioned, [contract("call"), contract("put")]);
     return {
         broker: new SimBroker(),
         symbols: { stock: SYMBOLS.stock, other: SYMBOLS.other },
         patience: 12,
         thinlyTraded: { symbol: SYMBOLS.thin, sharesPerFill: 100 },
-        optionContract: { symbol: optionSymbol({ underlying: SYMBOLS.optioned, expiration, type: "call", strike: 100 }), underlying: SYMBOLS.optioned },
         transferSteps: { returnFee: TRANSFER_FEES.achReturn },
         async advance() {
             await accounts.advanceAccounts();

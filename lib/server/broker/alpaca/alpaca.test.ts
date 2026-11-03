@@ -118,7 +118,6 @@ describe("requests", () => {
         const { fetcher, apiCalls } = mockFetch(({ url, method }) => {
             if (url.includes("/oauth2/token")) return undefined;
             if (method === "DELETE" && url.endsWith("/orders")) return json([{ id: "a", status: 200 }, { id: "b", status: 500, body: {} }], 207);
-            if (url.includes("/options/approvals")) return json({ options_approvals: [] });
             return method === "DELETE" ? new Response(null, { status: 204 }) : json([]);
         });
         const broker = new AlpacaBroker(config(fetcher));
@@ -128,9 +127,7 @@ describe("requests", () => {
         await broker.listActivities(ACCOUNT, { activity_types: "FILL,DIV", page_size: 100 } as never);
         await broker.cancelOrder(ACCOUNT, "o1");
         assert.deepEqual(await broker.cancelAllOrders(ACCOUNT), [{ id: "a", status: 200 }, { id: "b", status: 500 }]);
-        await broker.listOptionsApprovals(ACCOUNT);
         await broker.getCalendar("2026-10-01", "2026-10-31");
-        await broker.exerciseOption(ACCOUNT, "F261120C00012000", { qty: "1" });
         await broker.listTransfers(ACCOUNT, { direction: "INCOMING" } as never);
         await broker.deleteAchRelationship(ACCOUNT, "r1");
         const requests = apiCalls().map(({ method, url }) => `${method} ${url.replace("https://broker.test", "").replaceAll(ACCOUNT, "{id}")}`);
@@ -141,9 +138,7 @@ describe("requests", () => {
             "GET /v1/accounts/activities?activity_types=FILL%2CDIV&page_size=100&account_id={id}",
             "DELETE /v1/trading/accounts/{id}/orders/o1",
             "DELETE /v1/trading/accounts/{id}/orders",
-            "GET /v1/accounts/options/approvals?account_id={id}",
             "GET /v1/calendar?start=2026-10-01&end=2026-10-31",
-            "POST /v1/trading/accounts/{id}/positions/F261120C00012000/exercise",
             "GET /v1/accounts/{id}/transfers?direction=INCOMING",
             "DELETE /v1/accounts/{id}/ach_relationships/r1"
         ]);
@@ -153,18 +148,6 @@ describe("requests", () => {
         const { fetcher, apiCalls } = mockFetch(({ url }) => url.includes("ach_relationships") ? json({ id: "r1", status: "QUEUED" }) : undefined);
         await new AlpacaBroker(config(fetcher)).createAchRelationship(ACCOUNT, { processor_token: "processor-sandbox-1" } as never);
         assert.deepEqual(JSON.parse(apiCalls()[0].body!), { processor_token: "processor-sandbox-1" });
-    });
-
-    test("paged lists are followed to the limit asked for", async () => {
-        const { fetcher, apiCalls } = mockFetch(({ url }) => {
-            if (!url.includes("/options/contracts")) return undefined;
-            const token = new URL(url).searchParams.get("page_token");
-            const contracts = Array.from({ length: 3 }, (_, index) => ({ symbol: `${token ?? "p0"}-${index}` }));
-            return json({ option_contracts: contracts, next_page_token: token === "p2" ? null : token ? `p${Number(token.slice(1)) + 1}` : "p1" });
-        });
-        const contracts = await new AlpacaBroker(config(fetcher)).listOptionContracts({ underlying_symbols: "F", limit: 7 });
-        assert.deepEqual(contracts.map(({ symbol }) => symbol), ["p0-0", "p0-1", "p0-2", "p1-0", "p1-1", "p1-2", "p2-0"]);
-        assert.deepEqual(apiCalls().map(({ url }) => new URL(url).searchParams.get("limit")), ["7", "4", "1"]);
     });
 
     test("configurations are the trading account's user configurations", async () => {

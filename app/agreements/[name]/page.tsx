@@ -28,14 +28,6 @@ const DOCUMENTS: Record<string, { title: string; covers: string[] }> = {
             "Margin calls: when the account falls below its maintenance requirement, the broker can sell your positions without notice to cover it."
         ]
     },
-    options_agreement: {
-        title: "Options agreement",
-        covers: [
-            "The risks of options described in the Characteristics and Risks of Standardized Options, which you must read first.",
-            "Exercise and assignment, expiration, and the levels of options trading the broker approves you for.",
-            "That options can expire worthless, and that selling options can lose more than the premium received."
-        ]
-    },
     form_crs: {
         title: "Relationship summary (Form CRS)",
         covers: [

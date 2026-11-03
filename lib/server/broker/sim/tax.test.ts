@@ -75,7 +75,7 @@ describe("1099-B sales and wash sales (Publication 550)", () => {
         const loss = sell("s1", "a", 10, 50, 40, "2025-01-02", "2026-02-01");
         const open = reportSales(acquisitions, [loss]).adjustments.get("b");
         assert.deepEqual(open, [{ qty: 10, basis: 100, carriedDays: 395 }]);
-        const rows = unrealizedRows({ id: "b", symbol: "XYZ", side: "long", qty: 100, price: 45, acquiredAt: "2026-02-05T15:00:00Z", multiplier: 1 }, open, 46, "2026-12-01T15:00:00Z");
+        const rows = unrealizedRows({ id: "b", symbol: "XYZ", side: "long", qty: 100, price: 45, acquiredAt: "2026-02-05T15:00:00Z" }, open, 46, "2026-12-01T15:00:00Z");
         assert.deepEqual(rows.map(row => [row.id, row.qty, row.costBasis, row.washAdjustment, row.unrealized, row.dateAcquired.slice(0, 10), row.term]),
             [["b", 10, 550, 100, -90, "2025-01-06", "long"], ["b#2", 90, 4050, 0, 90, "2026-02-05", "short"]]);
         const { sales } = reportSales(acquisitions, [loss, sell("s2", "b", 100, 45, 46, "2026-02-05", "2026-12-01")]);
@@ -127,7 +127,7 @@ describe("1099-B sales and wash sales (Publication 550)", () => {
         const { sales, adjustments } = reportSales(acquisitions, [cover("c1", "x", 10, 50, 55, "2026-03-01", "2026-03-10")]);
         assert.deepEqual([sales[0].gain, sales[0].washDisallowed, sales[0].term], [0, 50, "short"], "a purchase doesn't replace a short");
         assert.deepEqual(adjustments.get("y"), [{ qty: 10, basis: 50, carriedDays: 0 }]);
-        const [row] = unrealizedRows({ id: "y", symbol: "XYZ", side: "short", qty: 10, price: 52, acquiredAt: "2026-03-15T15:00:00Z", multiplier: 1 }, adjustments.get("y"), 50, "2026-03-20T15:00:00Z");
+        const [row] = unrealizedRows({ id: "y", symbol: "XYZ", side: "short", qty: 10, price: 52, acquiredAt: "2026-03-15T15:00:00Z" }, adjustments.get("y"), 50, "2026-03-20T15:00:00Z");
         assert.deepEqual([row.costBasis, row.washAdjustment, row.unrealized], [470, 50, -30], "sold for $520, less the $50 its covering carries");
         const both = reportSales(acquisitions, [cover("c1", "x", 10, 50, 55, "2026-03-01", "2026-03-10"), cover("c2", "y", 10, 52, 50, "2026-03-15", "2026-04-01")]);
         assert.deepEqual([both.sales[1].proceeds, both.sales[1].costBasis, both.sales[1].gain], [520, 550, -30]);
