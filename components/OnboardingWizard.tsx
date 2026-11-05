@@ -229,7 +229,7 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                                 <option value="USA_ITIN">ITIN</option>
                             </select>
                         </Field>
-                        <Field label={identity.tax_id_type === "USA_SSN" ? "SSN" : "ITIN"} error={error("identity.tax_id")} hint={process.env.NEXT_PUBLIC_DEMO === "true" ? "Demo: use a made-up number such as 123-45-6789, not your own" : "Only the last 4 digits are kept"}>
+                        <Field label={identity.tax_id_type === "USA_SSN" ? "SSN" : "ITIN"} error={error("identity.tax_id")} hint="Only the last 4 digits are kept">
                             <input className="form-control" type="password" autoComplete="off" inputMode="numeric" placeholder="123-45-6789" value={identity.tax_id} onChange={event => set("identity", { tax_id: event.target.value })} />
                         </Field>
                     </div>

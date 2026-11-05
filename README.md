@@ -10,21 +10,6 @@ AI StockTrader is a full-stack web application that allows users to mock-trade o
 - **Portfolio**: View open long and short positions with average cost, current price, and unrealized profit/loss. Sell (or cover) right from each row, and click the AI button for an on-demand hold-or-sell sentiment analysis.
 - **Transaction History**: Users can view their past mock transactions, including stock symbol, date, price, quantity, and total.
 
-## Live Demo
-
-A public demo runs on AWS (the link is in the repository's About section). It's a **simulated brokerage**: no real money moves and no
-real personal details are needed; any well-formed made-up details work (such as SSN 123-45-6789). It runs on ECS Fargate with RDS
-Postgres, defined in Terraform (`terraform/`), and deploys with `scripts/deploy.sh`.
-
-### Run it with Docker
-
-With Docker and a `.env.local` holding the API keys (see below), this runs the app and its own Postgres at `http://localhost:3000`,
-creating the schema on the first start:
-```sh
-export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
-docker compose up --build
-```
-
 ## Tech Stack
 
 - **Next.js** (App Router) and **React** – pages and API route handlers in one app
