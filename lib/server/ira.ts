@@ -5,7 +5,7 @@ import { brokerMode, getBroker } from "./broker";
 import { HttpError } from "./httpError";
 import { clientIp, FINAL_STATUSES, listAccountRows } from "./brokerAccounts";
 import {
-    beneficiaryErrors, contributionDeadline, contributionError, contributionLimit, contributionTaxYears, DISTRIBUTION_REASONS, distributionReasonsFor, IRA_LABELS, rmdDue, spousalConsentMayBeNeeded,
+    beneficiaryErrors, contributionDeadline, iraMaritalStatus, contributionError, contributionLimit, contributionTaxYears, DISTRIBUTION_REASONS, distributionReasonsFor, IRA_LABELS, rmdDue, spousalConsentMayBeNeeded,
     type BeneficiaryInput, type IraSubType
 } from "../ira";
 import { easternParts } from "../marketHours";
@@ -84,7 +84,8 @@ const digits = (value: string) => value.replace(/\D/g, "");
 
 // POST /api/accounts/ira: opens a traditional or Roth IRA for a user with an active individual account, from its reviewed details. The
 // tax ID must match the one on file (its last 4 digits are kept). One open IRA of each type.
-export const openIra = async (request: NextRequest, userId: string, input: { subType?: unknown; taxId?: unknown; beneficiaries?: unknown; acceptedAgreements?: unknown; iraDisclosure?: unknown }): Promise<BrokerAccount> => {
+// Alpaca won't add beneficiaries without the owner's marital status, so the IRA takes the individual account's, else `maritalStatus`.
+export const openIra = async (request: NextRequest, userId: string, input: { subType?: unknown; taxId?: unknown; maritalStatus?: unknown; beneficiaries?: unknown; acceptedAgreements?: unknown; iraDisclosure?: unknown }): Promise<BrokerAccount> => {
     const subType = input.subType as IraSubType;
     if (subType !== "traditional" && subType !== "roth") throw new HttpError("Pick a traditional or Roth IRA", 400);
     if (input.iraDisclosure !== true) throw new HttpError("Read and accept the IRA disclosure statement and custodial agreement", 400);
@@ -101,13 +102,15 @@ export const openIra = async (request: NextRequest, userId: string, input: { sub
     const taxId = digits(String(input.taxId ?? ""));
     const stored = digits(String(individual.account.identity?.tax_id ?? ""));
     if (taxId.length !== 9 || !stored || taxId.slice(-4) !== stored.slice(-4)) throw new HttpError("Enter the Social Security number on your account (it isn't kept, so it's asked again)", 400);
+    const maritalStatus = iraMaritalStatus(individual.account.identity?.marital_status, input.maritalStatus);
+    if (!maritalStatus) throw new HttpError("Choose your marital status: an IRA's beneficiaries need it", 400);
     const signedAt = new Date().toISOString();
     const ip = clientIp(request);
     const source = individual.account;
     const accountRequest: AccountCreationRequest = {
         account_type: "ira", account_sub_type: subType, allow_instant_ach: false,
         contact: source.contact, disclosures: source.disclosures,
-        identity: { ...source.identity!, tax_id: `${taxId.slice(0, 3)}-${taxId.slice(3, 5)}-${taxId.slice(5)}` },
+        identity: { ...source.identity!, marital_status: maritalStatus, tax_id: `${taxId.slice(0, 3)}-${taxId.slice(3, 5)}-${taxId.slice(5)}` },
         ...(source.trusted_contact ? { trusted_contact: source.trusted_contact } : {}),
         agreements: (["customer_agreement", "account_agreement"] as const).map(agreement => ({ agreement: agreement as never, signed_at: signedAt, ip_address: ip })),
         beneficiaries: beneficiaries.map(beneficiary => ({ ...beneficiary, tax_id: `${digits(beneficiary.tax_id).slice(0, 3)}-${digits(beneficiary.tax_id).slice(3, 5)}-${digits(beneficiary.tax_id).slice(5)}`, tax_id_type: "USA_SSN" })),

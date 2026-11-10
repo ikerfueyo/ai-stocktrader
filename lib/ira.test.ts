@@ -2,7 +2,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
     ageOn, beneficiaryErrors, contributionError, contributionLimit, contributionTaxYears, distributionReasonError, distributionReasonsFor, distributionWithholding,
-    reached59AndAHalf, spousalConsentMayBeNeeded, type BeneficiaryInput
+    beneficiariesNeedMaritalStatus, iraMaritalStatus, reached59AndAHalf, spousalConsentMayBeNeeded, type BeneficiaryInput
 } from "./ira";
 
 describe("Contributions", () => {
@@ -75,6 +75,21 @@ describe("Beneficiaries", () => {
         const errors = beneficiaryErrors([person({ given_name: " ", date_of_birth: "2030-01-01", tax_id: "000-12-3456", share_pct: "33.333" })], "2026-10-28").join(" | ");
         for (const text of ["name", "date of birth", "Social Security", "2 decimals"]) assert.ok(errors.includes(text), text);
         assert.match(beneficiaryErrors(Array.from({ length: 7 }, () => person({ share_pct: "100" })), "2026-10-28").join(), /at most 6/);
+    });
+
+    test("beneficiaries need the owner's marital status, as Alpaca requires", () => {
+        assert.equal(beneficiariesNeedMaritalStatus([person()], undefined), true);
+        assert.equal(beneficiariesNeedMaritalStatus([person()], null), true);
+        assert.equal(beneficiariesNeedMaritalStatus([person()], "SINGLE"), false);
+        assert.equal(beneficiariesNeedMaritalStatus([], undefined), false);
+    });
+
+    test("an IRA takes the account's marital status, else the one chosen when opening it", () => {
+        assert.equal(iraMaritalStatus("MARRIED", "SINGLE"), "MARRIED");
+        assert.equal(iraMaritalStatus(undefined, "WIDOWED"), "WIDOWED");
+        assert.equal(iraMaritalStatus(null, ""), null);
+        assert.equal(iraMaritalStatus(undefined, "ENGAGED"), null);
+        assert.equal(iraMaritalStatus("unknown", "DIVORCED"), "DIVORCED");
     });
 
     test("spousal consent may be needed in community property states without a spouse named", () => {

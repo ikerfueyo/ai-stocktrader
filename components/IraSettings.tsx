@@ -4,8 +4,10 @@ import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
-import { beneficiaryErrors, IRA_LABELS, spousalConsentMayBeNeeded, type BeneficiaryInput, type IraSubType } from "@/lib/ira";
+import { beneficiaryErrors, IRA_LABELS, iraMaritalStatus, spousalConsentMayBeNeeded, type BeneficiaryInput, type IraSubType } from "@/lib/ira";
+import { MARITAL_STATUSES, type MaritalStatus } from "@/lib/kyc";
 import type { IraOverview, OpenIraRequest } from "@/lib/types";
+import { MARITAL_LABELS } from "./FormFields";
 
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
 const blank = (type: "primary" | "contingent" = "primary"): BeneficiaryInput => ({ given_name: "", family_name: "", date_of_birth: "", tax_id: "", relationship: "other", type, share_pct: "100" });
@@ -109,12 +111,16 @@ const DESCRIPTIONS: Record<IraSubType, string> = {
     roth: "Contributions are made after tax (income limits apply); qualified withdrawals, from 59½ and 5 years after the first contribution, are tax-free. No required distributions."
 };
 
-// Opens a traditional or Roth IRA from the individual account (POST /api/accounts/ira): the IRA's type, the SSN again, beneficiaries
-// and the agreements. It's reviewed like any application, then appears in the account menu.
+// Opens a traditional or Roth IRA from the individual account (POST /api/accounts/ira): the IRA's type, the SSN again, the marital
+// status when the account has none (Alpaca needs it for beneficiaries), beneficiaries and the agreements. It's reviewed like any
+// application, then appears in the account menu.
 export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; maritalStatus?: string | null; onOpened: () => void }) => {
     const [overview, setOverview] = useState<IraOverview | null>(null);
     const [subType, setSubType] = useState<IraSubType | null>(null);
     const [taxId, setTaxId] = useState("");
+    const [chosenMaritalStatus, setChosenMaritalStatus] = useState<MaritalStatus | "">("");
+    const askMaritalStatus = !iraMaritalStatus(maritalStatus);
+    const effectiveMaritalStatus = iraMaritalStatus(maritalStatus, chosenMaritalStatus);
     const [beneficiaries, setBeneficiaries] = useState<BeneficiaryInput[]>([]);
     const [agreements, setAgreements] = useState(false);
     const [disclosure, setDisclosure] = useState(false);
@@ -141,7 +147,7 @@ export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; ma
         setSubmitting(true);
         setMessage(null);
         try {
-            const body: OpenIraRequest = { subType, taxId, beneficiaries, acceptedAgreements: agreements, iraDisclosure: disclosure };
+            const body: OpenIraRequest = { subType, taxId, ...(askMaritalStatus && effectiveMaritalStatus ? { maritalStatus: effectiveMaritalStatus } : {}), beneficiaries, acceptedAgreements: agreements, iraDisclosure: disclosure };
             await axios.post("/api/accounts/ira", body);
             setMessage({ ok: true, text: `Your ${IRA_LABELS[subType]} was submitted for review. Once it's open, switch to it in the account menu to fund it.` });
             setSubType(null);
@@ -175,11 +181,20 @@ export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; ma
                         <span className="transfer-field-label">Your Social Security number (it isn&apos;t kept, so it&apos;s asked again)</span>
                         <input className="form-control" inputMode="numeric" autoComplete="off" value={taxId} onChange={event => setTaxId(event.target.value)} />
                     </label>
+                    {askMaritalStatus && (
+                        <label className="transfer-field">
+                            <span className="transfer-field-label">Marital status (needed for an IRA&apos;s beneficiaries)</span>
+                            <select className="form-control" value={chosenMaritalStatus} onChange={event => setChosenMaritalStatus(event.target.value as MaritalStatus | "")}>
+                                <option value="">Choose...</option>
+                                {MARITAL_STATUSES.map(status => <option key={status} value={status}>{MARITAL_LABELS[status]}</option>)}
+                            </select>
+                        </label>
+                    )}
                     <span className="transfer-field-label">Beneficiaries (optional now, can be added later)</span>
                     <BeneficiaryFields beneficiaries={beneficiaries} setBeneficiaries={setBeneficiaries} />
-                    {spousalConsentMayBeNeeded(state, beneficiaries, maritalStatus) && (
+                    {spousalConsentMayBeNeeded(state, beneficiaries, effectiveMaritalStatus) && (
                         <p className="text-warning small">
-                            {maritalStatus === "MARRIED" ? "You live in a community property state and your spouse isn't a beneficiary, so your spouse's consent is needed; we'll contact you to collect it." : "In a community property state, a married owner whose spouse isn't a primary beneficiary needs the spouse's consent."}
+                            {effectiveMaritalStatus === "MARRIED" ? "You live in a community property state and your spouse isn't a beneficiary, so your spouse's consent is needed; we'll contact you to collect it." : "In a community property state, a married owner whose spouse isn't a primary beneficiary needs the spouse's consent."}
                         </p>
                     )}
                     <label className="onboarding-check">
@@ -190,7 +205,7 @@ export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; ma
                         <input type="checkbox" checked={disclosure} onChange={event => setDisclosure(event.target.checked)} />
                         I&apos;ve read the <Link href="/agreements/ira_disclosure" target="_blank">IRA disclosure statement and custodial agreement</Link>
                     </label>
-                    <button type="button" className="btn btn-dark" disabled={submitting || !agreements || !disclosure || taxId.replace(/\D/g, "").length !== 9} onClick={submit}>
+                    <button type="button" className="btn btn-dark" disabled={submitting || !agreements || !disclosure || !effectiveMaritalStatus || taxId.replace(/\D/g, "").length !== 9} onClick={submit}>
                         {submitting ? "Submitting..." : `Open a ${IRA_LABELS[subType]}`}
                     </button>
                 </div>

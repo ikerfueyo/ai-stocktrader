@@ -78,7 +78,7 @@ export const testApplication = (options: { margin?: boolean; ira?: "traditional"
             given_name: "Scenario", family_name: "Tester", date_of_birth: "1980-01-15", tax_id: "587-42-3816", tax_id_type: "USA_SSN",
             country_of_citizenship: "USA", country_of_birth: "USA", country_of_tax_residence: "USA", funding_source: ["employment_income"],
             annual_income_min: "50000", annual_income_max: "100000", liquid_net_worth_min: "50000", liquid_net_worth_max: "100000", total_net_worth_min: "100000", total_net_worth_max: "200000",
-            investment_experience_with_stocks: "over_5_years"
+            investment_experience_with_stocks: "over_5_years", marital_status: "SINGLE"
         },
         disclosures: { is_control_person: false, is_affiliated_exchange_or_finra: false, is_politically_exposed: false, immediate_family_exposed: false, employment_status: "retired" },
         agreements: agreements.map(agreement => ({ agreement, ...signed })),

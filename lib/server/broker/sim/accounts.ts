@@ -5,7 +5,7 @@ import pool from "../../db";
 import { BrokerError } from "../errors";
 import { maskTaxId, validateApplication, type AccountApplication, type AgreementName } from "../../../kyc";
 import { easternParts } from "../../../marketHours";
-import { beneficiaryErrors, maskBeneficiaries, type BeneficiaryInput } from "../../../ira";
+import { BENEFICIARIES_NEED_MARITAL_STATUS, beneficiariesNeedMaritalStatus, beneficiaryErrors, maskBeneficiaries, type BeneficiaryInput } from "../../../ira";
 import { configurationError, defaultConfigurations, nextReviewStep, submittedDueAt, updateNeedsReview } from "./kyc";
 import { toAccount, type SimAccountRow } from "./shapes";
 import type { BrokerEventStream } from "../broker";
@@ -117,6 +117,8 @@ export const createAccount = async (request: AccountCreationRequest): Promise<Ac
         errors.push("account_sub_type and beneficiaries are for IRA accounts");
     }
     if (errors.length > 0) throw invalid(errors);
+    // Alpaca's own rule, with its code and message
+    if (ira && beneficiariesNeedMaritalStatus(request.beneficiaries ?? [], request.identity?.marital_status)) throw new BrokerError(422, 40010001, BENEFICIARIES_NEED_MARITAL_STATUS);
     const identity = { ...request.identity!, tax_id: maskTaxId(request.identity!.tax_id ?? "") };
     const agreements = agreementNames(request.agreements);
     const enabledAssets = [...new Set(["us_equity", ...(request.enabled_assets ?? [])])];

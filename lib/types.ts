@@ -565,6 +565,8 @@ export interface OpenIraRequest {
     subType: "traditional" | "roth";
     // The account holder's Social Security number, entered again (it isn't kept)
     taxId: string;
+    // Required when the individual account has no marital status (Alpaca needs it for beneficiaries); ignored when it has one
+    maritalStatus?: AccountApplication["identity"]["marital_status"];
     beneficiaries: { given_name: string; middle_name?: string | null; family_name: string; date_of_birth: string; tax_id: string; relationship: "spouse" | "other"; type: "primary" | "contingent"; share_pct: string }[];
     acceptedAgreements: boolean;
     iraDisclosure: boolean;

@@ -6,6 +6,8 @@
 //   Distributions are withdrawals with a reason (the IRS needs one; it gives the 1099-R's code) and tax withholding: 10% federal unless
 //   the customer opts out, and state withholding as elected, taken from the amount requested.
 
+import { MARITAL_STATUSES, type MaritalStatus } from "./kyc";
+
 export type IraSubType = "traditional" | "roth";
 
 export const IRA_LABELS: Record<IraSubType, string> = { traditional: "Traditional IRA", roth: "Roth IRA" };
@@ -194,3 +196,14 @@ export const COMMUNITY_PROPERTY_STATES = ["AZ", "CA", "ID", "LA", "NV", "NM", "T
 // to the partner, who collects the consent by hand.
 export const spousalConsentMayBeNeeded = (state: string | undefined, beneficiaries: Pick<BeneficiaryInput, "relationship">[], maritalStatus?: string | null): boolean =>
     COMMUNITY_PROPERTY_STATES.includes((state ?? "").toUpperCase()) && !beneficiaries.some(({ relationship }) => relationship === "spouse") && (!maritalStatus || maritalStatus === "MARRIED");
+
+// Alpaca refuses an IRA's beneficiaries while the owner's marital status isn't on the application (422, 40010001, in its sandbox on
+// 2026-11-10), and onboarding asks it as optional, so opening an IRA asks it when the individual account has none
+export const BENEFICIARIES_NEED_MARITAL_STATUS = "primaryAccountHolder marital_status is required to create beneficiaries";
+export const beneficiariesNeedMaritalStatus = (beneficiaries: readonly unknown[], maritalStatus?: string | null): boolean => beneficiaries.length > 0 && !maritalStatus;
+
+// The marital status an IRA is opened with: the individual account's, else the one chosen when opening it; null when neither is a valid one
+export const iraMaritalStatus = (onAccount?: string | null, chosen?: unknown): MaritalStatus | null => {
+    for (const value of [onAccount, chosen]) if (MARITAL_STATUSES.includes(value as MaritalStatus)) return value as MaritalStatus;
+    return null;
+};
