@@ -12,7 +12,9 @@ import { nextTradingDay } from "../../marketHours";
 // (lib/server/broker/sim/scenarios.sim.ts, npm run test:scenarios) and against Alpaca's Broker API sandbox
 // (lib/server/broker/alpaca/scenarios.sandbox.ts). What only a test broker can do (move a price, age a position, post a corporate
 // action) is the harness's, and a scenario that needs a capability the harness lacks is skipped. Every account is a new one, with
-// fake identities (made-up SSNs Alpaca accepts: it refuses sequences such as 123-45-6789) and the 011000015 test routing number.
+// fake identities (made-up SSNs Alpaca accepts: it refuses sequences such as 123-45-6789) and the 011000015 test routing number,
+// except that the scenarios a new account can't run at Alpaca (shorting, which needs margin enabled by support, and withdrawals, which
+// wait 7 business days for the deposit's hold) use the harness's existing account when it has one.
 
 export interface ScenarioHarness {
     broker: Broker;
@@ -54,6 +56,12 @@ export interface ScenarioHarness {
         fills: { id: string | number; realized_pnl: number | null; total: string; settle_date?: string | null }[];
         cash: { type: string; amount: string }[];
     }>;
+    // Ends the hold on the account's completed deposits, as if they had arrived 7 business days ago (the simulator). Without it a new
+    // account's deposit can't be withdrawn for 7 business days, as at Alpaca.
+    releaseDeposits?(accountId: string): Promise<void>;
+    // An existing account to run on where a new one can't (SCENARIO_ACCOUNT_ID in the sandbox): ACTIVE, margin enabled with shorting,
+    // and at least $3,000 that can be withdrawn, with no position or open order in the two symbols
+    account?: string;
     // Releases what the harness holds (the database pool) once the scenarios are done
     close?(): Promise<void>;
 }
@@ -128,6 +136,39 @@ const fundedAccount = async (h: ScenarioHarness, amount: number, options: Parame
     return account.id;
 };
 
+// The harness's existing account, checked for what the scenarios using it need: open, and flat in both symbols with no open orders,
+// so they can count from zero
+const existingAccount = async (h: ScenarioHarness, { margin = false }: { margin?: boolean } = {}): Promise<string> => {
+    const accountId = h.account!;
+    const [account, trading, positions, orders] = await Promise.all([
+        h.broker.getAccount(accountId), h.broker.getTradeAccount(accountId), h.broker.listPositions(accountId), h.broker.listOrders(accountId, { status: "open" })
+    ]);
+    assert.equal(account.status, "ACTIVE", `the existing account ${accountId} is ${account.status}`);
+    if (margin) assert.ok(trading.shorting_enabled && Number(trading.multiplier) >= 2, `the existing account ${accountId} is at ${trading.multiplier}x, shorting ${trading.shorting_enabled ? "on" : "off"}`);
+    const symbols = Object.values(h.symbols);
+    const busy = [...positions.map(({ symbol }) => symbol), ...orders.map(({ symbol }) => symbol)].filter(symbol => symbol && symbols.includes(symbol));
+    assert.deepEqual(busy, [], `close the existing account's positions and orders in ${busy.join(", ")} first`);
+    return accountId;
+};
+
+// A margin account that can sell short: the existing one, else a new one with $10,000 that the broker enables
+const marginAccount = async (h: ScenarioHarness): Promise<string> => {
+    if (h.account) return existingAccount(h, { margin: true });
+    const accountId = await fundedAccount(h, 10000, { margin: true });
+    await waitFor(h, "shorting to be enabled", async () => (await h.broker.getTradeAccount(accountId)).shorting_enabled);
+    return accountId;
+};
+
+// An account with at least $1,000 that can be withdrawn: the existing one, else a new one with $3,000 whose deposit's hold has ended
+const withdrawableAccount = async (h: ScenarioHarness): Promise<string> => {
+    const accountId = h.account ? await existingAccount(h) : await fundedAccount(h, 3000);
+    if (!h.account) await h.releaseDeposits!(accountId);
+    const withdrawable = Number((await h.broker.getTradeAccount(accountId)).cash_withdrawable ?? 0);
+    assert.ok(withdrawable >= 1000, `withdrawable ${withdrawable}`);
+    return accountId;
+};
+const withdrawals = (h: ScenarioHarness) => h.account || h.releaseDeposits ? null : "a new account's deposit is held for 7 business days, and there's no existing account (SCENARIO_ACCOUNT_ID)";
+
 const placed = (h: ScenarioHarness, accountId: string, request: Record<string, unknown>) =>
     h.broker.createOrder(accountId, { time_in_force: "day", type: "market", client_order_id: clientId(), ...request } as never);
 
@@ -158,6 +199,8 @@ const positionQty = async (h: ScenarioHarness, accountId: string, symbol: string
 interface Scenario {
     name: string;
     needs?: Capability[];
+    // Why the harness can't run it, or null
+    skipUnless?(h: ScenarioHarness): string | null;
     run(h: ScenarioHarness): Promise<void>;
 }
 
@@ -197,19 +240,19 @@ export const SCENARIOS: Scenario[] = [
     {
         name: "short: a margin account sells a stock it doesn't hold",
         async run(h) {
-            const accountId = await fundedAccount(h, 10000, { margin: true });
-            await waitFor(h, "shorting to be enabled", async () => (await h.broker.getTradeAccount(accountId)).shorting_enabled);
+            const accountId = await marginAccount(h);
             await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.other, side: "sell", qty: "3" }));
             const position = (await h.broker.listPositions(accountId)).find(({ symbol }) => symbol === h.symbols.other);
             assert.equal(position?.side, "short");
             assert.equal(Number(position?.qty), -3);
+            // Covered, so an existing account is left as it was
+            if (h.account) await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.other, side: "buy", qty: "3", position_intent: "buy_to_close" }));
         }
     },
     {
         name: "close position: a long is sold in part by dollars then in full, and a short covered, as the Portfolio page closes them",
         async run(h) {
-            const accountId = await fundedAccount(h, 10000, { margin: true });
-            await waitFor(h, "shorting to be enabled", async () => (await h.broker.getTradeAccount(accountId)).shorting_enabled);
+            const accountId = await marginAccount(h);
             const qtyOf = async (symbol: string) => (await h.broker.listPositions(accountId)).find(position => position.symbol === symbol)?.qty ?? "0";
             // The row's orders: day market orders with a closing intent, by dollars (a part of a long) or the shares held
             const close = (symbol: string, side: "buy" | "sell", size: { qty: string } | { notional: string }) =>
@@ -443,28 +486,45 @@ export const SCENARIOS: Scenario[] = [
         }
     },
     {
-        name: "withdraw: an ACH withdrawal of withdrawable cash leaves the account",
+        name: "deposit hold: a new deposit can be traded with but not withdrawn, and a withdrawal of it is refused",
         async run(h) {
             const accountId = await fundedAccount(h, 3000);
-            const withdrawable = Number((await h.broker.getTradeAccount(accountId)).cash_withdrawable ?? 0);
-            assert.ok(withdrawable >= 1000, `withdrawable ${withdrawable}`);
+            const trading = await h.broker.getTradeAccount(accountId);
+            assert.equal(Number(trading.cash_withdrawable ?? 0), 0);
+            assert.equal(Number(trading.cash_transferable ?? 0), 3000, "transferable within the broker");
+            assert.ok(Number(trading.buying_power) >= 3000, `buying power ${trading.buying_power}`);
             const [link] = await h.broker.listAchRelationships(accountId);
+            await assert.rejects(
+                h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "OUTGOING", amount: "100.00", relationship_id: link.id } as never),
+                (error: { status?: number; code?: number }) => error.status === 403 && error.code === 40310000
+            );
+        }
+    },
+    {
+        name: "withdraw: an ACH withdrawal of withdrawable cash leaves the account",
+        skipUnless: withdrawals,
+        async run(h) {
+            const accountId = await withdrawableAccount(h);
+            const cash = Number((await h.broker.getTradeAccount(accountId)).cash);
+            const [link] = (await h.broker.listAchRelationships(accountId)).filter(({ status }) => status === "APPROVED");
             const transfer = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "OUTGOING", amount: "1000.00", relationship_id: link.id } as never);
             await waitFor(h, "the withdrawal's completion", async () => (await h.broker.listTransfers(accountId)).some(({ id, status }) => id === transfer.id && status === "COMPLETE"));
-            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), 2000);
+            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), roundCents(cash - 1000));
         }
     },
     {
         name: "wire: a wire withdrawal to a recipient bank leaves the account with its fee",
+        skipUnless: withdrawals,
         async run(h) {
-            const accountId = await fundedAccount(h, 3000);
+            const accountId = await withdrawableAccount(h);
+            const cash = Number((await h.broker.getTradeAccount(accountId)).cash);
             const bank = await h.broker.createRecipientBank(accountId, { name: "Scenario Bank", bank_code: "011000015", bank_code_type: "ABA", account_number: "987654321" } as never);
             assert.ok((await h.broker.listRecipientBanks(accountId)).some(({ id }) => id === bank.id));
             const transfer = await h.broker.createTransfer(accountId, { transfer_type: "wire", direction: "OUTGOING", amount: "500.00", bank_id: bank.id } as never);
             assert.equal(transfer.type, "wire");
             const done = await waitFor(h, "the wire's completion", async () => (await h.broker.listTransfers(accountId)).find(({ id, status }) => id === transfer.id && status === "COMPLETE"));
             const fee = Number(done.fee ?? 0);
-            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), roundCents(3000 - 500 - fee));
+            assert.equal(Number((await h.broker.getTradeAccount(accountId)).cash), roundCents(cash - 500 - fee));
             if (fee > 0) {
                 const activities = await listAllActivities(h.broker, accountId, ["FEE"]);
                 assert.ok(activities.some(activity => activity.activity_type === "FEE" && Number((activity as { net_amount?: string }).net_amount) === -fee), "the wire fee's activity");
@@ -476,6 +536,7 @@ export const SCENARIOS: Scenario[] = [
         needs: ["transferSteps"],
         async run(h) {
             const accountId = await fundedAccount(h, 3000);
+            await h.releaseDeposits?.(accountId);
             const [link] = await h.broker.listAchRelationships(accountId);
             const deposit = await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "INCOMING", amount: "500.00", relationship_id: link.id } as never);
             assert.equal(deposit.status, "QUEUED");
@@ -555,6 +616,7 @@ export const SCENARIOS: Scenario[] = [
             const accountId = await fundedAccount(h, 10000);
             await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.stock, side: "buy", qty: "10" }));
             await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.stock, side: "sell", qty: "4" }));
+            await h.releaseDeposits?.(accountId);
             const [link] = await h.broker.listAchRelationships(accountId);
             await h.broker.createTransfer(accountId, { transfer_type: "ach", direction: "OUTGOING", amount: "100.00", relationship_id: link.id } as never);
             const direct = await h.appLedger!(accountId, false), through = await h.appLedger!(accountId, true);
@@ -599,8 +661,11 @@ export const SCENARIOS: Scenario[] = [
     },
     {
         name: "close: an account closes once its orders are cancelled and its cash withdrawn, then takes no orders",
+        // It closes the account, so it needs a new one whose deposit can be withdrawn
+        skipUnless: h => h.releaseDeposits ? null : "a new account's deposit is held for 7 business days",
         async run(h) {
             const accountId = await fundedAccount(h, 1000);
+            await h.releaseDeposits!(accountId);
             // What the close route checks first, from the broker's figures
             const problem = async () => {
                 const [positions, orders, trading] = await Promise.all([h.broker.listPositions(accountId), h.broker.listOrders(accountId, { status: "open" }), h.broker.getTradeAccount(accountId)]);
@@ -649,6 +714,11 @@ export const defineScenarioTests = (label: string, makeHarness: () => Promise<Sc
                 const missing = (scenario.needs ?? []).filter(capability => h[capability] === undefined);
                 if (missing.length > 0) {
                     context.skip(`the harness can't ${missing.join(", ")}`);
+                    return;
+                }
+                const reason = scenario.skipUnless?.(h);
+                if (reason) {
+                    context.skip(reason);
                     return;
                 }
                 await scenario.run(h);

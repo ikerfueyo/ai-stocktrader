@@ -94,6 +94,22 @@ export const wireTimeline = (createdAt: Date): Timeline => {
     return { sentAt, completeAt: new Date(sentAt.getTime() + 3600000) };
 };
 
+// How many banking days a completed ACH deposit is held before it can be withdrawn (it can be traded with meanwhile). Alpaca holds
+// deposits until the 7th business day after the day they complete on, in the sandbox and in production (support, 2026-11-10; in the
+// sandbox, deposits completed on 2026-10-28 and 2026-10-29 were withdrawable on 2026-11-06 and 2026-11-09). SIM_DEPOSIT_HOLD_DAYS
+// changes it (0: no hold).
+export const DEPOSIT_HOLD_DAYS = Number(process.env.SIM_DEPOSIT_HOLD_DAYS ?? 7);
+
+// When a deposit completed at completeAt can be withdrawn: at 9:00 ET on the holdDays-th banking day after its day (Alpaca has no fixed
+// release time; the sandbox's showed by late afternoon), or, with SIM_FUNDING_FAST_SECONDS, one step after it completes
+export const depositReleaseAt = (completeAt: Date, holdDays = DEPOSIT_HOLD_DAYS): Date => {
+    if (holdDays <= 0) return completeAt;
+    if (FAST_SECONDS > 0) return new Date(completeAt.getTime() + FAST_SECONDS * 1000);
+    let day = easternParts(completeAt).dateKey;
+    for (let count = 0; count < holdDays; count++) day = nextBankingDay(day);
+    return easternTime(day, SETTLEMENT_TIME);
+};
+
 // NACHA return codes the simulator uses
 export const RETURN_REASONS: Record<string, string> = {
     R01: "Insufficient funds",

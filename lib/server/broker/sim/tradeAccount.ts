@@ -17,6 +17,8 @@ export interface TradeAccountInput {
     multiplier: number;
     shortingEnabled: boolean;
     withdrawable: number;
+    // Withdrawable with deposits the broker still holds counted (cash_transferable); withdrawable when not given
+    transferable?: number;
     accruedFees: { REG: number; TAF: number; CAT: number; ORF?: number; OCC?: number };
     pendingTransferOut: number;
     // The last end-of-day snapshot (null before the first; its margin figures null before Phase 5's)
@@ -40,7 +42,7 @@ export const toTradeAccount = (input: TradeAccountInput): TradeAccount => {
         created_at: account.created_at.toISOString(),
         cash: money(cash),
         cash_withdrawable: money(input.withdrawable),
-        cash_transferable: money(input.withdrawable),
+        cash_transferable: money(input.transferable ?? input.withdrawable),
         pending_transfer_out: money(input.pendingTransferOut),
         buying_power: money(state.buyingPower),
         regt_buying_power: money(state.regtBuyingPower),

@@ -7,7 +7,7 @@ import { BrokerError } from "../errors";
 import { easternParts } from "../../../marketHours";
 import { emitEvent } from "./accounts";
 import {
-    achTimeline, bankRequestError, instantAmount, maskAccountNumber, plannedReturn, relationshipRequestError, RETURN_REASONS, TRANSFER_FEES,
+    achTimeline, bankRequestError, DEPOSIT_HOLD_DAYS, depositReleaseAt, instantAmount, maskAccountNumber, plannedReturn, relationshipRequestError, RETURN_REASONS, TRANSFER_FEES,
     transferRequestError, verifyRelationship, wireTimeline
 } from "./funding";
 import { toAchRelationship, toActivity, toBank, toFillActivity, toTransfer, type SimAchRow, type SimActivityRow, type SimBankRow, type SimTransferRow } from "./shapes";
@@ -374,10 +374,11 @@ export const listActivities = async (accountId: string, query: ListActivitiesQue
     return rows.map(row => row.activity_type === "FILL" ? toFillActivity(row) : toActivity(row)) as Activity[];
 };
 
-// For ledgerState (positions.ts): the accounts' ledger cash, what their queued withdrawals hold back before they're debited, and
-// the instant deposit credit not yet settled (it can be traded with but not withdrawn)
-export const ledgerCash = async (accountIds: string[], db: PoolClient | typeof pool = pool): Promise<{ cash: number; pendingOut: number; unsettledInstant: number }> => {
-    if (accountIds.length === 0) return { cash: 0, pendingOut: 0, unsettledInstant: 0 };
+// For ledgerState (positions.ts): the accounts' ledger cash, what their queued withdrawals hold back before they're debited, the
+// instant deposit credit not yet settled, and completed deposits still held (depositReleaseAt) with the next one's release; the last
+// two can be traded with but not withdrawn
+export const ledgerCash = async (accountIds: string[], db: PoolClient | typeof pool = pool, now = new Date()): Promise<{ cash: number; pendingOut: number; unsettledInstant: number; heldDeposits: number; nextRelease: Date | null }> => {
+    if (accountIds.length === 0) return { cash: 0, pendingOut: 0, unsettledInstant: 0, heldDeposits: 0, nextRelease: null };
     // One after the other, since db may be a pool client
     const { rows: [ledger] } = await db.query<{ cash: string }>("SELECT COALESCE(SUM(net_amount), 0) AS cash FROM sim_activities WHERE account_id = ANY($1)", [accountIds]);
     const { rows: [pending] } = await db.query<{ out: string; instant: string }>(
@@ -385,7 +386,16 @@ export const ledgerCash = async (accountIds: string[], db: PoolClient | typeof p
                 COALESCE(SUM(CASE WHEN direction = 'INCOMING' AND status IN ('QUEUED', 'SENT_TO_CLEARING') THEN instant_amount ELSE 0 END), 0) AS instant
          FROM sim_transfers WHERE account_id = ANY($1)`, [accountIds]
     );
-    return { cash: Number(ledger.cash), pendingOut: Number(pending.out), unsettledInstant: Number(pending.instant) };
+    // Completed ACH deposits recent enough to be held (a hold of n banking days spans at most 2n + 10 calendar days)
+    const { rows: completed } = await db.query<{ amount: string; complete_at: Date }>(
+        `SELECT amount, complete_at FROM sim_transfers
+         WHERE account_id = ANY($1) AND "type" = 'ach' AND direction = 'INCOMING' AND status = 'COMPLETE' AND complete_at > $2::timestamptz - make_interval(days => $3)`,
+        [accountIds, now, 2 * DEPOSIT_HOLD_DAYS + 10]
+    );
+    const held = completed.map(({ amount, complete_at }) => ({ amount: Number(amount), releaseAt: depositReleaseAt(complete_at) })).filter(({ releaseAt }) => releaseAt > now);
+    const heldDeposits = Math.round(held.reduce((sum, { amount }) => sum + amount, 0) * 100) / 100;
+    const nextRelease = held.reduce<Date | null>((next, { releaseAt }) => next === null || releaseAt < next ? releaseAt : next, null);
+    return { cash: Number(ledger.cash), pendingOut: Number(pending.out), unsettledInstant: Number(pending.instant), heldDeposits, nextRelease };
 };
 
 // GET /v1/accounts/ira_excess_contributions: each IRA's contributions per tax year (transfers that haven't been cancelled, rejected or

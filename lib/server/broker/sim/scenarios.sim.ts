@@ -81,6 +81,12 @@ const makeHarness = async (): Promise<ScenarioHarness> => {
             await transfers.fastForwardTransfers();
             await orders.matchOrders();
         },
+        // Moves the account's completed deposits back past their 7 banking days' hold
+        async releaseDeposits(accountId) {
+            await pool.query(
+                `UPDATE sim_transfers SET complete_at = complete_at - interval '30 days' WHERE account_id = $1 AND direction = 'INCOMING' AND status = 'COMPLETE'`, [accountId]
+            );
+        },
         async setPrice(symbol, price) {
             overridePrice(symbol, price);
         },

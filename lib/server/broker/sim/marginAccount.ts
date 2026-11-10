@@ -75,6 +75,8 @@ export interface MarginSnapshot {
     // Why the account can't open shorts now, or null
     shortingBlocked: string | null;
     withdrawable: number;
+    // What could move within the broker (Alpaca's cash_transferable): withdrawable with held deposits counted
+    transferable: number;
     // Intraday margin deficits still outstanding, and the last day of a 90-day restriction in force (null if none)
     intradayDeficits: IntradayDeficitRow[];
     restrictedUntil: string | null;
@@ -177,17 +179,21 @@ export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds
     const unreserved = computeMargin({ cash, positions, maxMultiplier, session: sessionNow });
     const reserved = await reservedCash(db, accountId, { positions: ledger.positions, multiplier: unreserved.multiplier, exceptIds: exceptOrderIds });
     const state = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, reserved });
-    // Withdrawable: settled cash (less instant credit and sale proceeds not yet settled), no more than the excess over Reg T initial
-    // margin less what open orders hold, and nothing during a margin call
+    // Withdrawable: settled cash (less instant credit and sale proceeds not yet settled, and deposits the broker still holds), no more
+    // than the excess over Reg T initial margin less what open orders hold, and nothing during a margin call. Transferable is the same
+    // with held deposits counted, as Alpaca's cash_transferable (for journals) counts them.
     const settledCash = cash - ledger.unsettledInstant - ledger.unsettledProceeds;
-    const withdrawable = calls.length > 0 ? 0 : Math.max(0, roundCents(Math.min(settledCash, unreserved.sma - reserved / Math.max(1, unreserved.multiplier))));
+    const excess = unreserved.sma - reserved / Math.max(1, unreserved.multiplier);
+    const available = (settled: number) => calls.length > 0 ? 0 : Math.max(0, roundCents(Math.min(settled, excess)));
+    const withdrawable = available(settledCash - ledger.heldDeposits);
+    const transferable = available(settledCash);
     return {
         row, ledger, cash, positions, assets, quotes, staleTickers: staleTickers.filter(ticker => symbols.includes(ticker)).concat(symbols.filter(symbol => prices[symbol] === undefined)),
         reserved, state, calls, session: sessionNow,
         shortingBlocked: row.account_type === "ira" ? "IRAs can't sell short"
             : intraday.restrictedUntil ? restrictionReason(intraday.restrictedUntil)
             : shortingBlocked({ hasMarginAgreement: hasMarginAgreement(row), noShorting: row.configurations?.no_shorting === true, equity: state.equity }),
-        withdrawable, intradayDeficits: intraday.deficits, restrictedUntil: intraday.restrictedUntil
+        withdrawable, transferable, intradayDeficits: intraday.deficits, restrictedUntil: intraday.restrictedUntil
     };
 };
 
@@ -222,6 +228,7 @@ export const getTradeAccount = async (accountId: string): Promise<TradeAccount> 
         multiplier: effectiveMultiplier(state.equity, state.maxMultiplier, "regular"),
         shortingEnabled: snapshot.shortingBlocked === null,
         withdrawable: snapshot.withdrawable,
+        transferable: snapshot.transferable,
         accruedFees: ledger.accruedFees,
         pendingTransferOut: ledger.pendingTransferOut,
         last: last ? {

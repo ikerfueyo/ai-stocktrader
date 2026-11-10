@@ -11,6 +11,8 @@ import * as margin from "./marginAccount";
 import * as locates from "./locates";
 import * as documents from "./documents";
 import { toAsset, toCalendar, toClock } from "./shapes";
+import { TRANSFER_FEES } from "./funding";
+import type { CreateTransferRequest } from "../types";
 
 // The simulated brokerage (BROKER=sim): Alpaca's Broker API on Postgres. Accounts and onboarding (./accounts.ts), funding
 // (./transfers.ts: bank links, recipient banks, transfers and the cash activities they post), the trading account, positions and
@@ -98,7 +100,16 @@ export class SimBroker implements Broker {
     createRecipientBank = transfers.createRecipientBank;
     listRecipientBanks = transfers.listRecipientBanks;
     deleteRecipientBank = transfers.deleteRecipientBank;
-    createTransfer = transfers.createTransfer;
+    // A withdrawal (and any wire fee) beyond cash_withdrawable is refused as Alpaca refuses it (403 40310000), such as one of a deposit
+    // still held; the transfers route checks first, with the reasons
+    async createTransfer(accountId: string, request: CreateTransferRequest) {
+        if (request.direction === "OUTGOING") {
+            const amount = Number(request.amount) + (request.transfer_type === "wire" ? TRANSFER_FEES.wireOutDomestic : 0);
+            const { withdrawable } = await margin.marginSnapshot(pool, accountId);
+            if (amount > withdrawable + 0.005) throw new BrokerError(403, 40310000, `forbidden. $${amount.toFixed(2)} exceeds cash_withdrawable $${withdrawable.toFixed(2)}`);
+        }
+        return transfers.createTransfer(accountId, request);
+    }
     listTransfers = transfers.listTransfers;
     cancelTransfer = transfers.cancelTransfer;
     listActivities = transfers.listActivities;

@@ -5,7 +5,7 @@ import { findUserAccount, requireAccount } from "@/lib/server/brokerAccounts";
 import { forgetBrokerLedger, withAccountLock } from "@/lib/server/portfolio";
 import { marginSnapshot, withdrawalError } from "@/lib/server/broker/sim/marginAccount";
 import pool from "@/lib/server/db";
-import { TRANSFER_FEES } from "@/lib/server/broker/sim/funding";
+import { DEPOSIT_HOLD_DAYS, TRANSFER_FEES } from "@/lib/server/broker/sim/funding";
 import type { CreateTransferRequest } from "@/lib/server/broker/types";
 import type { BrokerTransfer, TransferRequest } from "@/lib/types";
 import type { AccountContext } from "../route";
@@ -73,13 +73,18 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         const snapshot = await marginSnapshot(pool, account_id);
         const problem = withdrawalError(snapshot, amount + fee);
         if (problem) {
-            // Neither instant deposit credit nor sale proceeds can leave before they settle
-            const { unsettledInstant, unsettledProceeds } = snapshot.ledger;
+            // Neither instant deposit credit nor sale proceeds can leave before they settle, nor a deposit while the broker holds it
+            const { unsettledInstant, unsettledProceeds, heldDeposits, nextDepositRelease } = snapshot.ledger;
             const unsettled = [
                 unsettledInstant > 0 ? `$${unsettledInstant.toFixed(2)} of instant deposit credit` : null,
                 unsettledProceeds > 0 ? `$${unsettledProceeds.toFixed(2)} of sale proceeds` : null
             ].filter(Boolean);
-            const note = unsettled.length > 0 && problem.status === 400 && snapshot.calls.length === 0 ? ` (${unsettled.join(" and ")} can't be withdrawn until settled)` : "";
+            const release = nextDepositRelease?.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+            const notes = [
+                unsettled.length > 0 ? `${unsettled.join(" and ")} can't be withdrawn until settled` : null,
+                heldDeposits > 0 ? `$${heldDeposits.toFixed(2)} of deposits are held for ${DEPOSIT_HOLD_DAYS} business days after they arrive, the next released on ${release}` : null
+            ].filter(Boolean);
+            const note = notes.length > 0 && problem.status === 400 && snapshot.calls.length === 0 ? ` (${notes.join("; ")})` : "";
             throw new HttpError(`${problem.message}${fee > 0 ? `, including the $${fee} wire fee` : ""}${note}`, problem.status);
         }
         return getBroker().createTransfer(account_id, transfer);

@@ -418,7 +418,7 @@ export const recordFill = async (db: PoolClient, accountId: string, fill: FillRe
 
 // The account's ledger now: positions from the open lots, cash (every activity's net amount), realized P&L, net dividends, sale
 // proceeds and purchase costs that haven't settled, regulatory fees accrued but not yet deducted, and from the transfers what queued
-// withdrawals hold and the instant deposit credit not yet settled
+// withdrawals hold, the instant deposit credit not yet settled and the completed deposits still held
 export const ledgerState = async (db: Db, accountId: string, now = new Date()) => {
     const today = dayOf(now);
     // One after the other, since db may be a pool client (see fillsAsTrades)
@@ -435,7 +435,7 @@ export const ledgerState = async (db: Db, accountId: string, now = new Date()) =
         `SELECT fee_type, SUM(amount) AS amount FROM sim_fee_accruals WHERE account_id = $1 AND deducted_by IS NULL
          GROUP BY "date", fee_type`, [accountId]
     );
-    const transfers = await ledgerCash([accountId], db);
+    const transfers = await ledgerCash([accountId], db, now);
     // What the end of day will deduct: each day's total per fee type, rounded up to the cent
     const accruedFees = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
     for (const { fee_type, amount } of accruals) accruedFees[fee_type] = Math.round((accruedFees[fee_type] + roundFeeUp(Number(amount))) * 100) / 100;
@@ -448,7 +448,9 @@ export const ledgerState = async (db: Db, accountId: string, now = new Date()) =
         unsettledPurchases: Number(sums.unsettled_purchases),
         accruedFees,
         pendingTransferOut: transfers.pendingOut,
-        unsettledInstant: transfers.unsettledInstant
+        unsettledInstant: transfers.unsettledInstant,
+        heldDeposits: transfers.heldDeposits,
+        nextDepositRelease: transfers.nextRelease
     };
 };
 
