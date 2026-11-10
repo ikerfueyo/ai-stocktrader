@@ -69,10 +69,12 @@ describe("Profile changes", () => {
 });
 
 describe("Trading configurations", () => {
-    test("a margin account starts at 2x with shorting; a cash account at 1x without", () => {
-        assert.equal(defaultConfigurations(["customer_agreement", "account_agreement", "margin_agreement"]).max_margin_multiplier, "2");
+    test("no account starts with its own multiplier, as on Alpaca; a margin account starts with shorting, a cash account without", () => {
+        const margin = defaultConfigurations(["customer_agreement", "account_agreement", "margin_agreement"]);
+        assert.equal("max_margin_multiplier" in margin, false);
+        assert.equal(margin.no_shorting, false);
         const cash = defaultConfigurations(["customer_agreement", "account_agreement"]);
-        assert.equal(cash.max_margin_multiplier, "1");
+        assert.equal("max_margin_multiplier" in cash, false);
         assert.equal(cash.no_shorting, true);
     });
 
@@ -84,5 +86,8 @@ describe("Trading configurations", () => {
         assert.equal(configurationError({ max_options_trading_level: 0 }, cash), null);
         assert.equal(configurationError({ max_margin_multiplier: "4", no_shorting: false }, { hasMarginAgreement: true }), null);
         assert.match(configurationError({ max_margin_multiplier: "3" }, { hasMarginAgreement: true })!, /1, 2 or 4/);
+        assert.match(configurationError({ max_margin_multiplier: "2" }, { hasMarginAgreement: true, brokerLimit: 1 })!, /exceeds the current limit 1/);
+        assert.match(configurationError({ max_margin_multiplier: "4" }, { hasMarginAgreement: true, brokerLimit: 2 })!, /exceeds the current limit 2/);
+        assert.equal(configurationError({ max_margin_multiplier: "2" }, { hasMarginAgreement: true, brokerLimit: 2 }), null);
     });
 });

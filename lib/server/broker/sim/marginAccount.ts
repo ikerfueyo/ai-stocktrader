@@ -12,6 +12,7 @@ import { computeMargin, effectiveMultiplier, shortingBlocked, type MarginPositio
 import { intradayMarginLevel, restrictionActive } from "./intradayMargin";
 import { reservedForOrders } from "./matching";
 import { toTradeAccount } from "./tradeAccount";
+import { BROKER_MAX_MULTIPLIER } from "./kyc";
 import type { SimAccountRow, SimOrderRow } from "./shapes";
 import type { AssetRow } from "../../universe";
 import type { TradeAccount } from "../types";
@@ -53,9 +54,9 @@ export const accountRow = async (db: Db, accountId: string): Promise<SimAccountR
 
 const hasMarginAgreement = (row: Pick<SimAccountRow, "agreements">) => row.agreements.some(({ agreement }) => agreement === "margin_agreement");
 
-// The multiplier the account allows: 1 without the margin agreement, else its max_margin_multiplier
+// The multiplier the account allows: 1 without the margin agreement, else its max_margin_multiplier, unset the broker's limit
 export const maxMultiplierOf = (row: Pick<SimAccountRow, "agreements" | "configurations">): number =>
-    hasMarginAgreement(row) ? Math.max(1, Number(row.configurations?.max_margin_multiplier ?? 2)) : 1;
+    hasMarginAgreement(row) ? Math.max(1, Math.min(BROKER_MAX_MULTIPLIER, Number(row.configurations?.max_margin_multiplier ?? BROKER_MAX_MULTIPLIER))) : 1;
 
 export interface MarginSnapshot {
     row: SimAccountRow;

@@ -6,10 +6,14 @@ import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
+import { useAccount } from "@/context/AccountContext";
 import W9Certification from "./W9Certification";
 import { MARITAL_STATUSES, US_STATES, type MaritalStatus } from "@/lib/kyc";
 import { MARITAL_LABELS } from "./FormFields";
-import type { AccountConfigurations, BrokerAccount } from "@/lib/types";
+import type { Account, AccountConfigurations, BrokerAccount } from "@/lib/types";
+
+// Margin needs this much equity; below it buying power is 1x (the simulator's MIN_MARGIN_EQUITY, Alpaca's rule)
+const MIN_MARGIN_EQUITY = 2000;
 
 const STATUS_LABELS: Record<string, string> = { ACTIVE: "Active", ACCOUNT_UPDATED: "Active, updated details under review" };
 
@@ -24,6 +28,7 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 // the trusted contact, trading configurations, the upgrade to margin, the W-9 certification, and closing the account
 const AccountSettings = () => {
     const { active, refreshAccounts } = useBrokerAccount();
+    const { refreshAccount } = useAccount();
     const [account, setAccount] = useState<BrokerAccount | null>(null);
     const [configurations, setConfigurations] = useState<AccountConfigurations | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -123,22 +128,28 @@ const AccountSettings = () => {
         event.preventDefault();
         save("trusted", () => patchAccount({ trusted_contact: trusted }), "Saved.");
     };
-    // The broker can refuse 2x after accepting the agreement (Alpaca's "exceeds the current limit 1", 422): the agreement stays
-    // signed and the account stays at 1x until the broker raises its limit
+    // Signs the margin agreement and turns shorting on, leaving the multiplier unset so the account gets the broker's limit (on
+    // Alpaca, 4x intraday and 2x overnight once it enables margin for the account; setting 2 would give up the 4x). Then says what the
+    // account got: margin needs $2,000 of equity, and Alpaca enables it per account, so a broker that hasn't keeps it at 1x (or
+    // refuses the change, 422) with the agreement signed
     const onUpgradeMargin = () => save("margin", async () => {
         await patchAccount({ agreements: [{ agreement: "margin_agreement" }] });
         try {
-            await patchConfigurations({ max_margin_multiplier: "2", no_shorting: false });
-            return true;
+            await patchConfigurations({ no_shorting: false });
         } catch (error) {
-            if (axios.isAxiosError(error) && error.response?.status === 422) {
-                logError(error);
-                return false;
-            }
-            throw error;
+            if (!(axios.isAxiosError(error) && error.response?.status === 422)) throw error;
+            logError(error);
+            return null;
         }
-    }, raised => raised ? "Your account is now a margin account."
-        : "The margin agreement is signed, but the broker hasn't raised your limit above 1x yet (margin needs $2,000 of equity). Choose 2× under Maximum margin once it does.");
+        const { data } = await axios.get<Account>("/api/account");
+        refreshAccount();
+        return data;
+    }, upgraded => {
+        const notEnabled = "The margin agreement is signed, but the broker hasn't enabled margin for this account yet, so it stays at 1× until it does.";
+        if (!upgraded) return notEnabled;
+        if (upgraded.equity < MIN_MARGIN_EQUITY) return "Your account is now a margin account. Borrowing and short selling start once your equity reaches $2,000; until then buying power is 1×.";
+        return upgraded.multiplier > 1 ? `Your account is now a margin account, at ${upgraded.multiplier}× buying power.` : notEnabled;
+    });
     const onClose = () => save("close", async () => {
         await axios.post(`/api/accounts/${id}/close`);
     }, "Your account is closed.");
@@ -244,7 +255,9 @@ const AccountSettings = () => {
                             </label>
                             <label className="transfer-field">
                                 <span className="transfer-field-label">Maximum margin</span>
-                                <select className="form-control" value={configurations.max_margin_multiplier ?? "1"} onChange={event => save("trading", () => patchConfigurations({ max_margin_multiplier: event.target.value }), "Saved.")}>
+                                <select className="form-control" value={configurations.max_margin_multiplier ?? ""} onChange={event => save("trading", () => patchConfigurations({ max_margin_multiplier: event.target.value }), "Saved.")}>
+                                    {/* Unset follows the broker's limit; the API can't unset it again, and choosing 4× does the same */}
+                                    <option value="" disabled>The broker&apos;s limit (up to 4× intraday, 2× overnight)</option>
                                     <option value="1">1× (no borrowing)</option>
                                     <option value="2">2× (Reg T overnight)</option>
                                     <option value="4">4× intraday, 2× overnight</option>

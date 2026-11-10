@@ -586,10 +586,11 @@ export const SCENARIOS: Scenario[] = [
             assert.equal(String((await h.broker.getTradeAccount(accountId)).multiplier), "1");
             await assert.rejects(h.broker.updateConfigurations(accountId, { max_margin_multiplier: "2", no_shorting: false }), (error: { status?: number }) => error.status === 422);
             await h.broker.updateAccount(accountId, { agreements: [signedNow("margin_agreement")] } as never);
-            await h.broker.updateConfigurations(accountId, { max_margin_multiplier: "2", no_shorting: false });
+            // As Settings does: shorting on, the multiplier left unset so the account gets the broker's limit (2x overnight, 4x intraday)
+            await h.broker.updateConfigurations(accountId, { no_shorting: false });
             const trading = await waitFor(h, "margin to be enabled", async () => {
                 const current = await h.broker.getTradeAccount(accountId);
-                return String(current.multiplier) === "2" && current.shorting_enabled ? current : null;
+                return Number(current.multiplier) >= 2 && current.shorting_enabled ? current : null;
             });
             assert.ok(Number(trading.buying_power) > Number(trading.cash), `buying power ${trading.buying_power} against cash ${trading.cash}`);
             await filled(h, accountId, await placed(h, accountId, { symbol: h.symbols.other, side: "sell", qty: "3" }));
