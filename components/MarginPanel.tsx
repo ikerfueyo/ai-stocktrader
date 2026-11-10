@@ -33,6 +33,12 @@ const MarginPanel = () => {
             {account.marginRestrictedUntil
                 ? <p className="text-danger">Restricted to 1x until {account.marginRestrictedUntil} for an intraday margin deficit unmet past its 5th business day: no new borrowing or short sales. Depositing it lifts the restriction at the next close.</p>
                 : onMargin && account.multiplier === 1 && <p className="text-muted">Margin needs at least $2,000 of equity; until then the account trades at 1x and can&apos;t short.</p>}
+            {account.belowMaintenance !== null && (
+                <p className="text-danger">
+                    <strong>Equity is {formatCurrency(account.belowMaintenance)} below the maintenance requirement.</strong> The broker can issue a margin call or
+                    sell positions to cover it; deposit or close positions.
+                </p>
+            )}
             {account.marginCalls.map(call => (
                 <p key={call.id} className="text-danger">
                     <strong>{call.type === "regt" ? "Reg T" : "Maintenance"} call: {formatCurrency(call.amount)}</strong>, due {formatEastern(call.dueAt, { withDay: true })}. Deposit or close

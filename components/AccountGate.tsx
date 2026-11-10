@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import axios from "axios";
@@ -13,6 +12,8 @@ import { AccountProvider } from "@/context/AccountContext";
 import OnboardingWizard from "./OnboardingWizard";
 import ApplicationStatus from "./ApplicationStatus";
 import { OPEN_ACCOUNT_STATUSES } from "@/lib/accounts";
+import { useBrokerInfo } from "@/context/BrokerInfoContext";
+import AgreementLink from "./AgreementLink";
 import type { BrokerAccountSummary } from "@/lib/types";
 
 // Statuses a review is still working through, polled until they change
@@ -36,6 +37,7 @@ export const OnboardingHeader = () => (
 // (ApplicationStatus); with one, the app opens with its figures (AccountProvider). The agreement pages are readable either way.
 const AccountGate = ({ children }: { children: ReactNode }) => {
     const pathname = usePathname();
+    const { simulated } = useBrokerInfo();
     const [accounts, setAccounts] = useState<BrokerAccountSummary[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     // Set when the user chooses to apply again after a rejection or a closed account
@@ -88,7 +90,7 @@ const AccountGate = ({ children }: { children: ReactNode }) => {
             <OnboardingHeader />
             {screen}
             <p className="mock-note">
-                AI StockTrader is a simulation: no brokerage account is opened, no money moves and no trades are real. <Link href="/agreements/privacy_notice">Privacy notice</Link>
+                {simulated && "AI StockTrader is a simulation: no brokerage account is opened, no money moves and no trades are real. "}<AgreementLink name="privacy_notice">Privacy notice</AgreementLink>
             </p>
         </BrokerAccountContext.Provider>
     );

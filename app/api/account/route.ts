@@ -4,7 +4,10 @@ import { withUser } from "@/lib/server/errors";
 import { valueAccount } from "@/lib/server/account";
 import { brokerLedger, forgetBrokerLedger, getAccount, getFills, ledgerAccountId, readsThroughBroker, withAccountLock } from "@/lib/server/portfolio";
 import { getBroker } from "@/lib/server/broker";
-import { accountSummary } from "@/lib/server/brokerLedger";
+import { accountSummary, flattenOrders, openOrderReservation, unpricedSymbols } from "@/lib/server/brokerLedger";
+import { fetchPrices } from "@/lib/server/marketData";
+import { findAsset } from "@/lib/server/assets";
+import type { Order as BrokerOrder } from "@/lib/server/broker/types";
 import { updateAccount } from "@/lib/server/upkeep";
 import { marginSnapshot, maxMultiplierOf } from "@/lib/server/broker/sim/marginAccount";
 import { accruedInterest, MARGIN_RATE } from "@/lib/server/broker/sim/calls";
@@ -14,6 +17,19 @@ import type { Account } from "@/lib/types";
 const LIQUIDATION_RATIO = Number(process.env.SIM_LIQUIDATION_RATIO ?? 0.75);
 // Alpaca's margin rate isn't in its API: ALPACA_MARGIN_RATE (annual), the simulator's by default
 const ALPACA_MARGIN_RATE = Number(process.env.ALPACA_MARGIN_RATE ?? MARGIN_RATE);
+
+// What open orders hold back from buying power, shown under Buying power: quotes only for market orders and short sales, and each
+// symbol's marginable flag from the universe. A quote that can't be fetched leaves those orders out rather than failing the account.
+const heldForOrders = async (orders: BrokerOrder[], positions: { ticker: string; quantity: number }[], multiplier: number) => {
+    if (orders.length === 0) return 0;
+    const unpriced = unpricedSymbols(orders);
+    const symbols = [...new Set(flattenOrders(orders).map(({ symbol }) => String(symbol)))];
+    const [quotes, assets] = await Promise.all([
+        unpriced.length > 0 ? fetchPrices(unpriced, "Account").then(({ quotes }) => quotes).catch(() => ({})) : {},
+        Promise.all(symbols.map(async symbol => [symbol, (await findAsset(symbol))?.marginable ?? null] as const))
+    ]);
+    return openOrderReservation(orders, Object.fromEntries(positions.map(({ ticker, quantity }) => [ticker, quantity])), quotes, { marginable: Object.fromEntries(assets), multiplier });
+};
 
 // The account for the header and the margin panel: the broker's margin figures (buying power, equity, initial and maintenance margin,
 // the debit and its interest, open calls, whether it may short), unrealized and realized P&L, what's withdrawable and settling, and
@@ -25,8 +41,11 @@ export const GET = withUser(async (request, context, userId) => {
         if (accountId) {
             // Always fresh: the header reloads it after every change
             forgetBrokerLedger(accountId);
-            const [{ trade, positions, ledger }, configurations] = await Promise.all([brokerLedger(accountId), getBroker().getConfigurations(accountId)]);
-            return NextResponse.json<Account>(accountSummary({ trade, positions, configurations, ledger, marginRate: ALPACA_MARGIN_RATE }));
+            const [{ trade, positions, ledger }, configurations, orders] = await Promise.all([
+                brokerLedger(accountId), getBroker().getConfigurations(accountId), getBroker().listOrders(accountId, { status: "open", nested: true } as never)
+            ]);
+            const reservedCash = await heldForOrders(orders, ledger.positions, Number(trade.multiplier ?? 1));
+            return NextResponse.json<Account>(accountSummary({ trade, positions, configurations, ledger, marginRate: ALPACA_MARGIN_RATE, reservedCash }));
         }
     }
     await withAccountLock(userId, db => updateAccount(userId, "GET /api/account", db));
@@ -41,7 +60,7 @@ export const GET = withUser(async (request, context, userId) => {
         return NextResponse.json<Account>({
             ...ledger, totalCash, buyingPower: 0, regtBuyingPower: 0, nonMarginableBuyingPower: 0, reservedCash: 0, multiplier: 1, maxMultiplier: 1, equity: totalCash,
             longMarketValue: 0, shortMarketValue: 0, initialMargin: 0, maintenanceMargin: 0, excessLiquidity: totalCash, sma: 0, debitBalance: 0, marginRate: MARGIN_RATE,
-            accruedInterest: 0, marginStatus: "ok", marginCalls: [], intradayDeficits: [], marginRestrictedUntil: null, shortingEnabled: false, shortingBlockedReason: "Open an account first", unrealizedPnl: 0,
+            accruedInterest: 0, marginStatus: "ok", marginCalls: [], intradayDeficits: [], marginRestrictedUntil: null, belowMaintenance: null, shortingEnabled: false, shortingBlockedReason: "Open an account first", unrealizedPnl: 0,
             missingPrices: [], withdrawableCash: 0
         });
     }
@@ -78,6 +97,7 @@ export const GET = withUser(async (request, context, userId) => {
             id: deficit.id, date: deficit.date, amount: Number(deficit.amount), deMinimis: deficit.de_minimis, missed: deficit.missed, restrictOn: deficit.restrict_on, expireOn: deficit.expire_on
         })),
         marginRestrictedUntil: snapshot.restrictedUntil,
+        belowMaintenance: null,
         shortingEnabled: snapshot.shortingBlocked === null,
         shortingBlockedReason: snapshot.shortingBlocked,
         unrealizedPnl,

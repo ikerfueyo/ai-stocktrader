@@ -1,8 +1,11 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
+import { agreementDocuments } from "@/lib/server/agreements";
+import { brokerMode } from "@/lib/server/broker/broker";
+import { AGREEMENT_DOCUMENT_NAMES, type AgreementDocumentName } from "@/lib/agreements";
 
-// The simulator's placeholder agreements and disclosures. Each says what the real document covers; with a real broker
-// (BROKER=alpaca) the onboarding form links to the broker's own documents instead.
+// The placeholder agreements and disclosures. Each says what the real document covers. A document set in AGREEMENT_DOCUMENTS
+// (lib/server/agreements.ts) redirects to the real one, which the forms also link to directly.
 const DOCUMENTS: Record<string, { title: string; covers: string[] }> = {
     customer_agreement: {
         title: "Customer agreement",
@@ -53,16 +56,19 @@ const DOCUMENTS: Record<string, { title: string; covers: string[] }> = {
 };
 
 export default async function Agreement({ params }: { params: Promise<{ name: string }> }) {
-    const document = DOCUMENTS[(await params).name];
-    if (!document) notFound();
+    const name = (await params).name;
+    const document = DOCUMENTS[name];
+    if (!document || !(AGREEMENT_DOCUMENT_NAMES as readonly string[]).includes(name)) notFound();
+    const { href } = agreementDocuments()[name as AgreementDocumentName];
+    if (!href.startsWith("/")) redirect(href);
     return (
         <main className="transfer-container mt-5">
             <h1 className="transfer-title">{document.title}</h1>
             <p className="onboarding-test-note">
-                AI StockTrader is a simulator, so this is a placeholder, not a contract: no account is opened at any broker. The real document
-                covers:
+                This is a placeholder, not a contract: the real document hasn&apos;t been set up yet. It covers:
             </p>
-            <ul>{document.covers.map(line => <li key={line}>{line}</li>)}</ul>
+            {/* The simulator's own notes ("In this simulator: ...") only with the simulator */}
+            <ul>{document.covers.filter(line => brokerMode() === "sim" || !line.startsWith("In this simulator")).map(line => <li key={line}>{line}</li>)}</ul>
             <p className="text-center"><Link href="/">Back to AI StockTrader</Link></p>
         </main>
     );

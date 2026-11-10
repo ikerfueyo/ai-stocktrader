@@ -1,5 +1,6 @@
 import "server-only";
 import type { NextRequest } from "next/server";
+import { agreementDocuments, brokerRevision, requireCurrentRevisions } from "./agreements";
 import pool from "./db";
 import { brokerMode, getBroker } from "./broker";
 import { HttpError } from "./httpError";
@@ -85,11 +86,13 @@ const digits = (value: string) => value.replace(/\D/g, "");
 // POST /api/accounts/ira: opens a traditional or Roth IRA for a user with an active individual account, from its reviewed details. The
 // tax ID must match the one on file (its last 4 digits are kept). One open IRA of each type.
 // Alpaca won't add beneficiaries without the owner's marital status, so the IRA takes the individual account's, else `maritalStatus`.
-export const openIra = async (request: NextRequest, userId: string, input: { subType?: unknown; taxId?: unknown; maritalStatus?: unknown; beneficiaries?: unknown; acceptedAgreements?: unknown; iraDisclosure?: unknown }): Promise<BrokerAccount> => {
+export const openIra = async (request: NextRequest, userId: string, input: { subType?: unknown; taxId?: unknown; maritalStatus?: unknown; beneficiaries?: unknown; acceptedAgreements?: unknown; iraDisclosure?: unknown; revisions?: unknown }): Promise<BrokerAccount> => {
     const subType = input.subType as IraSubType;
     if (subType !== "traditional" && subType !== "roth") throw new HttpError("Pick a traditional or Roth IRA", 400);
     if (input.iraDisclosure !== true) throw new HttpError("Read and accept the IRA disclosure statement and custodial agreement", 400);
     if (input.acceptedAgreements !== true) throw new HttpError("Accept the customer agreement and the account agreement for the IRA", 400);
+    requireCurrentRevisions(["customer_agreement", "account_agreement", "ira_disclosure", "form_crs", "privacy_notice"], input.revisions);
+    const documents = agreementDocuments();
     const beneficiaries = (Array.isArray(input.beneficiaries) ? input.beneficiaries : []) as BeneficiaryInput[];
     const problems = beneficiaryErrors(beneficiaries, easternParts(new Date()).dateKey);
     if (problems.length > 0) throw new HttpError(problems.join("; "), 400);
@@ -112,15 +115,16 @@ export const openIra = async (request: NextRequest, userId: string, input: { sub
         contact: source.contact, disclosures: source.disclosures,
         identity: { ...source.identity!, marital_status: maritalStatus, tax_id: `${taxId.slice(0, 3)}-${taxId.slice(3, 5)}-${taxId.slice(5)}` },
         ...(source.trusted_contact ? { trusted_contact: source.trusted_contact } : {}),
-        agreements: (["customer_agreement", "account_agreement"] as const).map(agreement => ({ agreement: agreement as never, signed_at: signedAt, ip_address: ip })),
+        agreements: (["customer_agreement", "account_agreement"] as const).map(agreement => ({ agreement: agreement as never, signed_at: signedAt, ip_address: ip, ...brokerRevision(agreement) })),
         beneficiaries: beneficiaries.map(beneficiary => ({ ...beneficiary, tax_id: `${digits(beneficiary.tax_id).slice(0, 3)}-${digits(beneficiary.tax_id).slice(3, 5)}-${digits(beneficiary.tax_id).slice(5)}`, tax_id_type: "USA_SSN" })),
         enabled_assets: ["us_equity"]
     } as AccountCreationRequest;
     const account = await broker.createAccount(accountRequest);
     await pool.query("INSERT INTO broker_accounts (account_id, user_id, broker, kind, account_number) VALUES ($1, $2, $3, $4, $5)", [account.id, userId, brokerMode(), KINDS[subType], account.account_number]);
     await pool.query(
-        `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'ira_disclosure', $2, $3), ($1, 'form_crs', '{}', $3), ($1, 'privacy_notice', '{}', $3)`,
-        [account.id, JSON.stringify({ sub_type: subType }), ip]
+        `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'ira_disclosure', $2, $3), ($1, 'form_crs', $4, $3), ($1, 'privacy_notice', $5, $3)`,
+        [account.id, JSON.stringify({ sub_type: subType, revision: documents.ira_disclosure.revision }), ip,
+            JSON.stringify({ revision: documents.form_crs.revision }), JSON.stringify({ revision: documents.privacy_notice.revision })]
     );
     return account;
 };

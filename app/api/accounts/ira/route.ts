@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { openIra } from "@/lib/server/ira";
 import type { BrokerAccount, OpenIraRequest } from "@/lib/types";
@@ -7,6 +8,7 @@ import type { BrokerAccount, OpenIraRequest } from "@/lib/types";
 // again, beneficiaries, the agreements and the IRA disclosure accepted). 201 with the new account, under review like any application;
 // 409 without an active individual account or with an open IRA of that type.
 export const POST = withUser(async (request, context, userId) => {
+    await requireRecentSignIn(userId);
     const body = await request.json().catch(() => null) as Partial<OpenIraRequest> | null;
     if (!body || typeof body !== "object") throw new HttpError("An IRA application is required", 400);
     return NextResponse.json<BrokerAccount>(await openIra(request, userId, body), { status: 201 });

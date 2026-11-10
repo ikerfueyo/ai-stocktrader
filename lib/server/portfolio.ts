@@ -11,7 +11,8 @@ import { applyCorporateActions, fillsAsTrades, listFills, ledgerState, openLots,
 import type { SimActivityRow } from "./broker/sim/shapes";
 import { orderReasons } from "./broker/sim/orders";
 import { brokerMode, getBroker } from "./broker";
-import { CASH_ACTIVITY_TYPES, cashRowsOf, ledgerOf, listAllActivities, transactionRowsOf, tradesOf } from "./brokerLedger";
+import { cashRowsOf, ledgerOf, transactionRowsOf, tradesOf } from "./brokerLedger";
+import { syncedActivities } from "./activityStore";
 import type { Order as BrokerOrder } from "./broker/types";
 import type { CashActivityRow, Position, TradeHistoryRow } from "../types";
 
@@ -60,7 +61,7 @@ const brokerLedgerCache = singleton("brokerLedgers", () => new Map<string, Cache
 const loadBrokerLedger = async (accountId: string) => {
     const broker = getBroker();
     const [trade, positions, activities] = await Promise.all([
-        broker.getTradeAccount(accountId), broker.listPositions(accountId), listAllActivities(broker, accountId, ["FILL", ...CASH_ACTIVITY_TYPES])
+        broker.getTradeAccount(accountId), broker.listPositions(accountId), syncedActivities(accountId)
     ]);
     const traded = [...new Set(activities.flatMap(activity => (activity as { activity_type?: string; symbol?: string }).activity_type === "FILL" ? [String((activity as { symbol?: string }).symbol).toUpperCase()] : []))];
     const corporate = await loadCorporateActions(traded, positions.map(({ symbol }) => String(symbol)));
@@ -160,11 +161,30 @@ export const loadCashActivity = async (userId: string, db: Db = pool): Promise<C
     }));
 };
 
-// Orders with the reason each one ended, from the broker (the simulator keeps it; Alpaca sends it only with the order's trade event,
-// so its orders have none)
+// Orders with the reason each one ended: the simulator keeps it on the order; Alpaca sends it only with the order's trade event, which
+// the event consumer keeps (order_reasons; none for orders that ended before it first subscribed)
 export const withReasons = async <T extends BrokerOrder>(orders: T[]): Promise<(T & { reason: string | null })[]> => {
-    const reasons = throughBroker() ? new Map<string, string>() : await orderReasons(orders.map(({ id }) => id));
+    const ids = orders.map(({ id }) => id);
+    const reasons = throughBroker() ? await storedOrderReasons(ids) : await orderReasons(ids);
     return orders.map(order => ({ ...order, reason: reasons.get(order.id) ?? null }));
+};
+
+const storedOrderReasons = async (ids: string[]) => {
+    if (ids.length === 0) return new Map<string, string>();
+    const { rows } = await pool.query<{ order_id: string; reason: string }>("SELECT order_id, reason FROM order_reasons WHERE order_id = ANY($1::uuid[])", [ids]);
+    return new Map(rows.map(({ order_id, reason }) => [order_id, reason]));
+};
+
+// Keeps why an order ended, from its trade event (canceled, expired, rejected or replaced with a reason), for withReasons
+export const recordOrderReason = async (accountId: string, payload: Record<string, unknown>) => {
+    const order = payload.order as { id?: unknown } | undefined;
+    const reason = typeof payload.reason === "string" ? payload.reason.trim() : "";
+    if (!reason || typeof order?.id !== "string" || !/^[0-9a-f-]{36}$/i.test(order.id)) return;
+    await pool.query(
+        `INSERT INTO order_reasons (order_id, account_id, event, reason) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (order_id) DO UPDATE SET event = EXCLUDED.event, reason = EXCLUDED.reason, at = now()`,
+        [order.id, accountId, String(payload.event ?? "").slice(0, 32), reason.slice(0, 500)]
+    );
 };
 
 // Runs fn in a database transaction on db, which must be a client (such as withAccountLock's)

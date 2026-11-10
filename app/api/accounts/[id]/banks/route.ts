@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount } from "@/lib/server/brokerAccounts";
@@ -15,6 +16,7 @@ export const GET = withUser(async (request, { params }: AccountContext, userId) 
 // Add one: body { name, bank_code (an ABA routing number), account_number }. Only domestic wires are offered.
 export const POST = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
+    await requireRecentSignIn(userId);
     const body = await request.json().catch(() => null) as Partial<CreateBankRequest> | null;
     if (!body || typeof body !== "object") throw new HttpError("A bank is required", 400);
     return NextResponse.json<RecipientBank>(await getBroker().createRecipientBank(account_id, {

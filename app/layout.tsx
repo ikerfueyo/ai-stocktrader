@@ -6,6 +6,10 @@ import "bootstrap/dist/css/bootstrap.min.css";
 import "./globals.css";
 import "./App.css";
 import AppShell from "@/components/AppShell";
+import { connection } from "next/server";
+import { BrokerInfoProvider } from "@/context/BrokerInfoContext";
+import { brokerMode } from "@/lib/server/broker/broker";
+import { agreementDocuments } from "@/lib/server/agreements";
 
 export const metadata: Metadata = {
     title: "AI StockTrader",
@@ -18,12 +22,17 @@ export const viewport: Viewport = {
     themeColor: "#000000"
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+    // Read at request time, not baked in at build: BROKER and AGREEMENT_DOCUMENTS are the running server's
+    await connection();
+    const brokerInfo = { simulated: brokerMode() === "sim", agreements: agreementDocuments() };
     return (
         <html lang="en">
             <body>
                 <ClerkProvider>
-                    <AppShell>{children}</AppShell>
+                    <BrokerInfoProvider value={brokerInfo}>
+                        <AppShell>{children}</AppShell>
+                    </BrokerInfoProvider>
                 </ClerkProvider>
             </body>
         </html>

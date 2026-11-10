@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { useReverifiedRequest } from "./useReverifiedRequest";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { accountNumberValid, digitsOnly, routingValid } from "@/lib/payments";
@@ -42,6 +43,7 @@ const loadPlaid = () => new Promise<PlaidLink>((resolve, reject) => {
 const BankLink = ({ accountId, holderName, relationships, onChanged, plaid = false, simulated = true }: {
     accountId: string; holderName: string; relationships: AchRelationship[]; onChanged: () => Promise<void>; plaid?: boolean; simulated?: boolean;
 }) => {
+    const request = useReverifiedRequest();
     const [form, setForm] = useState({ owner: holderName, type: "CHECKING" as "CHECKING" | "SAVINGS", routing: "", account: "", confirm: "", nickname: "" });
     const [showErrors, setShowErrors] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -64,9 +66,11 @@ const BankLink = ({ accountId, holderName, relationships, onChanged, plaid = fal
         setBusy(true);
         setError(null);
         try {
-            await axios.post(`/api/accounts/${accountId}/ach`, {
-                account_owner_name: form.owner.trim(), bank_account_type: form.type, bank_account_number: form.account,
-                bank_routing_number: form.routing, ...(form.nickname.trim() ? { nickname: form.nickname.trim() } : {})
+            await request({
+                method: "post", url: `/api/accounts/${accountId}/ach`, data: {
+                    account_owner_name: form.owner.trim(), bank_account_type: form.type, bank_account_number: form.account,
+                    bank_routing_number: form.routing, ...(form.nickname.trim() ? { nickname: form.nickname.trim() } : {})
+                }
             });
             setForm({ ...form, routing: "", account: "", confirm: "" });
             setShowErrors(false);
@@ -89,7 +93,7 @@ const BankLink = ({ accountId, holderName, relationships, onChanged, plaid = fal
                 token: linkToken,
                 onSuccess: async (publicToken, metadata) => {
                     try {
-                        await axios.post(`/api/accounts/${accountId}/ach`, { plaid: { public_token: publicToken, account_id: metadata.accounts?.[0]?.id ?? metadata.account_id } });
+                        await request({ method: "post", url: `/api/accounts/${accountId}/ach`, data: { plaid: { public_token: publicToken, account_id: metadata.accounts?.[0]?.id ?? metadata.account_id } } });
                         await onChanged();
                     } catch (error) {
                         logError(error);
@@ -117,7 +121,7 @@ const BankLink = ({ accountId, holderName, relationships, onChanged, plaid = fal
         setBusy(true);
         setError(null);
         try {
-            await axios.delete(`/api/accounts/${accountId}/ach/${relationshipId}`);
+            await request({ method: "delete", url: `/api/accounts/${accountId}/ach/${relationshipId}` });
             await onChanged();
         } catch (error) {
             logError(error);

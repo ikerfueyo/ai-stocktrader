@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn, requireSecondFactor } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { brokerMode, getBroker } from "@/lib/server/broker";
 import { findUserAccount, requireAccount } from "@/lib/server/brokerAccounts";
 import { forgetBrokerLedger, withAccountLock } from "@/lib/server/portfolio";
 import { marginSnapshot, withdrawalError } from "@/lib/server/broker/sim/marginAccount";
 import pool from "@/lib/server/db";
-import { DEPOSIT_HOLD_DAYS, TRANSFER_FEES } from "@/lib/server/broker/sim/funding";
+import { DEPOSIT_HOLD_DAYS } from "@/lib/server/broker/sim/funding";
+import { fundingTerms } from "@/lib/server/funding";
 import type { CreateTransferRequest } from "@/lib/server/broker/types";
 import type { BrokerTransfer, TransferRequest } from "@/lib/types";
 import type { AccountContext } from "../route";
@@ -35,6 +37,8 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
     const amount = Number(requested);
     if (!(amount > 0) || Math.round(amount * 100) !== amount * 100) throw new HttpError("amount must be a positive dollar amount", 400);
     const { accountId } = await requireAccount(request, userId, direction === "INCOMING" ? "deposit" : "withdraw");
+    // Money leaving needs a recent sign-in; any transfer needs two-step verification where it's required
+    await (direction === "OUTGOING" ? requireRecentSignIn(userId) : requireSecondFactor(userId));
     if (accountId !== account_id) throw new HttpError("Switch to this account to move money in or out of it", 409);
     // An IRA's contribution is for a tax year, checked against the user's limit across their IRAs (the broker only checks it by age,
     // after the fact); a distribution carries its reason and tax withholding
@@ -61,7 +65,7 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         forgetBrokerLedger(account_id);
         return NextResponse.json<BrokerTransfer>(deposit, { status: 201 });
     }
-    const fee = type === "wire" ? TRANSFER_FEES.wireOutDomestic : 0;
+    const fee = type === "wire" ? fundingTerms().wireFee : 0;
     const created = await withAccountLock(userId, async () => {
         if (brokerMode() !== "sim") {
             const withdrawable = Number((await getBroker().getTradeAccount(account_id)).cash_withdrawable ?? 0);

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireSecondFactor } from "@/lib/server/sensitive";
 import { requireTradableStock } from "@/lib/server/assets";
 import { requireAccount } from "@/lib/server/brokerAccounts";
 import { getBroker } from "@/lib/server/broker";
@@ -14,6 +15,7 @@ import type { AppOrder, BrokerOrderRequest } from "@/lib/types";
 // rules and buying power (403 or 422 with its reason), stores it and matches it at once, so a marketable order during its session
 // comes back filled; one placed outside its session is accepted for the open. A fill runs the margin check after it.
 export const POST = withUser(async (request, context, userId) => {
+    await requireSecondFactor(userId);
     const body = await request.json().catch(() => null) as Partial<BrokerOrderRequest> | null;
     if (!body || typeof body !== "object") throw new HttpError("An order is required", 400);
     const symbol = String(body.symbol ?? "").trim().toUpperCase();

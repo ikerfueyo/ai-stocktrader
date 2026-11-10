@@ -4,7 +4,7 @@ import { singleton } from "../cache";
 import { brokerMode, getBroker } from "../broker";
 import type { BrokerEvent, BrokerEventStream } from "../broker/broker";
 import { notificationFor } from "../notificationRules";
-import { forgetBrokerLedger } from "../portfolio";
+import { forgetBrokerLedger, readsThroughBroker, recordOrderReason } from "../portfolio";
 import { notify, userForAccount } from "../notifications";
 import { reinvestDividend } from "./drip";
 import { addDays, easternParts } from "../../marketHours";
@@ -31,6 +31,8 @@ export const handleEvent = async (event: BrokerEvent) => {
                 const transfer = (await getBroker().listTransfers(event.accountId).catch(() => [])).find(({ id }) => id === payload.transfer_id);
                 if (transfer) payload = { ...payload, transfer };
             }
+            // Alpaca reports why an order ended only here, not on the order (the simulator keeps it on its orders)
+            if (event.stream === "trades" && readsThroughBroker()) await recordOrderReason(event.accountId, payload);
             const draft = notificationFor({ id: event.id, stream: event.stream, payload });
             if (draft) await notify(userId, event.accountId, draft);
             if (event.stream === "nta" && payload.activity_type === "DIV" && payload.activity_sub_type !== "SDIV") {

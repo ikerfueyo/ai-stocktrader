@@ -5,10 +5,13 @@ export class HttpError extends Error {
     // Marks the error as one of these, so it's recognized even when a dev hot reload has loaded this module twice and instanceof
     // compares against the other copy of the class (which turned the broker's 4xx refusals into 500s)
     readonly isHttpError = true;
+    // More fields for the response body beside { error }, such as Clerk's reverification hint
+    details?: Record<string, unknown>;
 
-    constructor(message: string, status: number) {
+    constructor(message: string, status: number, details?: Record<string, unknown>) {
         super(message);
         this.status = status;
+        if (details) this.details = details;
     }
 }
 

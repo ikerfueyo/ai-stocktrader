@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireSecondFactor } from "@/lib/server/sensitive";
 import { withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount } from "@/lib/server/brokerAccounts";
@@ -12,6 +13,7 @@ interface TransferContext {
 export const DELETE = withUser(async (request, { params }: TransferContext, userId) => {
     const { id, transferId } = await params;
     const { account_id } = await findUserAccount(userId, id);
+    await requireSecondFactor(userId);
     await getBroker().cancelTransfer(account_id, transferId);
     forgetBrokerLedger(account_id);
     return new NextResponse(null, { status: 204 });

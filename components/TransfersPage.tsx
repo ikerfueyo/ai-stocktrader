@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useReverifiedRequest } from "./useReverifiedRequest";
 import axios from "axios";
 import BankLink from "./BankLink";
 import { IN_PROGRESS, useFunding } from "./useFunding";
@@ -20,6 +21,7 @@ const STATUS_LABELS: Record<string, string> = {
 const TransfersPage = () => {
     const { refreshAccount } = useAccount();
     const { accountId, relationships, banks, transfers, holderName, terms, error, reload } = useFunding();
+    const request = useReverifiedRequest();
     const [actionError, setActionError] = useState<string | null>(null);
     // What's being done (a transfer's or bank's ID, or "advance"), so its button can't be pressed twice
     const [pending, setPending] = useState<string | null>(null);
@@ -66,7 +68,7 @@ const TransfersPage = () => {
                         <div key={bank.id} className="bank-link">
                             <div><strong>{bank.name}</strong> {bank.account_number}<span className="text-muted"> · routing {bank.bank_code}</span></div>
                             <button type="button" className="btn btn-sm btn-link text-muted" disabled={pending === bank.id}
-                                onClick={() => act(bank.id, () => axios.delete(`/api/accounts/${accountId}/banks/${bank.id}`))}>{pending === bank.id ? "Removing…" : "Remove"}</button>
+                                onClick={() => act(bank.id, () => request({ method: "delete", url: `/api/accounts/${accountId}/banks/${bank.id}` }))}>{pending === bank.id ? "Removing…" : "Remove"}</button>
                         </div>
                     ))}
                 </section>

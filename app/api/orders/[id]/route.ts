@@ -3,7 +3,7 @@ import { getBroker } from "@/lib/server/broker";
 import { orderFillRows } from "@/lib/server/brokerLedger";
 import { listOrderFills } from "@/lib/server/broker/sim/orders";
 import { HttpError, withUser } from "@/lib/server/errors";
-import { forgetBrokerLedger, ledgerAccountId, readsThroughBroker, toTransactionRow, withAccountLock, withReasons } from "@/lib/server/portfolio";
+import { brokerLedger, forgetBrokerLedger, ledgerAccountId, readsThroughBroker, toTransactionRow, withAccountLock, withReasons } from "@/lib/server/portfolio";
 import type { AppOrder, BrokerOrderUpdate, OrderDetails } from "@/lib/types";
 
 interface OrderContext {
@@ -22,7 +22,7 @@ export const GET = withUser(async (request, { params }: OrderContext, userId) =>
     const { id } = await params;
     const [order, fills] = await Promise.all([
         getBroker().getOrder(accountId, id),
-        !readsThroughBroker() ? listOrderFills(accountId, id).then(rows => rows.map(row => toTransactionRow(row, userId))) : orderFillRows(getBroker(), accountId, id, userId)
+        !readsThroughBroker() ? listOrderFills(accountId, id).then(rows => rows.map(row => toTransactionRow(row, userId))) : brokerLedger(accountId).then(({ ledger }) => orderFillRows(getBroker(), accountId, id, userId, ledger.replay.realizedByFill))
     ]);
     return NextResponse.json<OrderDetails>({ order: (await withReasons([order]))[0], fills });
 });

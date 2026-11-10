@@ -1,13 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useReverifiedRequest } from "./useReverifiedRequest";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
+import { useBrokerInfo } from "@/context/BrokerInfoContext";
 import type { W9Certification as Certification } from "@/lib/types";
 
 // The account's W-9 certification on the Settings page: whether backup withholding applies (24% of dividends and sale proceeds), and
 // certifying again, as after the IRS says it no longer applies
 const W9Certification = ({ accountId }: { accountId: string }) => {
+    const { simulated } = useBrokerInfo();
+    const request = useReverifiedRequest();
     const [certification, setCertification] = useState<Certification | null>(null);
     const [subject, setSubject] = useState(false);
     const [certify, setCertify] = useState(false);
@@ -29,7 +33,7 @@ const W9Certification = ({ accountId }: { accountId: string }) => {
     const onSave = async () => {
         setMessage(null);
         try {
-            const { data } = await axios.post<Certification>(`/api/accounts/${accountId}/w9`, { backupWithholding: subject, certify: true });
+            const { data } = await request<Certification>({ method: "post", url: `/api/accounts/${accountId}/w9`, data: { backupWithholding: subject, certify: true } });
             setCertification(data);
             setCertify(false);
             setMessage({ ok: true, text: data.backupWithholding ? "Saved: backup withholding applies." : "Saved: no backup withholding." });
@@ -56,7 +60,7 @@ const W9Certification = ({ accountId }: { accountId: string }) => {
             </label>
             <label className="d-block mt-2">
                 <input type="checkbox" checked={certify} onChange={e => setCertify(e.target.checked)} /> Under penalties of perjury, I certify that my taxpayer
-                identification number is correct, that the statement above is true, and that I am a U.S. person (simulated: test data only)
+                identification number is correct, that the statement above is true, and that I am a U.S. person{simulated && " (simulated: test data only)"}
             </label>
             <button type="button" className="btn btn-sm btn-outline-primary mt-2" onClick={onSave} disabled={!certify}>Certify</button>
             {message && <p className={message.ok ? "text-success" : "text-danger"}>{message.text}</p>}

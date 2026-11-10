@@ -2,7 +2,7 @@ import "server-only";
 import type { NextRequest } from "next/server";
 import pool from "./db";
 import { HttpError } from "./httpError";
-import { getBroker } from "./broker";
+import { brokerMode, getBroker } from "./broker";
 import type { Account } from "./broker/types";
 import { FINAL_ACCOUNT_STATUSES as FINAL_STATUSES } from "../accounts";
 import type { BrokerAccountKind, BrokerAccountSummary } from "../types";
@@ -25,8 +25,9 @@ interface BrokerAccountRow {
 
 export { FINAL_ACCOUNT_STATUSES as FINAL_STATUSES } from "../accounts";
 
+// The user's accounts at the broker in use (BROKER): a database can still hold the other broker's accounts, which this broker doesn't know
 export const listAccountRows = async (userId: string): Promise<BrokerAccountRow[]> =>
-    (await pool.query<BrokerAccountRow>("SELECT * FROM broker_accounts WHERE user_id = $1 ORDER BY created_at DESC", [userId])).rows;
+    (await pool.query<BrokerAccountRow>("SELECT * FROM broker_accounts WHERE user_id = $1 AND broker = $2 ORDER BY created_at DESC", [userId, brokerMode()])).rows;
 
 // The user's accounts with their current status (the broker's), newest first, and which one is active
 export const listAccounts = async (request: NextRequest, userId: string): Promise<BrokerAccountSummary[]> => {
@@ -50,10 +51,10 @@ const pickActive = (request: NextRequest, rows: BrokerAccountRow[], accounts: Ac
     return open.find(({ account_id }) => account_id === chosen) ?? open[0] ?? rows[0] ?? null;
 };
 
-// The user's account by ID (404 when it isn't theirs)
+// The user's account by ID (404 when it isn't theirs, or is at another broker)
 export const findUserAccount = async (userId: string, accountId: string): Promise<BrokerAccountRow> => {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(accountId)) throw new HttpError("Account not found", 404);
-    const { rows: [row] } = await pool.query<BrokerAccountRow>("SELECT * FROM broker_accounts WHERE user_id = $1 AND account_id = $2", [userId, accountId]);
+    const { rows: [row] } = await pool.query<BrokerAccountRow>("SELECT * FROM broker_accounts WHERE user_id = $1 AND account_id = $2 AND broker = $3", [userId, accountId, brokerMode()]);
     if (!row) throw new HttpError("Account not found", 404);
     return row;
 };

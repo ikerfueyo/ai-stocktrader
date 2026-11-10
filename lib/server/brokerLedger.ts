@@ -4,13 +4,14 @@
 // for what Alpaca doesn't report: realized P&L per fill, open tax lots and the
 // year's gains and losses (its 1099 is the record). Kept free of the database and server-only modules, so it's tested with a fake
 // broker, and the scenarios check it against SimBroker.
-import { easternParts, easternTime, settlementDate } from "../marketHours";
+import { addDays, easternParts, easternTime, settlementDate } from "../marketHours";
 import { applyFill, applySplit, isLongTerm, type Lot } from "./broker/sim/ledger";
 import { reportSales, sharesSince, taxYear, unrealizedRows, type Acquisition, type Disposal, type ShareChange, type TaxYear } from "./broker/sim/tax";
 import { applyActionToLots, type ActionPrices, type CorporateAction } from "./broker/sim/corporateActions";
+import { reservedForOrders } from "./broker/sim/matching";
 import type { Broker } from "./broker/broker";
-import type { AccountConfigurations, Activity, Position as BrokerPosition, TradeAccount } from "./broker/types";
-import type { Account, CashActivityRow, Position, TaxLot, TradeHistoryRow } from "../types";
+import type { AccountConfigurations, Activity, Order as BrokerOrder, Position as BrokerPosition, TradeAccount } from "./broker/types";
+import type { Account, CashActivityRow, Position, Quote, TaxLot, TradeHistoryRow } from "../types";
 import type { Split, Trade } from "./account";
 
 const roundCents = (value: number) => Math.round(value * 100) / 100;
@@ -19,10 +20,11 @@ const dayOf = (iso: string) => easternParts(new Date(iso)).dateKey;
 // Alpaca's page size for activities, and its largest
 const PAGE_SIZE = 100;
 
-// Every activity of the types asked for, oldest first, following Alpaca's page_token paging (the last ID of each page)
-export const listAllActivities = async (broker: Pick<Broker, "listActivities">, accountId: string, types: string[]): Promise<Activity[]> => {
+// Every activity of the types asked for, oldest first, following Alpaca's page_token paging (the last ID of each page); after an
+// activity's ID, only those that come after it
+export const listAllActivities = async (broker: Pick<Broker, "listActivities">, accountId: string, types: string[], after?: string): Promise<Activity[]> => {
     const all: Activity[] = [];
-    let pageToken: string | undefined;
+    let pageToken: string | undefined = after;
     for (;;) {
         const page = await broker.listActivities(accountId, { activity_types: types.join(","), direction: "asc", page_size: PAGE_SIZE, ...(pageToken ? { page_token: pageToken } : {}) } as never);
         all.push(...page);
@@ -30,6 +32,60 @@ export const listAllActivities = async (broker: Pick<Broker, "listActivities">, 
         if (page.length < PAGE_SIZE || !last || last === pageToken) return all;
         pageToken = last;
     }
+};
+
+// An order and its legs, flattened (Alpaca nests a bracket's, OCO's and OTO's legs under the entry)
+export const flattenOrders = (orders: BrokerOrder[]): BrokerOrder[] => orders.flatMap(order => [order, ...flattenOrders((order.legs ?? []) as BrokerOrder[])]);
+
+const OPEN_STATUSES = new Set(["new", "accepted", "partially_filled", "held", "pending_new", "pending_cancel", "pending_replace", "accepted_for_bidding"]);
+
+// The symbols whose open orders need a quote to say what they hold: market orders, and short sales (held at 3% over the ask)
+export const unpricedSymbols = (orders: BrokerOrder[]) => [...new Set(flattenOrders(orders)
+    .filter(order => OPEN_STATUSES.has(String(order.status)) && order.limit_price == null && order.stop_price == null && order.notional == null)
+    .map(order => String(order.symbol)))];
+
+// What open orders hold back from buying power, as the simulator works it out (reservedForOrders), for Alpaca's open orders: Alpaca
+// doesn't report it apart, its buying_power already being net of it, so it's shown only
+export const openOrderReservation = (
+    orders: BrokerOrder[], positions: Record<string, number>, quotes: Record<string, Pick<Quote, "price" | "ask" | "bid"> | undefined>,
+    options: { marginable?: Record<string, boolean | null>; multiplier?: number } = {}
+): number => {
+    const num = (value: unknown) => value === null || value === undefined || value === "" ? null : Number(value);
+    return reservedForOrders(flattenOrders(orders).filter(order => OPEN_STATUSES.has(String(order.status))).map(order => {
+        const filledQty = Number(order.filled_qty ?? 0);
+        return {
+            symbol: String(order.symbol), side: order.side as "buy" | "sell", limitPrice: num(order.limit_price), stopPrice: num(order.stop_price),
+            qty: num(order.qty), notional: num(order.notional), filledQty,
+            // Alpaca has no filled_notional: the shares filled at their average price
+            filledNotional: filledQty * Number(order.filled_avg_price ?? 0),
+            // Legs waiting for their entry: Alpaca reports them held, though the spec's OrderStatus leaves it out
+            held: String(order.status) === "held"
+        };
+    }), positions, quotes, options);
+};
+
+// The Eastern day an activity is dated: a non-trade activity's date, else a fill's transaction time
+export const activityDay = (activity: Activity): string => {
+    const { date, transaction_time: time } = activity as { date?: string; transaction_time?: string };
+    return date ? String(date).slice(0, 10) : time ? dayOf(String(time)) : easternParts(new Date()).dateKey;
+};
+
+// How far back each sync re-reads the stored copy (lib/server/activityStore.ts), for activities that post late or are corrected
+export const ACTIVITY_WINDOW_DAYS = 3;
+
+// The stored activity to page after: the newest (by ID, which sorts by time) dated before the window, null to read everything
+export const windowCursor = (stored: { id: string; day: string }[], today: string, windowDays = ACTIVITY_WINDOW_DAYS): string | null => {
+    const start = addDays(today, -windowDays);
+    let cursor: string | null = null;
+    for (const { id, day } of stored) if (day < start && (cursor === null || id > cursor)) cursor = id;
+    return cursor;
+};
+
+// The copy after a sync: the stored activities up to the cursor, then what the broker returned after it, oldest first, each once
+export const mergeWindow = <T extends { id: string }>(stored: T[], fetched: T[], cursor: string | null): T[] => {
+    const kept = cursor === null ? [] : stored.filter(({ id }) => id <= cursor);
+    const byId = new Map([...kept, ...fetched].map(activity => [activity.id, activity]));
+    return [...byId.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 };
 
 // A fill as the replay reads it
@@ -276,8 +332,10 @@ export const ledgerOf = ({ trade, positions, activities, splits, actions = [], t
 
 // GET /api/account's figures from the broker's trading account (Alpaca's TradeAccount): what it reports as is, the rest derived
 // (excess liquidity, the debit) or unknown to the API (buying power held for open orders, accrued interest, margin calls: none)
-export const accountSummary = ({ trade, positions, configurations, ledger, marginRate }: {
+export const accountSummary = ({ trade, positions, configurations, ledger, marginRate, reservedCash = 0 }: {
     trade: TradeAccount; positions: BrokerPosition[]; configurations: AccountConfigurations; ledger: ReturnType<typeof ledgerOf>; marginRate: number;
+    // Buying power held for open orders (openOrderReservation), shown only: Alpaca's buying_power already nets it
+    reservedCash?: number;
 }): Account => {
     const money = (value: unknown) => roundCents(Number(value ?? 0));
     const equity = money(trade.equity), maintenance = money(trade.maintenance_margin);
@@ -287,7 +345,7 @@ export const accountSummary = ({ trade, positions, configurations, ledger, margi
         buyingPower: money(trade.buying_power),
         regtBuyingPower: money(trade.regt_buying_power),
         nonMarginableBuyingPower: money(trade.non_marginable_buying_power),
-        reservedCash: 0,
+        reservedCash: roundCents(reservedCash),
         multiplier: Number(trade.multiplier ?? 1),
         maxMultiplier: Number(configurations.max_margin_multiplier ?? trade.multiplier ?? 1),
         equity,
@@ -304,6 +362,8 @@ export const accountSummary = ({ trade, positions, configurations, ledger, margi
         marginCalls: [],
         intradayDeficits: [],
         marginRestrictedUntil: null,
+        // Alpaca's API reports no margin calls; equity under its maintenance margin is the sign of one
+        belowMaintenance: maintenance > 0 && equity < maintenance ? roundCents(maintenance - equity) : null,
         shortingEnabled: trade.shorting_enabled === true,
         shortingBlockedReason: trade.shorting_enabled ? null : "Short selling isn't enabled for this account",
         unrealizedPnl: roundCents(unrealized),
@@ -353,7 +413,7 @@ export const taxReportOf = ({ replay, activities, year, prices, now = new Date()
 };
 
 // The fills of an order and of the orders it replaced, newest first, by following replaces through the broker
-export const orderFillRows = async (broker: Pick<Broker, "getOrder" | "listActivities">, accountId: string, orderId: string, userId: string): Promise<TradeHistoryRow[]> => {
+export const orderFillRows = async (broker: Pick<Broker, "getOrder" | "listActivities">, accountId: string, orderId: string, userId: string, realizedByFill?: Replay["realizedByFill"]): Promise<TradeHistoryRow[]> => {
     const fills: BrokerFill[] = [];
     let id: string | null | undefined = orderId;
     for (let depth = 0; id && depth < 20; depth++) {
@@ -362,6 +422,7 @@ export const orderFillRows = async (broker: Pick<Broker, "getOrder" | "listActiv
         id = order.replaces;
     }
     fills.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
-    return transactionRowsOf(fills, { realizedByFill: new Map() }, userId);
+    // What each fill realized, from the replay of the whole account (an order's fills alone can't say which lots they closed)
+    return transactionRowsOf(fills, { realizedByFill: realizedByFill ?? new Map() }, userId);
 };
 

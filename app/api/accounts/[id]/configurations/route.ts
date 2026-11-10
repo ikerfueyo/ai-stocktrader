@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount } from "@/lib/server/brokerAccounts";
@@ -18,6 +19,7 @@ const FIELDS = ["fractional_trading", "max_margin_multiplier", "no_shorting", "s
 // trading (422).
 export const PATCH = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
+    await requireRecentSignIn(userId);
     const body = await request.json().catch(() => null) as AccountConfigurations | null;
     if (!body || typeof body !== "object") throw new HttpError("A configuration change is required", 400);
     const unknown = Object.keys(body).filter(key => !FIELDS.includes(key));

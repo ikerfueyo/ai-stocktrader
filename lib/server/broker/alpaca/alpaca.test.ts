@@ -5,7 +5,7 @@ import { BrokerError } from "../errors";
 import { HttpError, UpstreamError } from "../../httpError";
 import { alpacaConfigFromEnv, type AlpacaBrokerConfig } from "./config";
 import { TokenSource } from "./auth";
-import { buildUrl, errorFor, fallbackCode } from "./http";
+import { buildUrl, errorFor, fallbackCode, redactTaxIds } from "./http";
 import { AlpacaBroker, redactAccount } from "./client";
 import { resumeId, SeenIds, toBrokerEvent, RESUME_WINDOW_MS } from "./events";
 import { SseParser } from "./sse";
@@ -229,6 +229,14 @@ describe("errors", () => {
         assert.equal(error.code, 42210000);
         assert.equal(error.message, "symbol is required");
         assert.equal((errorFor(404, "", "GET /x") as BrokerError).message, "HTTP 404");
+    });
+
+    test("a tax ID Alpaca echoes back is masked to its last 4 digits, in 4xx and 5xx messages alike", () => {
+        const echoed = errorFor(422, JSON.stringify({ code: 40010001, message: "identity.tax_id 123-45-6789 is invalid (also 987654321)" }), "POST /v1/accounts");
+        assert.equal(echoed.message, "identity.tax_id xxx-xx-6789 is invalid (also xxx-xx-4321)");
+        assert.ok(!errorFor(500, "tax_id=123456789", "POST /v1/accounts").message.includes("123456789"));
+        // Dates, UUIDs, amounts and account numbers inside longer runs are left alone
+        assert.equal(redactTaxIds("2026-11-10 9e3815e4-1234-4321-8888-123456789012 $1,234.56"), "2026-11-10 9e3815e4-1234-4321-8888-123456789012 $1,234.56");
     });
 
     test("5xx replies are the upstream's, a 504 kept as a timeout", () => {

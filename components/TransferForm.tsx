@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
+import { useReverifiedRequest } from "./useReverifiedRequest";
 import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
 import BankLink from "./BankLink";
@@ -29,6 +30,7 @@ const expected = (iso: string) => formatEastern(iso, { withDay: true });
 const TransferForm = ({ direction }: { direction: Direction }) => {
     const { account, refreshAccount } = useAccount();
     const { active } = useBrokerAccount();
+    const request = useReverifiedRequest();
     const isIra = active?.kind === "traditional_ira" || active?.kind === "roth_ira";
     const [ira, setIra] = useState<IraOverview | null>(null);
     const [iraVersion, setIraVersion] = useState(0);
@@ -95,7 +97,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
         try {
             let recipient = chosenBank;
             if (addingBank) {
-                const created = await axios.post<{ id: string }>(`/api/accounts/${accountId}/banks`, { name: newBank.name.trim(), bank_code: newBank.routing, account_number: newBank.account });
+                const created = await request<{ id: string }>({ method: "post", url: `/api/accounts/${accountId}/banks`, data: { name: newBank.name.trim(), bank_code: newBank.routing, account_number: newBank.account } });
                 recipient = created.data.id;
                 setBankId(recipient);
                 setNewBank({ name: "", routing: "", account: "" });
@@ -105,7 +107,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
                 ...(isDeposit || method === "ach" ? { relationshipId: approved?.id } : { bankId: recipient }),
                 ...(isIra ? { ira: isDeposit ? { taxYear: year?.taxYear } : { distributionReason: chosenReason, fedPct, statePct } } : {})
             };
-            const { data } = await axios.post<BrokerTransfer>(`/api/accounts/${accountId}/transfers`, { transfer } satisfies TransferRequest);
+            const { data } = await request<BrokerTransfer>({ method: "post", url: `/api/accounts/${accountId}/transfers`, data: { transfer } satisfies TransferRequest });
             const instant = Number(data.instant_amount ?? 0);
             setStatus({
                 ok: true,

@@ -59,8 +59,8 @@ The run settles these questions, which the docs and the vendored specs leave ope
   - the IRA disclosure statement and custodial agreement;
   - the app's own Form CRS and privacy notice, if counsel decides the app needs them.
 
-  The `signed_at` and IP recorded at signing must refer to the version that was shown.
-- **Fees and limits.** Alpaca's fee schedule (revised Oct 12, 2026) confirmed the simulator's figures: the $15 outgoing domestic wire, the $25 ACH return, the 6.50% margin rate, the regulatory fees (SEC, TAF and CAT) and how the HTB borrow fee is computed. Check it again before launch, since it changes without notice. Outgoing ACATS ($25) and international wires ($35) aren't offered. The vendored Broker spec now has incoming ACATS (`/v1beta1/acats`: full and partial transfers of U.S. equities and cash, with contra brokers, statuses and assets), which the app doesn't model for any account. IRA transfers and rollovers aren't offered at all ("not yet supported", per Alpaca's IRA overview, Oct 2026). Confirm the production ACH limits and cutoff times. The deposit and withdraw forms still show the simulator's figures.
+  Each goes in `AGREEMENT_DOCUMENTS` (JSON: `{ "customer_agreement": { "url": "https://…", "revision": "19.2026.10" }, … }`, for `customer_agreement`, `account_agreement`, `margin_agreement`, `ira_disclosure`, `form_crs` and `privacy_notice`; `lib/server/agreements.ts`). The forms then link to the real document with its revision, `/agreements/[name]` redirects to it, and the server checks that the revision the page showed is still the current one (409 otherwise), sends it as the agreement's `revision` to Alpaca and keeps it in `account_attestations.details.revision` for Form CRS, the privacy notice and the IRA disclosure. Unset, each is the placeholder with revision `placeholder`, which isn't sent (Alpaca then records its current one). Get Alpaca's links and revision numbers for its agreements.
+- **Fees and limits.** Alpaca's fee schedule (revised Oct 12, 2026) confirmed the simulator's figures: the $15 outgoing domestic wire, the $25 ACH return, the 6.50% margin rate, the regulatory fees (SEC, TAF and CAT) and how the HTB borrow fee is computed. Check it again before launch, since it changes without notice. Outgoing ACATS ($25) and international wires ($35) aren't offered. The vendored Broker spec now has incoming ACATS (`/v1beta1/acats`: full and partial transfers of U.S. equities and cash, with contra brokers, statuses and assets), which the app doesn't model for any account. IRA transfers and rollovers aren't offered at all ("not yet supported", per Alpaca's IRA overview, Oct 2026). Confirm the production ACH limits and cutoff times. With `BROKER=alpaca` the forms show `ALPACA_WIRE_FEE` (default $15), `ALPACA_ACH_RETURN_FEE` ($25) and `ALPACA_ACH_DAILY_LIMIT` (50,000, a guess until Alpaca confirms it; `lib/server/funding.ts`), and the withdrawal check adds that wire fee.
 
 ### Plaid
 - **Production access.** That needs a Plaid production application, approval for the Auth product, and Alpaca enabled as a processor in the Plaid dashboard.
@@ -85,11 +85,11 @@ The run settles these questions, which the docs and the vendored specs leave ope
 
 ### Security
 - **SOC 2.** Alpaca expects partners to pass a security assessment.
-- **Multi-factor sign-in.** Turn on multi-factor sign-in in Clerk.
-- **Re-authentication.** Require it before withdrawals, bank link changes and changes to the account's details.
+- **Multi-factor sign-in.** Done in code: with `REQUIRE_MFA` (on by default with `BROKER=alpaca`), orders, transfers and the sensitive changes below answer 403 until the user turns on two-step verification (Clerk's `twoFactorEnabled`; `lib/server/sensitive.ts`). Still to do: allow an authenticator app (and backup codes) in the production Clerk instance, and turn on "Require multi-factor authentication" there so new users set it up at sign-in (the sign-in page shows Clerk's `TaskSetupMFA` for that task; untried until it's on).
+- **Re-authentication.** Done in code: withdrawals, bank links and wire recipients (adding and removing), the account's details and configurations, the W-9, opening an IRA and closing the account need a factor verified in the last 10 minutes (Clerk's "strict" reverification). The route answers 403 with Clerk's hint and the page's `useReverifiedRequest` opens Clerk's dialog and retries. Try the dialog once against the production Clerk instance.
 - **Reg S-P.** Write an incident response plan for Reg S-P, including the customer notices required by the 2024 amendments.
 - **Secrets.** Store the OAuth client secret and the Plaid secret in a secrets manager, not in `.env.local`. Rotate them on a schedule.
-- **Tax IDs.** An application's full SSN goes from the form straight to Alpaca and is never stored (accounts come back masked: `redactAccount`). Opening an IRA asks for it again. Keep it out of logs, analytics and error reports, including any request logging added later.
+- **Tax IDs.** An application's full SSN goes from the form straight to Alpaca and is never stored (accounts come back masked: `redactAccount`). Opening an IRA asks for it again. An account update can't carry a tax ID or date of birth (400 before anything reaches the broker), and a tax ID that Alpaca's error messages echo back is masked to its last 4 digits before it's logged or shown (`redactTaxIds` in `lib/server/broker/alpaca/http.ts`). Keep it out of analytics and error reports, including any request logging added later.
 - **Penetration test.** Run one before launch.
 
 ### What the simulator can't model
@@ -105,17 +105,26 @@ Alpaca does these itself. The simulator's versions were approximations and go aw
 
 ## Code still to do
 
-With `BROKER=alpaca`, the app reads accounts only through the `Broker` interface: `lib/server/brokerLedger.ts`, used by `lib/server/portfolio.ts` and the account, lots, tax, order and transfer routes. The simulator's own background jobs are skipped (`simOnly` in `lib/server/jobs.ts`).
+With `BROKER=alpaca`, the app reads accounts only through the `Broker` interface: `lib/server/brokerLedger.ts`, used by `lib/server/portfolio.ts` and the account, lots, tax, order and transfer routes. The simulator's own background jobs are skipped (`simOnly` in `lib/server/jobs.ts`), and the account list, every `/api/accounts/[id]` route and recurring buys only see accounts at the broker in use (`broker_accounts.broker`), so a database that still holds simulator accounts works.
 
-`BROKER_LEDGER=broker` makes the app read the simulator the same way. The scenario suite compares both paths on the same account, and they agree. What's left:
+`BROKER_LEDGER=broker` makes the app read the simulator the same way. The scenario suite compares both paths on the same account, and they agree.
+
+Done on 2026-11-10:
+- **Activities are stored** (`broker_activities`, `lib/server/activityStore.ts`, migration 028): a page load pages only what's new after the newest stored activity dated more than 3 days ago, and replaces those days, so late or corrected activities are picked up; the whole history is read again once a day. Activities posted later with an earlier date than that wait for the daily read. Check how far back Alpaca dates late activities (fees, corrections, corporate actions) and widen the window if needed.
+- **Why an order ended** comes from its trade event (`order_reasons`), kept by the event consumer. Orders that ended before it first subscribed have none.
+- **Buying power held for open orders** is worked out from the open orders as the simulator does (`openOrderReservation`), and shown only, since Alpaca's `buying_power` is already net of it.
+- **An order's fills** show the realized P&L from the account's replay.
+- **Funding terms** come from `ALPACA_*` variables (above).
+- **The simulator's wording** (test notes, "simulated" on documents and the W-9, the dev-only buttons) shows only with `BROKER=sim`.
+
+What's left:
 - **Figures Alpaca doesn't report.** These show as zero or nothing:
-  - buying power held for open orders (`reservedCash`), accrued margin interest, margin calls (`marginCalls`, `marginStatus`, so no margin call banner or notifications), and liquidation fills;
-  - why an order ended, which comes only with its trade event;
+  - accrued margin interest, margin calls (`marginCalls`, `marginStatus`, so no margin call notifications) and liquidation fills. The app shows how far equity is below Alpaca's `maintenance_margin` (`belowMaintenance`, a banner and the margin panel) without a deadline or blocking orders. Margin calls could come from Alpaca's account events or reports, once their shape is known;
   - instant deposit credit.
 
-  The margin rate shown is `ALPACA_MARGIN_RATE`. Margin calls could come from Alpaca's account events or reports, once their shape is known.
+  The margin rate shown is `ALPACA_MARGIN_RATE`.
 - **Lots and the gains report** come from replaying Alpaca's fills FIFO with the stored corporate actions (Alpha Vantage's splits, and Alpaca's stock dividends, mergers, spinoffs, symbol changes and worthless removals), applied as the simulator applies them, and a spinoff's or mixed merger's basis at the effective date's closes. The scenarios check the replay against the simulator's own lots after a spinoff and a stock merger. They're still the app's reconstruction. An action Alpaca's corporate actions API doesn't report, or reports differently from how Alpaca applied it, leaves them approximate, and so does a voluntary action. Alpaca's 1099 is the record.
 - **Locates.** The Broker API has no locate endpoint (Alpaca's Trading API does, and requires a locate before an HTB short), so the adapter refuses them (501) and `GET /api/locates/quotes` answers `offered: false`. The order ticket then blocks short sales of hard-to-borrow stocks and says why. Ask Alpaca how Broker API partners' customers short HTB stocks, and wire that in if there's a way.
-- **Funding terms.** `GET /api/funding` still shows the simulator's limits and fees, except instant credit (none). Replace them once Alpaca's are confirmed.
 - **Plaid Link.** `BankLink` loads Plaid Link only when `GET /api/funding` says Plaid is available, which needs `BROKER=alpaca` and Plaid's keys. It hasn't been tried against Plaid's sandbox.
-- **Cost.** Each account page load reads the account's whole activity history (Alpaca pages it 100 at a time). It's kept 5 seconds and dropped after every change and broker event. A long history would want a stored copy, kept current from the NTA and trade streams.
+- **The $2,000 margin rule.** The simulator applies it to current equity; check account 408418023's multiplier on 2026-11-11 (above) and move it to the previous close's equity if Alpaca does.
+- **Hosting.** The app runs locally only. Going live needs a host (one long-lived Node process, as `CLAUDE.md` explains), a managed Postgres, and the secrets above in a secrets manager.

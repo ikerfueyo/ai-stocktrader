@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Beneficiaries, OpenIra } from "./IraSettings";
-import Link from "next/link";
+import { useReverifiedRequest } from "./useReverifiedRequest";
+import AgreementLink, { useShownRevisions } from "./AgreementLink";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
@@ -29,6 +30,8 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 const AccountSettings = () => {
     const { active, refreshAccounts } = useBrokerAccount();
     const { refreshAccount } = useAccount();
+    const request = useReverifiedRequest();
+    const shownRevisions = useShownRevisions();
     const [account, setAccount] = useState<BrokerAccount | null>(null);
     const [configurations, setConfigurations] = useState<AccountConfigurations | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -92,12 +95,12 @@ const AccountSettings = () => {
             setNotice({ section, text: apiErrorMessage(error), error: true });
         }
     };
-    const patchAccount = (body: object) => axios.patch<BrokerAccount>(`/api/accounts/${id}`, body);
+    const patchAccount = (body: object) => request<BrokerAccount>({ method: "patch", url: `/api/accounts/${id}`, data: body });
     // An edited address, name or employer puts the account under review
     const reviewNotice = ({ data }: { data: BrokerAccount }) => data.status === "ACCOUNT_UPDATED"
         ? "Saved. Your new details are being reviewed; withdrawals resume once they're approved."
         : "Saved.";
-    const patchConfigurations = (body: AccountConfigurations) => axios.patch(`/api/accounts/${id}/configurations`, body);
+    const patchConfigurations = (body: AccountConfigurations) => request({ method: "patch", url: `/api/accounts/${id}/configurations`, data: body });
     const noticeFor = (section: string) => notice?.section === section && notice.text && <p className={notice.error ? "text-danger" : "text-success"}>{notice.text}</p>;
 
     if (error) return <p className="text-danger text-center mt-5">Couldn&apos;t load your account: {error}</p>;
@@ -133,7 +136,7 @@ const AccountSettings = () => {
     // account got: margin needs $2,000 of equity, and Alpaca enables it per account, so a broker that hasn't keeps it at 1x (or
     // refuses the change, 422) with the agreement signed
     const onUpgradeMargin = () => save("margin", async () => {
-        await patchAccount({ agreements: [{ agreement: "margin_agreement" }] });
+        await patchAccount({ agreements: [{ agreement: "margin_agreement" }], revisions: shownRevisions(["margin_agreement"]) });
         try {
             await patchConfigurations({ no_shorting: false });
         } catch (error) {
@@ -151,7 +154,7 @@ const AccountSettings = () => {
         return upgraded.multiplier > 1 ? `Your account is now a margin account, at ${upgraded.multiplier}× buying power.` : notEnabled;
     });
     const onClose = () => save("close", async () => {
-        await axios.post(`/api/accounts/${id}/close`);
+        await request({ method: "post", url: `/api/accounts/${id}/close` });
     }, "Your account is closed.");
 
     return (
@@ -287,7 +290,7 @@ const AccountSettings = () => {
                     <p className="text-muted">Borrow against your stocks and sell short. Borrowing costs interest, and you can lose more than you deposit.</p>
                     <label className="onboarding-check">
                         <input type="checkbox" checked={acceptMargin} onChange={event => setAcceptMargin(event.target.checked)} />
-                        I&apos;ve read and accept the <Link href="/agreements/margin_agreement" target="_blank">margin agreement</Link>
+                        I&apos;ve read and accept the <AgreementLink name="margin_agreement">margin agreement</AgreementLink>
                     </label>
                     <button type="button" className="btn btn-dark" disabled={!acceptMargin} onClick={onUpgradeMargin}>Upgrade to margin</button>
                 </Section>

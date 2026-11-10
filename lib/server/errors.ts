@@ -16,21 +16,24 @@ interface ErrorLike {
     errors?: { message: string }[];
 }
 
-// Logs METHOD path: message and returns { error: message } with the status the error contract gives it
+// Logs METHOD path: message and returns { error: message } (with an HttpError's details, such as a reverification hint) with the
+// status the error contract gives it
 export const errorResponse = (request: NextRequest, error: unknown): NextResponse<ApiError> => {
     const { message: errorMessage, code, errors } = (error ?? {}) as ErrorLike;
     // pg throws an AggregateError with an empty message when every address for the host fails (e.g. ::1 and 127.0.0.1)
     const message = errorMessage || errors?.map(e => e.message).join("; ") || code || "Unknown error";
     console.error(`${request.method} ${request.nextUrl.pathname}${request.nextUrl.search}: ${message}`);
     let status = 500;
+    let details: Record<string, unknown> = {};
     if (isHttpError(error)) {
         status = error.status;
+        details = error.details ?? {};
     } else if (code === "ECONNABORTED" || code === "ETIMEDOUT" || error instanceof OpenAI.APIConnectionTimeoutError) {
         status = 504;
     } else if (error instanceof OpenAI.APIError) {
         status = 502;
     }
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ ...details, error: message }, { status });
 };
 
 // Every API route needs a signed-in Clerk user (proxy.ts reads the session), so anonymous callers can't read accounts or spend

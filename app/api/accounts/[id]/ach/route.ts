@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { getPlaid } from "@/lib/server/broker/alpaca";
@@ -19,6 +20,7 @@ export const GET = withUser(async (request, { params }: AccountContext, userId) 
 // or REJECTED. 409 while another link is queued or approved.
 export const POST = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
+    await requireRecentSignIn(userId);
     const body = await request.json().catch(() => null) as (CreateACHRelationshipRequest & { plaid?: { public_token?: unknown; account_id?: unknown } }) | null;
     if (!body || typeof body !== "object") throw new HttpError("A bank account is required", 400);
     if (body.plaid) {

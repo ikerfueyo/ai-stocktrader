@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
-import Link from "next/link";
+import { useReverifiedRequest } from "./useReverifiedRequest";
+import AgreementLink, { useShownRevisions } from "./AgreementLink";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { beneficiaryErrors, IRA_LABELS, iraMaritalStatus, spousalConsentMayBeNeeded, type BeneficiaryInput, type IraSubType } from "@/lib/ira";
@@ -50,6 +51,7 @@ export const BeneficiaryFields = ({ beneficiaries, setBeneficiaries }: { benefic
 
 // The IRA's beneficiaries, replaced all at once (PATCH /api/accounts/[id] { beneficiaries }), as Alpaca replaces them
 export const Beneficiaries = ({ accountId, state, maritalStatus, onSaved }: { accountId: string; state?: string; maritalStatus?: string | null; onSaved: () => void }) => {
+    const request = useReverifiedRequest();
     const [overview, setOverview] = useState<IraOverview | null>(null);
     const [editing, setEditing] = useState<BeneficiaryInput[] | null>(null);
     const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
@@ -69,7 +71,7 @@ export const Beneficiaries = ({ accountId, state, maritalStatus, onSaved }: { ac
         const problems = beneficiaryErrors(editing!, today());
         if (problems.length > 0) return setMessage({ ok: false, text: problems.join("; ") });
         try {
-            await axios.patch(`/api/accounts/${accountId}`, { beneficiaries: editing });
+            await request({ method: "patch", url: `/api/accounts/${accountId}`, data: { beneficiaries: editing } });
             setEditing(null);
             setMessage({ ok: true, text: "Beneficiaries saved." });
             setVersion(value => value + 1);
@@ -115,6 +117,8 @@ const DESCRIPTIONS: Record<IraSubType, string> = {
 // status when the account has none (Alpaca needs it for beneficiaries), beneficiaries and the agreements. It's reviewed like any
 // application, then appears in the account menu.
 export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; maritalStatus?: string | null; onOpened: () => void }) => {
+    const request = useReverifiedRequest();
+    const shownRevisions = useShownRevisions();
     const [overview, setOverview] = useState<IraOverview | null>(null);
     const [subType, setSubType] = useState<IraSubType | null>(null);
     const [taxId, setTaxId] = useState("");
@@ -147,8 +151,10 @@ export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; ma
         setSubmitting(true);
         setMessage(null);
         try {
-            const body: OpenIraRequest = { subType, taxId, ...(askMaritalStatus && effectiveMaritalStatus ? { maritalStatus: effectiveMaritalStatus } : {}), beneficiaries, acceptedAgreements: agreements, iraDisclosure: disclosure };
-            await axios.post("/api/accounts/ira", body);
+            const body: OpenIraRequest = { subType, taxId, ...(askMaritalStatus && effectiveMaritalStatus ? { maritalStatus: effectiveMaritalStatus } : {}), beneficiaries, acceptedAgreements: agreements, iraDisclosure: disclosure,
+                revisions: shownRevisions(["customer_agreement", "account_agreement", "ira_disclosure", "form_crs", "privacy_notice"])
+            };
+            await request({ method: "post", url: "/api/accounts/ira", data: body });
             setMessage({ ok: true, text: `Your ${IRA_LABELS[subType]} was submitted for review. Once it's open, switch to it in the account menu to fund it.` });
             setSubType(null);
             setTaxId("");
@@ -199,11 +205,11 @@ export const OpenIra = ({ state, maritalStatus, onOpened }: { state?: string; ma
                     )}
                     <label className="onboarding-check">
                         <input type="checkbox" checked={agreements} onChange={event => setAgreements(event.target.checked)} />
-                        I accept the <Link href="/agreements/customer_agreement" target="_blank">customer agreement</Link> and the <Link href="/agreements/account_agreement" target="_blank">account agreement</Link> for the IRA
+                        I accept the <AgreementLink name="customer_agreement">customer agreement</AgreementLink> and the <AgreementLink name="account_agreement">account agreement</AgreementLink> for the IRA
                     </label>
                     <label className="onboarding-check">
                         <input type="checkbox" checked={disclosure} onChange={event => setDisclosure(event.target.checked)} />
-                        I&apos;ve read the <Link href="/agreements/ira_disclosure" target="_blank">IRA disclosure statement and custodial agreement</Link>
+                        I&apos;ve read the <AgreementLink name="ira_disclosure">IRA disclosure statement and custodial agreement</AgreementLink>
                     </label>
                     <button type="button" className="btn btn-dark" disabled={submitting || !agreements || !disclosure || !effectiveMaritalStatus || taxId.replace(/\D/g, "").length !== 9} onClick={submit}>
                         {submitting ? "Submitting..." : `Open a ${IRA_LABELS[subType]}`}

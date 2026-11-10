@@ -1,4 +1,5 @@
 // Shapes shared by the API route handlers (app/api) and the pages that call them
+import type { ShownRevisions } from "./agreements";
 import type { AccountApplication } from "./kyc";
 import type { ListLocateQuotesResponse as BrokerLocateQuotes, Order as BrokerOrder } from "./server/broker/types";
 import type { TaxYear as TaxYearFigures } from "./server/broker/sim/tax";
@@ -172,6 +173,9 @@ export interface Account {
     // Intraday margin deficits outstanding, and the last day of a 90-day restriction (1x, no new shorts) in force, or null
     intradayDeficits: IntradayDeficit[];
     marginRestrictedUntil: string | null;
+    // With a broker that doesn't report its margin calls (Alpaca's API has none), how far equity is below the maintenance requirement
+    // in its trading account, when it is (null otherwise, and always with the simulator, whose calls are in marginCalls)
+    belowMaintenance: number | null;
     // Whether new shorts are allowed, and if not, why
     shortingEnabled: boolean;
     shortingBlockedReason: string | null;
@@ -570,6 +574,8 @@ export interface OpenIraRequest {
     beneficiaries: { given_name: string; middle_name?: string | null; family_name: string; date_of_birth: string; tax_id: string; relationship: "spouse" | "other"; type: "primary" | "contingent"; share_pct: string }[];
     acceptedAgreements: boolean;
     iraDisclosure: boolean;
+    // The revisions of the agreements and disclosures the form showed
+    revisions: ShownRevisions;
 }
 
 // Brokerage accounts. Account objects are Alpaca's (the broker's shape), re-exported for the pages.
@@ -613,6 +619,8 @@ export interface BrokerAccountSummary {
 // POST /api/accounts: an application for an individual account
 export interface OpenAccountRequest {
     application: AccountApplication;
+    // The revisions of the agreements and disclosures the form showed (lib/agreements.ts); 409 when one has changed since
+    revisions: ShownRevisions;
 }
 
 // Every error response

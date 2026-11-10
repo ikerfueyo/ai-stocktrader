@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import Link from "next/link";
 import axios from "axios";
 import { useUser } from "@clerk/nextjs";
+import { useBrokerInfo } from "@/context/BrokerInfoContext";
+import AgreementLink, { useShownRevisions } from "./AgreementLink";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import {
     EXPERIENCE_LEVELS, FUNDING_SOURCES, MARITAL_STATUSES, US_STATES,
@@ -49,6 +50,8 @@ type Context = NonNullable<AccountApplication["disclosures"]["context"]>[number]
 // Each step is checked with lib/kyc.ts's validateApplication before moving on; the server checks it all again.
 const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> }) => {
     const { user } = useUser();
+    const { simulated } = useBrokerInfo();
+    const shownRevisions = useShownRevisions();
     const [application, setApplication] = useState<AccountApplication>(() => emptyApplication(user?.primaryEmailAddress?.emailAddress ?? ""));
     const [margin, setMargin] = useState(false);
     const [step, setStep] = useState(0);
@@ -109,7 +112,8 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
             const submitted = withAccountType(application);
             const trusted = submitted.trusted_contact;
             await axios.post("/api/accounts", {
-                application: { ...submitted, trusted_contact: trusted?.given_name || trusted?.family_name ? trusted : undefined }
+                application: { ...submitted, trusted_contact: trusted?.given_name || trusted?.family_name ? trusted : undefined },
+                revisions: shownRevisions([...submitted.agreements, "form_crs", "privacy_notice"])
             } satisfies OpenAccountRequest);
             await onSubmitted();
         } catch (error) {
@@ -158,10 +162,12 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
             <ol className="onboarding-steps" aria-label="Steps">
                 {STEPS.map((name, index) => <li key={name} className={index === step ? "active" : index < step ? "done" : ""}>{name}</li>)}
             </ol>
-            <p className="onboarding-test-note">
-                This is a simulator. Enter made-up test details, not your real ones: only the last 4 digits of the tax ID are kept. Last names
-                &quot;Review&quot;, &quot;ActionRequired&quot; and &quot;Reject&quot; try the other review outcomes.
-            </p>
+            {simulated && (
+                <p className="onboarding-test-note">
+                    This is a simulator. Enter made-up test details, not your real ones: only the last 4 digits of the tax ID are kept. Last names
+                    &quot;Review&quot;, &quot;ActionRequired&quot; and &quot;Reject&quot; try the other review outcomes.
+                </p>
+            )}
 
             {step === 0 && (
                 <div className="transfer-fields">
@@ -373,7 +379,7 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                     ] as [AgreementName, string][]).map(([agreement, label]) => (
                         <label key={agreement} className="onboarding-check">
                             <input type="checkbox" checked={application.agreements.includes(agreement)} onChange={event => toggleAgreement(agreement, event.target.checked)} />
-                            I&apos;ve read and accept the <Link href={`/agreements/${agreement}`} target="_blank">{label.toLowerCase()}</Link>
+                            I&apos;ve read and accept the <AgreementLink name={agreement}>{label.toLowerCase()}</AgreementLink>
                         </label>
                     ))}
                     {error("agreements") && <small className="text-danger">{error("agreements")}</small>}
@@ -390,7 +396,7 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                     <label className="onboarding-check">
                         <input type="checkbox" checked={application.disclosures_delivered.form_crs && application.disclosures_delivered.privacy_notice}
                             onChange={event => set("disclosures_delivered", { form_crs: event.target.checked, privacy_notice: event.target.checked })} />
-                        I&apos;ve received the <Link href="/agreements/form_crs" target="_blank">relationship summary (Form CRS)</Link> and the <Link href="/agreements/privacy_notice" target="_blank">privacy notice</Link>
+                        I&apos;ve received the <AgreementLink name="form_crs">relationship summary (Form CRS)</AgreementLink> and the <AgreementLink name="privacy_notice">privacy notice</AgreementLink>
                     </label>
                     {error("disclosures_delivered") && <small className="text-danger">{error("disclosures_delivered")}</small>}
                     {submitError && <p className="text-danger">{submitError}</p>}
