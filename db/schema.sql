@@ -544,7 +544,8 @@ CREATE TABLE notification_preferences (
     PRIMARY KEY (user_id, kind)
 );
 
--- Where each consumer of the broker's event streams left off (the last event's ULID), to resume after a restart
+-- Where each consumer of the broker's event streams left off (the last event's ID), to resume after a restart; one per broker
+-- (app:sim, app:alpaca; migration 029_event_checkpoints.sql renamed the first, "app", to app:sim)
 CREATE TABLE event_checkpoints (
     consumer VARCHAR(64) PRIMARY KEY,
     last_event_id VARCHAR(64) NOT NULL,

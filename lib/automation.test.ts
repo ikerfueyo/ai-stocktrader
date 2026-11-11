@@ -73,6 +73,10 @@ describe("Notifications from broker events", () => {
     test("account status, margin calls, transfers and activities", () => {
         assert.equal(notificationFor({ id: "a", stream: "accounts", payload: { status_from: "APPROVED", status_to: "ACTIVE" } })!.title, "Your account is open");
         assert.equal(notificationFor({ id: "a", stream: "accounts", payload: { status_from: "", status_to: "SUBMITTED" } }), null);
+        // Alpaca's multiplier change event
+        assert.equal(notificationFor({ id: "x", stream: "accounts", payload: { account_number: "1", multiplier_from: "1", multiplier_to: "4" } })!.title, "Margin is on: 4× buying power");
+        assert.equal(notificationFor({ id: "y", stream: "accounts", payload: { multiplier_from: "4", multiplier_to: "1" } })!.title, "Your buying power is now 1×");
+        assert.equal(notificationFor({ id: "z", stream: "accounts", payload: { multiplier_from: "4", multiplier_to: "4" } }), null);
         assert.equal(notificationFor({ id: "m", stream: "accounts", payload: { event: "margin_call", margin_call: { type: "maintenance", amount: "101" } } })!.title, "A maintenance margin call of $101.00");
         const intraday = (event: string, deficit: Record<string, unknown>) => notificationFor({ id: "i", stream: "accounts", payload: { event, intraday_margin_deficit: deficit } })!;
         const deficit = intraday("intraday_margin_deficit", { amount: "2000", date: "2026-11-02", restrict_on: "2026-11-09" });

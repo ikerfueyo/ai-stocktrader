@@ -5,6 +5,7 @@ import {
     taxReportOf, toAppPositions, tradesOf, transactionRowsOf, unpricedSymbols, windowCursor, type ShareAction
 } from "./brokerLedger";
 import type { CorporateAction } from "./broker/sim/corporateActions";
+import { readableDescription } from "../activityText";
 import type { Activity, Order, Position, TradeAccount } from "./broker/types";
 
 // A FILL activity as Alpaca's /v1/accounts/activities returns it
@@ -251,6 +252,15 @@ describe("buying power held for open orders", () => {
         assert.deepEqual(unpricedSymbols(orders).sort(), ["AAPL", "TSLA"]);
         // A non-marginable stock on margin holds its value × the multiplier
         assert.equal(openOrderReservation([order({ symbol: "XYZ", side: "buy", qty: "1", limit_price: "10" })], {}, {}, { marginable: { XYZ: false }, multiplier: 2 }), 20);
+    });
+});
+
+describe("activity descriptions", () => {
+    test("Alpaca's key-value transfer descriptions read as the transfer's kind; others stay", () => {
+        const deposit = cash("1", "CSD", 2500, "2026-11-10", { description: "type: ach, subtype: none, statement_id: e602c4f2, direction: INCOMING" });
+        assert.equal(cashRowsOf([deposit], "u")[0].method, "ACH deposit");
+        assert.equal(readableDescription("type: wire, subtype: none, direction: OUTGOING"), "Wire withdrawal");
+        assert.equal(readableDescription("Wire fee"), "Wire fee");
     });
 });
 

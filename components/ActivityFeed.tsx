@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { readableDescription } from "@/lib/activityText";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
@@ -32,7 +33,7 @@ const describe = (activity: BrokerActivity) => {
             amount: fill.side === "buy" ? -amount : amount
         };
     }
-    return { date: other.created_at ?? other.date ?? "", type: TYPE_LABELS[activity.activity_type] ?? activity.activity_type, details: other.description ?? "", amount: Number(other.net_amount ?? 0) };
+    return { date: other.created_at ?? other.date ?? "", type: TYPE_LABELS[activity.activity_type] ?? activity.activity_type, details: readableDescription(other.description ?? ""), amount: Number(other.net_amount ?? 0) };
 };
 
 const csvCell = (value: string | number) => /[",\n]/.test(String(value)) ? `"${String(value).replaceAll('"', '""')}"` : String(value);

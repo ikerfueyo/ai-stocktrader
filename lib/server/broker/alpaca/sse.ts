@@ -59,6 +59,10 @@ export interface SubscriptionOptions {
     sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
+// Alpaca's keep-alive and greeting comments, sent every few seconds on every stream, aren't worth a log line; anything else (such as
+// the slow-client notice that messages were dropped) is
+export const isRoutineComment = (comment: string) => /^(heartbeat|welcome to the alpaca events)\b/i.test(comment.trim());
+
 const abortableSleep = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
     const timer = setTimeout(resolve, ms);
     timer.unref?.();
@@ -104,7 +108,9 @@ export const subscribeToStreams = (
                     await response.body?.cancel();
                     throw new Error(`${response.status} ${response.statusText}`);
                 }
-                const parser = new SseParser(comment => log(`${stream}: ${comment}`));
+                const parser = new SseParser(comment => {
+                    if (!isRoutineComment(comment)) log(`${stream}: ${comment}`);
+                });
                 const decoder = new TextDecoder();
                 for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
                     for (const message of parser.push(decoder.decode(chunk, { stream: true }))) {

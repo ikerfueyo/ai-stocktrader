@@ -1,6 +1,7 @@
 import "server-only";
 import pool from "./db";
 import { singleton } from "./cache";
+import { brokerMode } from "./broker/broker";
 import { NOTIFICATION_KINDS, type NotificationDraft, type NotificationKind } from "./notificationRules";
 import type { NotificationItem, NotificationPreferences } from "../types";
 
@@ -51,12 +52,17 @@ export const notify = async (userId: string, accountId: string | null, draft: No
     return (rowCount ?? 0) > 0;
 };
 
+// The notifications about the broker in use's accounts, and those about no account (price alerts): a database can still hold the
+// other broker's, whose links (documents, orders) this broker doesn't know
+const IN_USE = "(account_id IS NULL OR account_id IN (SELECT account_id FROM broker_accounts WHERE user_id = $1 AND broker = $2))";
+
 export const listNotifications = async (userId: string, limit = 50): Promise<{ items: NotificationItem[]; unread: number }> => {
     const [{ rows }, { rows: [{ count }] }] = await Promise.all([
         pool.query<{ id: string; kind: NotificationKind; title: string; body: string; link: string | null; created_at: Date; read_at: Date | null }>(
-            "SELECT id, kind, title, body, link, created_at, read_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2", [userId, Math.min(200, Math.max(1, limit))]
+            `SELECT id, kind, title, body, link, created_at, read_at FROM notifications WHERE user_id = $1 AND ${IN_USE} ORDER BY created_at DESC, id DESC LIMIT $3`,
+            [userId, brokerMode(), Math.min(200, Math.max(1, limit))]
         ),
-        pool.query<{ count: string }>("SELECT count(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL", [userId])
+        pool.query<{ count: string }>(`SELECT count(*) FROM notifications WHERE user_id = $1 AND ${IN_USE} AND read_at IS NULL`, [userId, brokerMode()])
     ]);
     return {
         unread: Number(count),

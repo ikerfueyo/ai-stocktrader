@@ -110,7 +110,7 @@ const TransfersPage = () => {
                                         </td>
                                         <td>
                                             <span className={`transfer-status ${transfer.status.toLowerCase()}`}>{STATUS_LABELS[transfer.status] ?? transfer.status}</span>
-                                            {inProgress && transfer.expires_at && <small className="text-muted d-block">expected {formatEastern(transfer.expires_at, { withDay: true })}</small>}
+                                            {inProgress && terms?.simulated && transfer.expires_at && <small className="text-muted d-block">expected {formatEastern(transfer.expires_at, { withDay: true })}</small>}
                                             {transfer.reason && !inProgress && transfer.status !== "COMPLETE" && <small className="text-muted d-block">{transfer.reason}</small>}
                                         </td>
                                         <td>

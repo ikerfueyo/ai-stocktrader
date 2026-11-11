@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
-import { clientIp, findUserAccount } from "@/lib/server/brokerAccounts";
+import { clientIp, findUserAccount, withMaskedTaxId } from "@/lib/server/brokerAccounts";
 import type { AccountUpdateRequest } from "@/lib/server/broker/types";
 import { AGREEMENTS } from "@/lib/kyc";
 import { brokerRevision, requireCurrentRevisions } from "@/lib/server/agreements";
@@ -13,10 +13,10 @@ export interface AccountContext {
 }
 
 // Get one of the user's accounts as the broker has it (Alpaca's Account, with KYC results and trading configurations; the tax ID
-// is masked). Reading it advances a review that's due.
+// masked, from the app's record of its last 4 digits when the broker sends none, as Alpaca doesn't). Reading it advances a review that's due.
 export const GET = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
-    return NextResponse.json<BrokerAccount>(await getBroker().getAccount(account_id));
+    return NextResponse.json<BrokerAccount>(await withMaskedTaxId(await getBroker().getAccount(account_id)));
 });
 
 const EDITABLE = ["contact", "identity", "disclosures", "trusted_contact", "agreements", "beneficiaries"] as const;

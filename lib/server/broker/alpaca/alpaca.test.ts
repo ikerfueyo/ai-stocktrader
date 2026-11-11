@@ -6,12 +6,12 @@ import { HttpError, UpstreamError } from "../../httpError";
 import { alpacaConfigFromEnv, type AlpacaBrokerConfig } from "./config";
 import { TokenSource } from "./auth";
 import { buildUrl, errorFor, fallbackCode, redactTaxIds } from "./http";
-import { AlpacaBroker, redactAccount } from "./client";
+import { AlpacaBroker, redactAccount, redactAchRelationship, redactBank } from "./client";
 import { resumeId, SeenIds, toBrokerEvent, RESUME_WINDOW_MS } from "./events";
-import { SseParser } from "./sse";
+import { isRoutineComment, SseParser } from "./sse";
 import { PlaidClient } from "./plaid";
 import type { BrokerEvent } from "../broker";
-import type { Account } from "../types";
+import type { Account, ACHRelationship, Bank } from "../types";
 
 // A fetch that records each call and answers from respond (a token request gets a fresh token unless respond handles it)
 interface Call {
@@ -280,6 +280,12 @@ describe("tax IDs", () => {
         const account = { id: ACCOUNT, identity: { given_name: "A", family_name: "B" } } as unknown as Account;
         assert.deepEqual(redactAccount(account), account);
     });
+
+    test("bank account numbers come back with their last 4 digits only", () => {
+        const link = { id: "r1", bank_account_number: "123456789", bank_routing_number: "011000015", status: "QUEUED" } as unknown as ACHRelationship;
+        assert.equal(redactAchRelationship(link).bank_account_number, "••••6789");
+        assert.equal(redactBank({ id: "b1", account_number: "0001234567", bank_code: "011000015" } as unknown as Bank).account_number, "••••4567");
+    });
 });
 
 describe("events", () => {
@@ -290,6 +296,9 @@ describe("events", () => {
         assert.deepEqual(parser.push(":1}\r\n\r\ndata: line one\ndata: line two\nid: 7\n"), [{ data: "{\"a\":1}", id: undefined, event: undefined }]);
         assert.deepEqual(parser.push("\n\n"), [{ data: "line one\nline two", id: "7", event: undefined }]);
         assert.deepEqual(comments, ["you are reading too slowly, dropped 10 messages"]);
+        // Keep-alives and the greeting aren't logged; the slow-client notice is
+        assert.ok(isRoutineComment("heartbeat") && isRoutineComment(" welcome to the Alpaca events"));
+        assert.ok(!isRoutineComment("you are reading too slowly, dropped 10 messages"));
     });
 
     test("a stream resumes a few minutes before the checkpoint", () => {

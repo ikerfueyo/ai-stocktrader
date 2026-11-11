@@ -30,6 +30,13 @@ export const redactAccount = <T extends Account>(account: T): T => {
     return { ...account, identity, ...(beneficiaries ? { beneficiaries } : {}) };
 };
 
+// A bank account number as the app shows and keeps it, as the simulator stores it: its last 4 digits. Alpaca returns the full number
+// on bank links and wire recipients.
+const maskBankNumber = (value: unknown) => typeof value === "string" && value ? `••••${value.replace(/\D/g, "").slice(-4)}` : value;
+export const redactAchRelationship = <T extends ACHRelationship>(relationship: T): T =>
+    ({ ...relationship, bank_account_number: maskBankNumber(relationship.bank_account_number) as T["bank_account_number"] });
+export const redactBank = <T extends Bank>(bank: T): T => ({ ...bank, account_number: maskBankNumber(bank.account_number) as T["account_number"] });
+
 export class AlpacaBroker implements Broker {
     readonly http: AlpacaHttp;
 
@@ -147,11 +154,11 @@ export class AlpacaBroker implements Broker {
     }
 
     // Funding. A bank is linked with a Plaid processor token (processor_token alone) or with its routing and account numbers.
-    createAchRelationship(accountId: string, request: CreateACHRelationshipRequest) {
-        return this.http.json<ACHRelationship>("POST", `/v1/accounts/${enc(accountId)}/ach_relationships`, { body: request });
+    async createAchRelationship(accountId: string, request: CreateACHRelationshipRequest) {
+        return redactAchRelationship(await this.http.json<ACHRelationship>("POST", `/v1/accounts/${enc(accountId)}/ach_relationships`, { body: request }));
     }
-    listAchRelationships(accountId: string) {
-        return this.get<ACHRelationship[]>(`/v1/accounts/${enc(accountId)}/ach_relationships`);
+    async listAchRelationships(accountId: string) {
+        return (await this.get<ACHRelationship[]>(`/v1/accounts/${enc(accountId)}/ach_relationships`)).map(redactAchRelationship);
     }
     async deleteAchRelationship(accountId: string, relationshipId: string) {
         await this.http.json("DELETE", `/v1/accounts/${enc(accountId)}/ach_relationships/${enc(relationshipId)}`);
@@ -165,11 +172,11 @@ export class AlpacaBroker implements Broker {
     async cancelTransfer(accountId: string, transferId: string) {
         await this.http.json("DELETE", `/v1/accounts/${enc(accountId)}/transfers/${enc(transferId)}`);
     }
-    createRecipientBank(accountId: string, request: CreateBankRequest) {
-        return this.http.json<Bank>("POST", `/v1/accounts/${enc(accountId)}/recipient_banks`, { body: request });
+    async createRecipientBank(accountId: string, request: CreateBankRequest) {
+        return redactBank(await this.http.json<Bank>("POST", `/v1/accounts/${enc(accountId)}/recipient_banks`, { body: request }));
     }
-    listRecipientBanks(accountId: string) {
-        return this.get<Bank[]>(`/v1/accounts/${enc(accountId)}/recipient_banks`);
+    async listRecipientBanks(accountId: string) {
+        return (await this.get<Bank[]>(`/v1/accounts/${enc(accountId)}/recipient_banks`)).map(redactBank);
     }
     async deleteRecipientBank(accountId: string, bankId: string) {
         await this.http.json("DELETE", `/v1/accounts/${enc(accountId)}/recipient_banks/${enc(bankId)}`);

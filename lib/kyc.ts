@@ -93,12 +93,16 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PO_BOX = /\b(p\.?\s*o\.?\s*box|post\s+office\s+box)\b/i;
 const digits = (value: string) => value.replace(/\D/g, "");
 
-// Whether a 9-digit SSN can be valid: no 000, 666 or 900-999 area, no 00 group, no 0000 serial
+// Whether the digits are a made-up pattern: each one more (or one less) than the last, wrapping 9 to 0 (123-45-6789, 345-67-8901),
+// or all the same. Alpaca refuses such tax IDs ("tax_id cannot be just increasing values", 422).
+const isPatterned = (value: string) => [1, 9, 0].some(step => [...value].every((digit, i) => i === 0 || Number(digit) === (Number(value[i - 1]) + step) % 10));
+
+// Whether a 9-digit SSN can be valid: no 000, 666 or 900-999 area, no 00 group, no 0000 serial, and not a made-up pattern
 export const isValidSsn = (value: string): boolean => {
     const ssn = digits(value);
     if (ssn.length !== 9) return false;
     const area = Number(ssn.slice(0, 3));
-    return area !== 0 && area !== 666 && area < 900 && ssn.slice(3, 5) !== "00" && ssn.slice(5) !== "0000";
+    return area !== 0 && area !== 666 && area < 900 && ssn.slice(3, 5) !== "00" && ssn.slice(5) !== "0000" && !isPatterned(ssn);
 };
 
 // Whether a 9-digit ITIN can be valid: starts with 9, with a middle group of 50-65, 70-88, 90-92 or 94-99

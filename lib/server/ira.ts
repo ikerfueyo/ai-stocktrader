@@ -4,7 +4,7 @@ import { agreementDocuments, brokerRevision, requireCurrentRevisions } from "./a
 import pool from "./db";
 import { brokerMode, getBroker } from "./broker";
 import { HttpError } from "./httpError";
-import { clientIp, FINAL_STATUSES, listAccountRows } from "./brokerAccounts";
+import { clientIp, FINAL_STATUSES, listAccountRows, taxIdLast4 } from "./brokerAccounts";
 import {
     beneficiaryErrors, contributionDeadline, iraMaritalStatus, contributionError, contributionLimit, contributionTaxYears, DISTRIBUTION_REASONS, distributionReasonsFor, IRA_LABELS, rmdDue, spousalConsentMayBeNeeded,
     type BeneficiaryInput, type IraSubType
@@ -103,8 +103,9 @@ export const openIra = async (request: NextRequest, userId: string, input: { sub
     if (!individual) throw new HttpError("Open an individual account first: an IRA uses its reviewed details", 409);
     if (accounts.some(({ row, account }) => row.kind === KINDS[subType] && !FINAL_STATUSES.includes(account.status))) throw new HttpError(`You already have a ${IRA_LABELS[subType]}`, 409);
     const taxId = digits(String(input.taxId ?? ""));
-    const stored = digits(String(individual.account.identity?.tax_id ?? ""));
-    if (taxId.length !== 9 || !stored || taxId.slice(-4) !== stored.slice(-4)) throw new HttpError("Enter the Social Security number on your account (it isn't kept, so it's asked again)", 400);
+    // Alpaca returns no tax ID, so the last 4 digits may be the app's own record of them (taxIdLast4)
+    const stored = await taxIdLast4(individual.row.account_id, individual.account);
+    if (taxId.length !== 9 || !stored || taxId.slice(-4) !== stored) throw new HttpError("Enter the Social Security number on your account (it isn't kept, so it's asked again)", 400);
     const maritalStatus = iraMaritalStatus(individual.account.identity?.marital_status, input.maritalStatus);
     if (!maritalStatus) throw new HttpError("Choose your marital status: an IRA's beneficiaries need it", 400);
     const signedAt = new Date().toISOString();
@@ -123,7 +124,7 @@ export const openIra = async (request: NextRequest, userId: string, input: { sub
     await pool.query("INSERT INTO broker_accounts (account_id, user_id, broker, kind, account_number) VALUES ($1, $2, $3, $4, $5)", [account.id, userId, brokerMode(), KINDS[subType], account.account_number]);
     await pool.query(
         `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'ira_disclosure', $2, $3), ($1, 'form_crs', $4, $3), ($1, 'privacy_notice', $5, $3)`,
-        [account.id, JSON.stringify({ sub_type: subType, revision: documents.ira_disclosure.revision }), ip,
+        [account.id, JSON.stringify({ sub_type: subType, revision: documents.ira_disclosure.revision, tax_id_last4: taxId.slice(-4) }), ip,
             JSON.stringify({ revision: documents.form_crs.revision }), JSON.stringify({ revision: documents.privacy_notice.revision })]
     );
     return account;

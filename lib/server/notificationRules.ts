@@ -111,6 +111,18 @@ export const notificationFor = (event: BrokerEventLike): NotificationDraft | nul
                 body: `Your ${what} went unmet past its 5th business day${deficit.restricted_until ? `: until ${deficit.restricted_until}, or until it's met,` : ","} new short sales and borrowing aren't allowed.`
             };
         }
+        // Alpaca's event when the account's buying power multiplier changes (margin enabled or its limit changed by Alpaca, or the
+        // account's equity crossing $2,000)
+        if (payload.multiplier_to !== undefined && payload.multiplier_to !== null && String(payload.multiplier_to) !== String(payload.multiplier_from ?? "")) {
+            const to = Number(payload.multiplier_to);
+            if (Number.isFinite(to) && to > 0) {
+                return {
+                    kind: "account", link: "/settings", dedupeKey,
+                    title: to > 1 ? `Margin is on: ${to}× buying power` : "Your buying power is now 1×",
+                    body: to > 1 ? "You can borrow against your stocks; borrowing costs interest." : "No borrowing or short selling for now."
+                };
+            }
+        }
         const status = payload.status_to as string | undefined;
         if (!status || status === payload.status_from) return null;
         const message = ACCOUNT_STATUS[status];

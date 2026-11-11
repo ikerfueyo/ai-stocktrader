@@ -5,6 +5,7 @@
 // year's gains and losses (its 1099 is the record). Kept free of the database and server-only modules, so it's tested with a fake
 // broker, and the scenarios check it against SimBroker.
 import { addDays, easternParts, easternTime, settlementDate } from "../marketHours";
+import { readableDescription } from "../activityText";
 import { applyFill, applySplit, isLongTerm, type Lot } from "./broker/sim/ledger";
 import { reportSales, sharesSince, taxYear, unrealizedRows, type Acquisition, type Disposal, type ShareChange, type TaxYear } from "./broker/sim/tax";
 import { applyActionToLots, type ActionPrices, type CorporateAction } from "./broker/sim/corporateActions";
@@ -300,7 +301,7 @@ export const cashRowsOf = (activities: Activity[], userId: string): CashActivity
                 id: String(activity.id), user_id: userId, date: activity.created_at ?? `${activity.date}T16:00:00.000Z`,
                 type: type.startsWith("DIV") ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : type === "CSD" ? "DEPOSIT" : type === "CSW" ? "WITHDRAW" : type === "INT" ? "INTEREST"
                     : type === "WH" ? "WITHHOLDING" : type === "MA" || type === "CIL" ? (amount >= 0 ? "CORPORATE_ACTION_IN" : "CORPORATE_ACTION_OUT") : "FEE",
-                method: activity.description ?? type, amount: Math.abs(amount).toFixed(2), ticker: activity.symbol ?? null, reference: null
+                method: activity.description ? readableDescription(activity.description) : type, amount: Math.abs(amount).toFixed(2), ticker: activity.symbol ?? null, reference: null
             } satisfies CashActivityRow;
         });
 

@@ -13,7 +13,9 @@ import { addDays, easternParts } from "../../marketHours";
 // each event becomes a notification for the account's user (notificationFor), and a cash dividend is reinvested when the position's
 // reinvestment is on. It resumes after the last event it handled (event_checkpoints), so a restart neither repeats nor misses any;
 // notifications and reinvestments are each made once even if an event comes twice.
-const CONSUMER = "app";
+// One checkpoint per broker: the simulator's event IDs and Alpaca's mean nothing to each other, so switching BROKER mustn't resume one
+// broker's streams from the other's last event
+const consumer = () => `app:${brokerMode()}`;
 const STREAMS: BrokerEventStream[] = ["trades", "accounts", "transfers", "nta"];
 const LABEL = "Broker events";
 
@@ -46,7 +48,7 @@ export const handleEvent = async (event: BrokerEvent) => {
     await pool.query(
         `INSERT INTO event_checkpoints (consumer, last_event_id, updated_at) VALUES ($1, $2, now())
          ON CONFLICT (consumer) DO UPDATE SET last_event_id = GREATEST(event_checkpoints.last_event_id, EXCLUDED.last_event_id), updated_at = now()`,
-        [CONSUMER, event.id]
+        [consumer(), event.id]
     );
 };
 
@@ -54,7 +56,7 @@ export const handleEvent = async (event: BrokerEvent) => {
 // with the events that come after it
 export const startEventConsumer = async () => {
     if (state.stop) return false;
-    const { rows: [checkpoint] } = await pool.query<{ last_event_id: string }>("SELECT last_event_id FROM event_checkpoints WHERE consumer = $1", [CONSUMER]);
+    const { rows: [checkpoint] } = await pool.query<{ last_event_id: string }>("SELECT last_event_id FROM event_checkpoints WHERE consumer = $1", [consumer()]);
     state.stop = getBroker().subscribe(STREAMS, handleEvent, checkpoint?.last_event_id);
     console.log(`${LABEL}: subscribed${checkpoint ? ` after ${checkpoint.last_event_id}` : ""}`);
     return true;
@@ -74,7 +76,7 @@ export const notifyNewDocuments = async (now = new Date(), accountId?: string) =
         for (const document of documents) {
             if (document.type === "trade_confirmation_json" || String(document.date) < since) continue;
             const created = await notify(user_id, account_id, {
-                kind: "documents", title: `New document: ${document.name}`, body: "", link: `/api/documents/${document.id}`, dedupeKey: `document:${document.id}`
+                kind: "documents", title: `New document: ${document.name || `${String(document.type).replaceAll("_", " ")} of ${document.date}`}`, body: "", link: `/api/documents/${document.id}`, dedupeKey: `document:${document.id}`
             });
             if (created) made++;
         }

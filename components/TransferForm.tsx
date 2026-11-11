@@ -76,7 +76,10 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
     const marginCall = account?.marginStatus !== undefined && account.marginStatus !== "ok";
     // Cash the broker holds back without margin explaining it: what open orders hold, sales not yet settled, and the rest
     // deposits it still holds (Alpaca keeps a completed ACH deposit out of cash_withdrawable for a while)
-    const held = account && account.initialMargin === 0 && account.debitBalance === 0 && !marginCall ? roundCents(account.totalCash - withdrawable) : 0;
+    // A cash account's positions are paid for, so they hold back no cash (Alpaca still reports their initial margin); only borrowing,
+    // or the room to borrow, makes positions hold some back
+    const onMargin = account !== null && account !== undefined && (account.multiplier > 1 || account.debitBalance > 0);
+    const held = account && !onMargin && !marginCall ? roundCents(account.totalCash - withdrawable) : 0;
     const heldReasons: string[] = [];
     let unexplained = held;
     for (const [amount, reason] of [[account?.reservedCash ?? 0, "held for open orders"], [account?.unsettledProceeds ?? 0, "sales not yet settled"]] as const) {
@@ -109,13 +112,17 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
             };
             const { data } = await request<BrokerTransfer>({ method: "post", url: `/api/accounts/${accountId}/transfers`, data: { transfer } satisfies TransferRequest });
             const instant = Number(data.instant_amount ?? 0);
+            // The simulator's expires_at is when the transfer completes; Alpaca's is when the request lapses, so with Alpaca the usual
+            // timing is said instead (ACH the next banking day, a wire the same day before its cutoff)
+            const arrival = terms?.simulated && data.expires_at ? `by ${expected(data.expires_at)}` : !isDeposit && method === "wire" ? "the same banking day if sent by 3 PM ET" : "in about one banking day";
+            const settles = terms?.simulated && data.expires_at ? `settles by ${expected(data.expires_at)}` : "usually completes the next banking day";
             setStatus({
                 ok: true,
                 message: isDeposit
-                    ? `${isIra ? `Contribution for ${year?.taxYear}` : "Deposit"} of ${formatCurrency(Number(data.amount))} requested. ${instant > 0 ? `${formatCurrency(instant)} is available to trade now; ` : ""}it settles by ${expected(data.expires_at!)}.`
+                    ? `${isIra ? `Contribution for ${year?.taxYear}` : "Deposit"} of ${formatCurrency(Number(data.amount))} requested. ${instant > 0 ? `${formatCurrency(instant)} is available to trade now; it ${settles}.` : `It ${settles}.`}`
                     : isIra && withholding
-                        ? `Distribution of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. After withholding, ${formatCurrency(withholding.net)} should arrive by ${expected(data.expires_at!)}.`
-                        : `Withdrawal of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. It should arrive by ${expected(data.expires_at!)}.`
+                        ? `Distribution of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. After withholding, ${formatCurrency(withholding.net)} should arrive ${arrival}.`
+                        : `Withdrawal of ${formatCurrency(Number(data.amount))} requested${fee > 0 ? ` (plus the ${formatCurrency(fee)} wire fee)` : ""}. It should arrive ${arrival}.`
             });
             await Promise.all([refreshAccount(), reload()]);
             setIraVersion(version => version + 1);
@@ -189,7 +196,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
                     Withdrawable: <strong>{formatCurrency(withdrawable)}</strong>
                     {account.pendingTransferOut > 0 && <span className="transfer-restricted"><br />{formatCurrency(account.pendingTransferOut)} already requested</span>}
                     {held >= 0.01 && <span className="transfer-restricted"><br />{formatCurrency(held)} of your cash can&apos;t be withdrawn yet: {heldReasons.join(", ")}</span>}
-                    {(account.initialMargin > 0 || account.debitBalance > 0) && <span className="transfer-restricted"><br />Margin positions hold back {formatCurrency(account.initialMargin)} (Reg T initial margin){account.debitBalance > 0 ? `, and ${formatCurrency(account.debitBalance)} is borrowed` : ""}</span>}
+                    {onMargin && (account.initialMargin > 0 || account.debitBalance > 0) && <span className="transfer-restricted"><br />Margin positions hold back {formatCurrency(account.initialMargin)} (Reg T initial margin){account.debitBalance > 0 ? `, and ${formatCurrency(account.debitBalance)} is borrowed` : ""}</span>}
                 </p>
             )}
             {loadError && <p className="text-danger">Couldn&apos;t load your bank details: {loadError}</p>}
@@ -256,7 +263,7 @@ const TransferForm = ({ direction }: { direction: Direction }) => {
             </form>
             {status && <p className={`mt-3 ${status.ok ? "text-success" : "text-danger"}`}>{status.message}</p>}
             <p className="mock-note">
-                Simulated transfers: no real money moves. Deposits with .01, .02 or .10 cents come back as returns (R01, R02, R10). <Link href="/transfers">Transfer history</Link>
+                {terms?.simulated === true && "Simulated transfers: no real money moves. Deposits with .01, .02 or .10 cents come back as returns (R01, R02, R10). "}<Link href="/transfers">Transfer history</Link>
             </p>
         </div>
     );

@@ -6,6 +6,7 @@ import { brokerMode, getBroker } from "./broker";
 import type { Account } from "./broker/types";
 import { FINAL_ACCOUNT_STATUSES as FINAL_STATUSES } from "../accounts";
 import type { BrokerAccountKind, BrokerAccountSummary } from "../types";
+import { maskTaxId } from "../kyc";
 
 // Which brokerage accounts each user has (broker_accounts) and which one a request acts on: the account picked in the header's
 // switcher (the active_account cookie, when it's one of the user's), else the newest open one. requireAccount guards the routes that
@@ -89,4 +90,23 @@ export const clientIp = (request: NextRequest): string => {
     const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "";
     const ipv4 = forwarded.replace(/^::ffff:/, "");
     return /^\d{1,3}(\.\d{1,3}){3}$/.test(ipv4) ? ipv4 : "127.0.0.1";
+};
+
+// The last 4 digits of an account's tax ID: the broker's (the simulator returns it masked), else the app's own record of them. Alpaca
+// returns no tax ID at all, so the app keeps the last 4 digits (never the rest) with the W-9 when an account is opened, and with the IRA
+// disclosure when an IRA is; opening an IRA checks the SSN entered again against them.
+export const taxIdLast4 = async (accountId: string, account: Pick<Account, "identity">): Promise<string | null> => {
+    const fromBroker = String(account.identity?.tax_id ?? "").replace(/\D/g, "");
+    if (fromBroker.length >= 4) return fromBroker.slice(-4);
+    const { rows: [row] } = await pool.query<{ last4: string }>(
+        `SELECT details->>'tax_id_last4' AS last4 FROM account_attestations WHERE account_id = $1 AND details ? 'tax_id_last4' ORDER BY signed_at DESC LIMIT 1`, [accountId]
+    );
+    return row?.last4 ?? null;
+};
+
+// An account with its tax ID masked as the app shows it ("XXX-XX-1234"), filled in from the app's record when the broker sends none
+export const withMaskedTaxId = async <T extends Account>(account: T): Promise<T> => {
+    if (account.identity?.tax_id) return account;
+    const last4 = await taxIdLast4(account.id, account);
+    return last4 && account.identity ? { ...account, identity: { ...account.identity, tax_id: maskTaxId(last4) } } : account;
 };

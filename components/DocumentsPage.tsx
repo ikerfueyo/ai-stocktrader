@@ -112,7 +112,8 @@ const DocumentList = () => {
                             {documents.map(document => (
                                 <tr key={document.id}>
                                     <td>{document.date}</td>
-                                    <td>{document.name}</td>
+                                    {/* Alpaca leaves some documents' name empty, such as the account application */}
+                                    <td>{document.name || `${TYPE_LABELS[document.type] ?? document.type}${document.date ? ` (${String(document.date).slice(0, 10)})` : ""}`}</td>
                                     <td>{TYPE_LABELS[document.type] ?? document.type}</td>
                                     <td><a href={`/api/documents/${document.id}`} target="_blank" rel="noopener noreferrer">Open</a></td>
                                 </tr>

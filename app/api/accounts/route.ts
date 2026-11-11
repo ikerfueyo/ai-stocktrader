@@ -68,7 +68,7 @@ export const POST = withUser(async (request, context, userId) => {
     );
     await pool.query(
         `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'w9', $2, $3), ($1, 'form_crs', $4, $3), ($1, 'privacy_notice', $5, $3)`,
-        [account.id, JSON.stringify({ backup_withholding: application.w9.backup_withholding }), ip,
+        [account.id, JSON.stringify({ backup_withholding: application.w9.backup_withholding, tax_id_last4: taxId.slice(-4) }), ip,
             JSON.stringify({ revision: documents.form_crs.revision }), JSON.stringify({ revision: documents.privacy_notice.revision })]
     );
     return NextResponse.json<BrokerAccount>(account, { status: 201 });
