@@ -527,13 +527,31 @@ CREATE TABLE notification_preferences (
     PRIMARY KEY (user_id, kind)
 );
 
--- Where each consumer of the broker's event streams left off (the last event's ID), to resume after a restart; one per broker
--- (app:sim, app:alpaca; migration 029_event_checkpoints.sql renamed the first, "app", to app:sim)
+-- Where each consumer of the broker's event streams left off (the last event's ID), to resume after a restart: one per broker and
+-- stream (app:sim:trades, app:alpaca:nta, ...; migration 031_event_streams.sql). The one per broker (app:sim, app:alpaca; migration
+-- 029_event_checkpoints.sql renamed the first, "app", to app:sim) is from before, where a stream without its own resumes from once.
 CREATE TABLE event_checkpoints (
     consumer VARCHAR(64) PRIMARY KEY,
     last_event_id VARCHAR(64) NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Events the consumer couldn't handle, retried by the events job with backoff (next_attempt_at null once it gives up)
+CREATE TABLE failed_events (
+    consumer VARCHAR(64) NOT NULL,
+    stream VARCHAR(16) NOT NULL,
+    event_id VARCHAR(64) NOT NULL,
+    account_id TEXT NOT NULL,
+    at TIMESTAMPTZ NOT NULL,
+    payload JSONB NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    last_error TEXT,
+    next_attempt_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (consumer, stream, event_id)
+);
+CREATE INDEX failed_events_due ON failed_events (consumer, next_attempt_at) WHERE next_attempt_at IS NOT NULL;
 
 CREATE TABLE recurring_investments (
     id UUID PRIMARY KEY,

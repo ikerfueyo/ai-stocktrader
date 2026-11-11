@@ -1,11 +1,12 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-    accountSummary, activityDay, cashRowsOf, fillsOf, ledgerOf, listAllActivities, mergeWindow, openOrderReservation, orderFillRows, replayFills, taxLotsOf,
+    accountSummary, activityDay, cashRowsOf, fillsOf, historyTradesOf, ledgerOf, listAllActivities, listAllTransfers, shareMovesOf, mergeWindow, openOrderReservation, orderFillRows, replayFills, taxLotsOf,
     taxReportOf, toAppPositions, tradesOf, transactionRowsOf, unpricedSymbols, windowCursor, type ShareAction
 } from "./brokerLedger";
 import type { CorporateAction } from "./broker/sim/corporateActions";
 import { readableDescription } from "../activityText";
+import { equityHistory } from "./history";
 import type { Activity, Order, Position, TradeAccount } from "./broker/types";
 
 // A FILL activity as Alpaca's /v1/accounts/activities returns it
@@ -350,5 +351,54 @@ describe("an order's fills", () => {
         // With the account's replay, each fill's realized P&L
         const withPnl = await orderFillRows(broker as never, "acct", "b", "user_1", new Map([["f2", 12.5], ["f1", null]]));
         assert.deepEqual(withPnl.map(({ realized_pnl }) => realized_pnl), [12.5, null]);
+    });
+});
+
+describe("listAllTransfers", () => {
+    test("pages past the first 100, so an IRA's older contributions still count", async () => {
+        const all = Array.from({ length: 230 }, (_, index) => ({ id: `t${index}` }));
+        const queries: { limit?: number; offset?: number }[] = [];
+        const broker = {
+            listTransfers: async (_: string, query: { limit?: number; offset?: number }) => {
+                queries.push(query);
+                return all.slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? 100));
+            }
+        };
+        const listed = await listAllTransfers(broker as never, "acct");
+        assert.equal(listed.length, 230);
+        assert.deepEqual(queries.map(({ offset }) => offset), [0, 100, 200]);
+    });
+});
+
+describe("the equity history's trades", () => {
+    const activities = [
+        cash("d", "CSD", 1000, "2026-09-01"),
+        fill("1", "OLDCO", "buy", 10, 100, "2026-09-02T15:00:00Z"),
+        // A cash merger at $120 a share: the shares leave, $1,200 arrives
+        cash("m", "MA", 1200, "2026-10-01", { activity_sub_type: "CMA", symbol: "OLDCO", qty: "-10" }),
+        fill("2", "SPINNER", "buy", 4, 50, "2026-09-03T15:00:00Z"),
+        cash("s", "SPIN", 0, "2026-10-05", { symbol: "SPUNCO", qty: "2" }),
+        cash("x", "DIV", 0, "2026-10-06", { activity_sub_type: "SDIV", symbol: "SPINNER", qty: "0.4" }),
+        cash("c", "DIV", 5, "2026-10-07", { activity_sub_type: "CDIV", symbol: "SPINNER", qty: "4.4" })
+    ];
+
+    test("share moves are no-cost trades, cash dividends aren't", () => {
+        assert.deepEqual(shareMovesOf(activities).map(({ ticker, type, quantity }) => `${type} ${quantity} ${ticker}`), ["SELL 10 OLDCO", "BUY 2 SPUNCO", "BUY 0.4 SPINNER"]);
+    });
+
+    test("a cash merger's shares leave the history, so its cash isn't counted twice", () => {
+        const dates = ["2026-09-02", "2026-10-01", "2026-10-02"];
+        const points = equityHistory({
+            trades: historyTradesOf(activities.slice(0, 3)),
+            cash: [{ date: "2026-09-01", amount: 1000, external: true }, { date: "2026-10-01", amount: 1200, external: false }],
+            closes: { OLDCO: { "2026-09-02": 100, "2026-09-30": 118 } },
+            dates
+        });
+        assert.deepEqual(points.map(({ equity }) => equity), [1000, 1200, 1200]);
+    });
+
+    test("trades before a symbol change are under the new symbol", () => {
+        const actions: ShareAction[] = [{ action: { type: "NAME_CHANGE", symbol: "SPINNER", newSymbol: "NEWNAME", factor: null, cash: null, exDate: "2026-10-06" }, prices: {} as never }];
+        assert.deepEqual(historyTradesOf(activities, actions).map(({ ticker }) => ticker), ["OLDCO", "NEWNAME", "OLDCO", "SPUNCO", "SPINNER"]);
     });
 });

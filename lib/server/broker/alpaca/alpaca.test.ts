@@ -372,7 +372,7 @@ describe("events", () => {
             stop = broker.subscribe(["trades", "accounts"], async event => {
                 received.push(event);
                 if (received.filter(({ stream }) => stream === "trades").length === 3) resolve();
-            }, checkpoint);
+            }, { streams: {}, shared: checkpoint });
         });
         await done;
         stop();
@@ -387,6 +387,46 @@ describe("events", () => {
         const count = connections.length;
         await new Promise(next => setTimeout(next, 20));
         assert.ok(connections.length <= count + 2);
+    });
+
+    test("each stream resumes from its own cursor, and an event the handler rejects comes again before any later one", async () => {
+        const sse = (...events: unknown[]) => new Response(new ReadableStream({
+            start(controller) {
+                for (const event of events) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+                controller.close();
+            }
+        }), { headers: { "Content-Type": "text/event-stream" } });
+        const fill = (id: string) => ({ event_id: id, account_id: ACCOUNT, at: "2026-10-28T15:00:00Z", event: "fill", order: {} });
+        const connections: string[] = [];
+        let tradeConnections = 0;
+        const { fetcher } = mockFetch(({ url }) => {
+            if (url.includes("/oauth2/token")) return undefined;
+            connections.push(url.replace("https://broker.test", ""));
+            if (url.includes("/v2/events/trades")) {
+                tradeConnections++;
+                // Alpaca sends what follows the since_id it was given
+                return tradeConnections === 1 ? sse(fill("01D"), fill("01E"), fill("01F")) : sse(fill("01E"), fill("01F"));
+            }
+            return sse();
+        });
+        const handled: string[] = [];
+        let failures = 0;
+        let stop = () => {};
+        await new Promise<void>(resolve => {
+            const broker = new AlpacaBroker(config(fetcher), { minBackoffMs: 1, maxBackoffMs: 1, log: () => {}, sleep: () => new Promise(next => setTimeout(next, 1)) });
+            stop = broker.subscribe(["trades", "accounts"], async event => {
+                // 01E fails the first time (a database write, say)
+                if (event.id === "01E" && failures++ === 0) throw new Error("write failed");
+                handled.push(event.id);
+                if (handled.includes("01F")) resolve();
+            }, { streams: { trades: "01C" }, shared: ulid(Date.UTC(2026, 9, 28, 15)) });
+        });
+        stop();
+        assert.deepEqual(handled, ["01D", "01E", "01F"]);
+        // trades from its own cursor exactly, then after the last event handled (01D, not 01E); accounts, without its own, near the shared one
+        assert.equal(connections.filter(url => url.startsWith("/v2/events/trades"))[0], "/v2/events/trades?since_id=01C");
+        assert.equal(connections.filter(url => url.startsWith("/v2/events/trades"))[1], "/v2/events/trades?since_id=01D");
+        assert.ok(connections.includes(`/v1/events/accounts/status?since_ulid=${resumeId(ulid(Date.UTC(2026, 9, 28, 15)))}`));
     });
 });
 

@@ -13,6 +13,7 @@ import type { BrokerTransfer, TransferRequest } from "@/lib/types";
 import type { AccountContext } from "../route";
 import { contributionProblem } from "@/lib/server/ira";
 import { easternParts } from "@/lib/marketHours";
+import { parseDollarAmount } from "@/lib/payments";
 
 // Get the account's transfers, newest first, with their status (QUEUED, SENT_TO_CLEARING, COMPLETE, CANCELED, RETURNED, ...) and
 // expires_at, when the money is expected
@@ -34,8 +35,8 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
     const { type, direction, amount: requested, relationshipId, bankId, ira } = body?.transfer ?? {};
     if (type !== "ach" && type !== "wire") throw new HttpError("type must be ach or wire", 400);
     if (direction !== "INCOMING" && direction !== "OUTGOING") throw new HttpError("direction must be INCOMING or OUTGOING", 400);
-    const amount = Number(requested);
-    if (!(amount > 0) || Math.round(amount * 100) !== amount * 100) throw new HttpError("amount must be a positive dollar amount", 400);
+    const amount = parseDollarAmount(requested);
+    if (amount === null) throw new HttpError("amount must be a positive dollar amount in whole cents", 400);
     const { accountId } = await requireAccount(request, userId, direction === "INCOMING" ? "deposit" : "withdraw");
     // Money leaving needs a recent sign-in; any transfer needs two-step verification where it's required
     await (direction === "OUTGOING" ? requireRecentSignIn(userId) : requireSecondFactor(userId));
@@ -46,10 +47,6 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
     const isIra = account.account_type === "ira";
     if (ira && !isIra) throw new HttpError("IRA details are only for IRA accounts", 400);
     const taxYear = Number(ira?.taxYear ?? easternParts(new Date()).dateKey.slice(0, 4));
-    if (isIra && direction === "INCOMING") {
-        const problem = await contributionProblem(userId, account_id, amount, taxYear);
-        if (problem) throw new HttpError(`Can't contribute $${amount.toFixed(2)}: ${problem}`, 400);
-    }
     const transfer: CreateTransferRequest = {
         transfer_type: type, direction, amount: amount.toFixed(2),
         ...(type === "ach" ? { relationship_id: String(relationshipId ?? "") } : { bank_id: String(bankId ?? "") }),
@@ -61,7 +58,12 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         } : {})
     };
     if (direction === "INCOMING") {
-        const deposit = await getBroker().createTransfer(account_id, transfer);
+        // An IRA contribution is checked and made under the user's lock, so two at once can't both fit in what's left of the limit
+        const deposit = !isIra ? await getBroker().createTransfer(account_id, transfer) : await withAccountLock(userId, async () => {
+            const problem = await contributionProblem(userId, account_id, amount, taxYear);
+            if (problem) throw new HttpError(`Can't contribute $${amount.toFixed(2)}: ${problem}`, 400);
+            return getBroker().createTransfer(account_id, transfer);
+        });
         forgetBrokerLedger(account_id);
         return NextResponse.json<BrokerTransfer>(deposit, { status: 201 });
     }

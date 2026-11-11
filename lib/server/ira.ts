@@ -4,6 +4,7 @@ import { agreementDocuments, brokerRevision, requireCurrentRevisions } from "./a
 import pool from "./db";
 import { brokerMode, getBroker } from "./broker";
 import { HttpError } from "./httpError";
+import { listAllTransfers } from "./brokerLedger";
 import { clientIp, FINAL_STATUSES, listAccountRows, taxIdLast4 } from "./brokerAccounts";
 import {
     beneficiaryErrors, contributionDeadline, iraMaritalStatus, contributionError, contributionLimit, contributionTaxYears, DISTRIBUTION_REASONS, distributionReasonsFor, IRA_LABELS, rmdDue, spousalConsentMayBeNeeded,
@@ -27,7 +28,7 @@ const iraRows = async (userId: string) => (await listAccountRows(userId)).filter
 export const contributionsByYear = async (userId: string): Promise<Map<number, number>> => {
     const totals = new Map<number, number>();
     for (const row of await iraRows(userId)) {
-        const transfers = await getBroker().listTransfers(row.account_id) as (Transfer & { ira?: { tax_year?: string } })[];
+        const transfers = await listAllTransfers(getBroker(), row.account_id) as (Transfer & { ira?: { tax_year?: string } })[];
         for (const transfer of transfers) {
             if (transfer.direction !== "INCOMING" || !COUNTED(transfer.status) || !transfer.ira?.tax_year) continue;
             const year = Number(transfer.ira.tax_year);

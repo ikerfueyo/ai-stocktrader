@@ -254,12 +254,14 @@ export interface PositionContext {
 }
 
 // The Portfolio page's hold/sell (or hold/cover) verdict, taken from analyzeTicker, and a structured analysis written for the
-// position that explains it, from the same inputs plus the position. Cached per user, ticker, side and verdict, so a refreshed
+// position that explains it, from the same inputs plus the position. Cached per user, account, ticker, side, verdict, shares and average cost, so a refreshed
 // ticker analysis with a new verdict gets a new one.
-export const analyzePosition = async (userId: string, ticker: string, side: Side, context: PositionContext): Promise<PositionAnalysis> => {
+export const analyzePosition = async (userId: string, accountId: string, ticker: string, side: Side, context: PositionContext): Promise<PositionAnalysis> => {
     const { verdict: tickerVerdict, inputs } = await analyzeTicker(ticker);
     const verdict = POSITION_VERDICTS[side][tickerVerdict];
-    return cachePromise(positionAnalysisCache, `${userId}:${ticker}:${side}:${verdict}`, ANALYSIS_CACHE_MS, async () => {
+    // Per account and position too: an IRA and the individual account can hold the same stock, and a trade changes the position
+    const key = [userId, accountId, ticker, side, verdict, figure(context.shares, 6), figure(context.avgCost, 4)].join(":");
+    return cachePromise(positionAnalysisCache, key, ANALYSIS_CACHE_MS, async () => {
         const position = [
             side === "long" ? `The user owns ${figure(context.shares, 6)} shares of ${ticker}` : `The user is short ${figure(context.shares, 6)} shares of ${ticker}`,
             ` at an average ${side === "long" ? "cost" : "sale price"} of $${figure(context.avgCost)}`,

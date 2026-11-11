@@ -2,7 +2,8 @@ import "server-only";
 import type { Pool, PoolClient } from "pg";
 import pool from "./db";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
-import { requestContext } from "./requestContext";
+import { requestContext, STALE_ACCOUNT_MESSAGE } from "./requestContext";
+import { HttpError } from "./httpError";
 import { loadCorporateActions, loadShareActions } from "./corporateActions";
 import { roundCents, type Dividend, type Split, type Trade } from "./account";
 import { advanceTransfers } from "./broker/sim/transfers";
@@ -11,7 +12,7 @@ import { applyCorporateActions, fillsAsTrades, listFills, ledgerState, openLots,
 import type { SimActivityRow } from "./broker/sim/shapes";
 import { orderReasons } from "./broker/sim/orders";
 import { brokerMode, getBroker } from "./broker";
-import { cashRowsOf, ledgerOf, transactionRowsOf, tradesOf } from "./brokerLedger";
+import { cashRowsOf, historyTradesOf, ledgerOf, transactionRowsOf } from "./brokerLedger";
 import { syncedActivities } from "./activityStore";
 import type { Order as BrokerOrder } from "./broker/types";
 import type { CashActivityRow, Position, TradeHistoryRow } from "../types";
@@ -44,13 +45,16 @@ const userAccounts = async (userId: string, db: Db): Promise<{ account_id: strin
 };
 
 // The user's account whose ledger the app reads and trades: the one a background job is working on (withLedgerAccount), else the
-// request's active account (the account switcher's cookie) when it's the user's and open, else their newest open account (else their
+// request's account (the one its page shows, else the account switcher's cookie) when it's the user's and open (a page's that isn't is a 409), else their newest open account (else their
 // newest). A user can hold an individual account and an IRA of each kind.
 export const ledgerAccountId = async (userId: string, db: Db = pool): Promise<string | null> => {
-    const { accountId, activeAccountId } = requestContext();
+    const { accountId, activeAccountId, pinned } = requestContext();
     const rows = await userAccounts(userId, db);
     if (accountId) return rows.some(row => row.account_id === accountId) ? accountId : null;
-    return rows.find(row => row.open && row.account_id === activeAccountId)?.account_id ?? rows[0]?.account_id ?? null;
+    const active = rows.find(row => row.open && row.account_id === activeAccountId)?.account_id;
+    // The account the page shows, or none: never another account's figures or orders under its name
+    if (!active && pinned) throw new HttpError(STALE_ACCOUNT_MESSAGE, 409);
+    return active ?? rows[0]?.account_id ?? null;
 };
 
 const EMPTY_FEES = { REG: 0, TAF: 0, CAT: 0, ORF: 0, OCC: 0 };
@@ -66,7 +70,7 @@ const loadBrokerLedger = async (accountId: string) => {
     const traded = [...new Set(activities.flatMap(activity => (activity as { activity_type?: string; symbol?: string }).activity_type === "FILL" ? [String((activity as { symbol?: string }).symbol).toUpperCase()] : []))];
     const corporate = await loadCorporateActions(traded, positions.map(({ symbol }) => String(symbol)));
     const actions = await loadShareActions(traded);
-    return { trade, positions, activities, corporate, ledger: ledgerOf({ trade, positions, activities, splits: corporate.splits, actions }) };
+    return { trade, positions, activities, corporate, actions, ledger: ledgerOf({ trade, positions, activities, splits: corporate.splits, actions }) };
 };
 export const brokerLedger = (accountId: string) => cachePromise(brokerLedgerCache, accountId, 5000, () => loadBrokerLedger(accountId));
 // Drops it after a change (an order, a transfer, a broker event), so the next read sees the change
@@ -90,9 +94,9 @@ export const getAccount = async (userId: string, db: Db = pool) => {
         };
     }
     if (throughBroker()) {
-        const { ledger, corporate } = await brokerLedger(accountId);
+        const { ledger, corporate, activities, actions } = await brokerLedger(accountId);
         return {
-            accountId, transactions: tradesOf(ledger.fills), splits: corporate.splits, dividends: corporate.dividends, unsynced: corporate.unsynced, positions: ledger.positions,
+            accountId, transactions: historyTradesOf(activities, actions), splits: corporate.splits, dividends: corporate.dividends, unsynced: corporate.unsynced, positions: ledger.positions,
             totalCash: ledger.totalCash, realizedPnl: ledger.realizedPnl, netDividends: ledger.netDividends, pendingTransferOut: ledger.pendingTransferOut,
             // Alpaca's instant credit isn't reported apart, and its accrued fees are one total
             unsettledInstant: 0, unsettledProceeds: ledger.unsettledProceeds, accruedFees: { ...EMPTY_FEES, REG: ledger.accruedFees }
@@ -119,7 +123,9 @@ export const getPositions = async (userId: string, db: Db = pool) => (await getA
 export const getTrades = async (userId: string, db: Db = pool): Promise<Trade[]> => {
     const accountId = await ledgerAccountId(userId, db);
     if (!accountId) return [];
-    return throughBroker() ? tradesOf((await brokerLedger(accountId)).ledger.fills) : fillsAsTrades(db, accountId);
+    if (!throughBroker()) return fillsAsTrades(db, accountId);
+    const { activities, actions } = await brokerLedger(accountId);
+    return historyTradesOf(activities, actions);
 };
 
 // A fill (a FILL activity) as the pages' TransactionRow, with the P&L it realized against the lots it closed (FIFO)

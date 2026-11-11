@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import axios from "axios";
@@ -19,6 +19,8 @@ import type { BrokerAccountSummary } from "@/lib/types";
 // Statuses a review is still working through, polled until they change
 const PENDING_STATUSES = ["SUBMITTED", "APPROVAL_PENDING", "APPROVED", "ACTION_REQUIRED"];
 const POLL_MS = 3000;
+// lib/server/requestContext.ts's ACCOUNT_HEADER (a server-only module)
+const ACCOUNT_HEADER = "X-Account-Id";
 
 // A bare header for the screens before an account is open: the logo and the user menu (to sign out)
 export const OnboardingHeader = () => (
@@ -61,6 +63,13 @@ const AccountGate = ({ children }: { children: ReactNode }) => {
 
     const active = accounts?.find(account => account.active) ?? null;
     const pending = active !== null && PENDING_STATUSES.includes(active.status);
+    // Every request from this tab names the open account it shows (X-Account-Id), so switching accounts in another tab can't send this
+    // tab's orders, transfers or settings to the other account. Set in a layout effect, which runs before the children's effects fetch.
+    const shownAccountId = active && OPEN_ACCOUNT_STATUSES.includes(active.status) ? active.accountId : null;
+    useLayoutEffect(() => {
+        if (shownAccountId) axios.defaults.headers.common[ACCOUNT_HEADER] = shownAccountId;
+        else delete axios.defaults.headers.common[ACCOUNT_HEADER];
+    }, [shownAccountId]);
     useEffect(() => {
         if (!pending) return;
         const timer = setInterval(refreshAccounts, POLL_MS);

@@ -11,7 +11,7 @@ import { reportSales, sharesSince, taxYear, unrealizedRows, type Acquisition, ty
 import { applyActionToLots, type ActionPrices, type CorporateAction } from "./broker/sim/corporateActions";
 import { reservedForOrders } from "./broker/sim/matching";
 import type { Broker } from "./broker/broker";
-import type { AccountConfigurations, Activity, Order as BrokerOrder, Position as BrokerPosition, TradeAccount } from "./broker/types";
+import type { AccountConfigurations, Activity, Order as BrokerOrder, Position as BrokerPosition, TradeAccount, Transfer } from "./broker/types";
 import type { Account, CashActivityRow, Position, Quote, TaxLot, TradeHistoryRow } from "../types";
 import type { Split, Trade } from "./account";
 
@@ -32,6 +32,16 @@ export const listAllActivities = async (broker: Pick<Broker, "listActivities">, 
         const last = (page[page.length - 1] as { id?: string } | undefined)?.id;
         if (page.length < PAGE_SIZE || !last || last === pageToken) return all;
         pageToken = last;
+    }
+};
+
+// Every transfer of the account, newest first, following limit/offset paging (both brokers answer one page of 100 by default)
+export const listAllTransfers = async (broker: Pick<Broker, "listTransfers">, accountId: string): Promise<Transfer[]> => {
+    const all: Transfer[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+        const page = await broker.listTransfers(accountId, { limit: PAGE_SIZE, offset });
+        all.push(...page);
+        if (page.length < PAGE_SIZE) return all;
     }
 };
 
@@ -279,6 +289,34 @@ export const tradesOf = (fills: BrokerFill[]): Trade[] => fills.map(fill => ({
     ticker: fill.symbol, type: fill.side === "buy" ? "BUY" : "SELL", price: String(fill.price), quantity: String(fill.qty),
     total: (fill.qty * fill.price).toFixed(2), date: new Date(fill.at)
 }));
+
+// The activities that move shares without a fill (MA, SPIN, REORG and CIL with a quantity, and stock dividends: DIV SDIV), as the
+// no-cost trades the simulator's fillsAsTrades gives the equity history: without them, a cash merger's shares would stay held at their
+// last close while its cash was counted too. Splits aren't here: the history applies them from the stored splits.
+export const shareMovesOf = (activities: Activity[]): Trade[] =>
+    (activities as (Activity & { activity_type?: string; activity_sub_type?: string; symbol?: string; qty?: string; date?: string; created_at?: string })[])
+        .filter(activity => (["MA", "SPIN", "REORG", "CIL"].includes(String(activity.activity_type)) || (activity.activity_type === "DIV" && activity.activity_sub_type === "SDIV"))
+            && activity.symbol && Number(activity.qty ?? 0) !== 0)
+        .map(activity => {
+            const qty = Number(activity.qty);
+            const date = activity.created_at ? new Date(activity.created_at) : easternTime(String(activity.date), "09:30");
+            return { ticker: String(activity.symbol).toUpperCase(), type: qty > 0 ? "BUY" as const : "SELL" as const, price: 0, quantity: Math.abs(qty), total: 0, date };
+        });
+
+// The trades the equity history replays: the fills and the share moves, oldest first, each under the symbol it trades as now (a trade
+// before a symbol change is under the new symbol, as its closes are), following the stored symbol changes in order
+export const historyTradesOf = (activities: Activity[], actions: ShareAction[] = []): Trade[] => {
+    const renames = actions.map(({ action }) => action).filter(action => action.type === "NAME_CHANGE" && action.newSymbol).sort((a, b) => a.exDate.localeCompare(b.exDate));
+    return [...tradesOf(fillsOf(activities)), ...shareMovesOf(activities)]
+        .map(trade => {
+            const date = new Date(trade.date!);
+            let ticker = trade.ticker;
+            const day = easternParts(date).dateKey;
+            for (const { symbol, newSymbol, exDate } of renames) if (ticker === symbol && day < exDate) ticker = newSymbol!;
+            return { ...trade, ticker, date };
+        })
+        .sort((a, b) => a.date.getTime() - b.date.getTime());
+};
 
 // Fills as the Trades tab's rows, newest first, with the P&L the replay found and their settlement (T+1)
 export const transactionRowsOf = (fills: BrokerFill[], replay: Pick<Replay, "realizedByFill">, userId: string): TradeHistoryRow[] =>

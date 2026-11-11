@@ -254,6 +254,15 @@ describe("order matching", () => {
         assert.equal(evaluateOrder(cls, quote({ price: 101 }), match({ session: "after-hours", now: at("16:00:30") })).fill?.price, 101);
     });
 
+    test("an auction order whose auction was missed expires instead of filling in a later one", () => {
+        const nextOpen = at("09:30:00", "2026-10-29");
+        const opg = live({ timeInForce: "opg", status: "accepted", expiresAt: OPEN });
+        assert.deepEqual(evaluateOrder(opg, quote(), match({ now: at("09:30:10", "2026-10-29"), regularOpen: nextOpen, regularClose: at("16:00:00", "2026-10-29") })).end,
+            { status: "expired", reason: "The opening auction passed without the order" });
+        const cls = live({ timeInForce: "cls", side: "sell", expiresAt: CLOSE });
+        assert.equal(evaluateOrder(cls, quote(), match({ session: "after-hours", now: at("16:00:30", "2026-10-29"), regularOpen: nextOpen, regularClose: at("16:00:00", "2026-10-29") })).end?.status, "expired");
+    });
+
     test("day orders expire at their close, whatever the session", () => {
         assert.deepEqual(evaluateOrder(live({ type: "limit", limitPrice: 90 }), quote(), match({ session: "after-hours", now: CLOSE })).end, { status: "expired", reason: "Day order expired at the close" });
     });

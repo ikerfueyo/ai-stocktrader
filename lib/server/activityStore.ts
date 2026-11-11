@@ -14,8 +14,9 @@ import type { Activity } from "./broker/types";
 // within those days are picked up. The daily full read catches anything older. The broker's events already drop the app's 5-second
 // cache (forgetBrokerLedger), so each event's change is paged on the next read. One sync per account at a time (an advisory lock).
 const FULL_SYNC_MS = 24 * 60 * 60 * 1000;
-// What the app reads: the fills and the cash activities
-const STORED_TYPES = ["FILL", ...CASH_ACTIVITY_TYPES];
+// What the app reads: the fills, the cash activities, and the share moves of spinoffs and reorganizations (shareMovesOf; MA, CIL and
+// stock dividends are among the cash types)
+const STORED_TYPES = ["FILL", ...CASH_ACTIVITY_TYPES, "SPIN", "REORG"];
 
 interface StoredRow {
     id: string;

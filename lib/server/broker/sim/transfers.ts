@@ -51,7 +51,8 @@ export const postActivity = async (db: PoolClient | typeof pool, activity: {
         [activityId(at), activity.accountId, activity.type, activity.subType ?? null, easternParts(at).dateKey, at, activity.netAmount.toFixed(2), activity.description.slice(0, 255),
             activity.transferId ?? null, activity.symbol ?? null, activity.qty ?? null, activity.perShareAmount ?? null, activity.reason ?? null]
     );
-    await emitEvent(activity.accountId, "nta", toActivity(row), at);
+    // In the caller's transaction, so the event exists only if the activity does
+    await emitEvent(activity.accountId, "nta", toActivity(row), at, db);
     return row;
 };
 
@@ -142,8 +143,8 @@ export const deleteRecipientBank = async (accountId: string, bankId: string): Pr
 
 const LIVE = "('QUEUED', 'APPROVAL_PENDING', 'PENDING', 'SENT_TO_CLEARING', 'APPROVED', 'COMPLETE')";
 
-const transferEvent = (row: SimTransferRow, from: string) =>
-    emitEvent(row.account_id, "transfers", { account_id: row.account_id, transfer_id: row.id, status_from: from, status_to: row.status });
+const transferEvent = (row: SimTransferRow, from: string, db: Pick<typeof pool, "query">) =>
+    emitEvent(row.account_id, "transfers", { account_id: row.account_id, transfer_id: row.id, status_from: from, status_to: row.status }, new Date(), db);
 
 // An IRA transfer's details (Alpaca's TransferIRADetails), or null for another account's. A contribution is for a tax year still open
 // (the current one, or the prior one until April 15; the current one by default). A distribution needs a reason that fits the account's
@@ -236,8 +237,8 @@ export const createTransfer = async (accountId: string, request: CreateTransferR
                 timeline.sentAt, timeline.completeAt, returned?.at ?? null, returned?.code ?? null, ira ? JSON.stringify(ira) : null]
         );
         if (instant > 0) await postActivity(client, { accountId, type: "CSD", netAmount: instant, description: `${ira ? `IRA contribution for ${ira.tax_year}` : "ACH deposit"} (credited instantly)`, transferId: row.id, at: now });
+        await transferEvent(row, "", client);
         await client.query("COMMIT");
-        await transferEvent(row, "");
         return toTransfer(row);
     } catch (error) {
         await client.query("ROLLBACK");
@@ -260,8 +261,8 @@ const step = async (row: SimTransferRow, to: string, activities: { type: string;
             return;
         }
         for (const activity of activities) await postActivity(client, { accountId: row.account_id, transferId: row.id, ...activity });
+        await transferEvent(updated, row.status, client);
         await client.query("COMMIT");
-        await transferEvent(updated, row.status);
     } catch (error) {
         await client.query("ROLLBACK");
         throw error;

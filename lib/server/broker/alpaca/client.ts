@@ -1,6 +1,6 @@
 import { maskTaxId } from "../../../kyc";
 import { BrokerError } from "../errors";
-import type { Broker, BrokerEvent, BrokerEventStream } from "../broker";
+import type { Broker, BrokerEvent, BrokerEventStream, EventCursor } from "../broker";
 import type {
     Account, AccountConfigurations, AccountCreationRequest, AccountDocument, AccountUpdateRequest, ACHRelationship, Activity, Asset, Bank, CalendarDay, Clock,
     CreateACHRelationshipRequest, CreateBankRequest, CreateOrderRequest, CreateTransferRequest, ListActivitiesQuery, ListAssetsQuery, ListDocumentsQuery,
@@ -195,7 +195,7 @@ export class AlpacaBroker implements Broker {
     }
 
     // Events
-    subscribe(streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, sinceId?: string) {
-        return subscribeToStreams(this.http, streams, handler, sinceId, this.subscription);
+    subscribe(streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, since?: EventCursor) {
+        return subscribeToStreams(this.http, streams, handler, since, this.subscription);
     }
 }

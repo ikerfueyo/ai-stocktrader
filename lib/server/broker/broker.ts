@@ -87,8 +87,16 @@ export interface Broker {
     downloadDocument(accountId: string, documentId: string): Promise<{ contentType: string; body: Uint8Array }>;
 
     // Events: the trade, account status, transfer status and non-trade activity streams (GET /v2/events/trades and the others),
-    // resumed after sinceId. Returns a function that stops the subscription.
-    subscribe(streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, sinceId?: string): () => void;
+    // each resumed after its own cursor. An event counts as handled only once the handler resolves: one it rejects comes again (after a
+    // reconnection), and no later event of its stream is handled before it. Returns a function that stops the subscription.
+    subscribe(streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, since?: EventCursor): () => void;
+}
+
+// Where a subscription resumes: each stream after the last event of it handled, and, for a stream without one, from the one ID
+// kept for every stream before there was one per stream (the newest event handled on any stream)
+export interface EventCursor {
+    streams: Partial<Record<BrokerEventStream, string>>;
+    shared?: string;
 }
 
 export type BrokerMode = "sim" | "alpaca";

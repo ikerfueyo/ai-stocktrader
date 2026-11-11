@@ -18,7 +18,7 @@ import { matchOrders, processCorporateActionOrders } from "./broker/sim/orders";
 import { generateAllDocuments } from "./broker/sim/documents";
 import { accountsOnMargin, endOfDayMargin } from "./broker/sim/calls";
 import { postDividends } from "./portfolio";
-import { notifyNewDocuments, startEventConsumer } from "./automation/events";
+import { notifyNewDocuments, retryFailedEvents, startEventConsumer } from "./automation/events";
 import { runRecurring } from "./automation/recurring";
 import { checkAlerts } from "./automation/alerts";
 import { brokerMode } from "./broker";
@@ -134,8 +134,9 @@ export const JOBS: Job[] = [
     { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
     // Documents that are due: the previous trading day's confirmations, statements after a month's first weekend, 1099s from Feb 15
     { name: "documents", slots: ["06:30"], leaderOnly: true, run: async () => ({ made: brokerMode() === "sim" ? await generateAllDocuments() : 0, notified: await notifyNewDocuments() }) },
-    // The app's consumer of the broker's events (notifications and dividend reinvestment), started once in the leader
-    { name: "events", leaderOnly: true, run: startEventConsumer },
+    // The app's consumer of the broker's events (notifications and dividend reinvestment), started once in the leader, and the retries
+    // of events it couldn't handle
+    { name: "events", leaderOnly: true, run: async () => ({ started: await startEventConsumer(), retried: await retryFailedEvents() }) },
     // Recurring investments due today, placed from 6:45 a.m. ET on trading days for the open
     { name: "recurring", leaderOnly: true, run: () => runRecurring() },
     // Price alerts against the cached quotes, during the regular session

@@ -153,6 +153,14 @@ export const latestTradingDay = (dateKey: string): string => {
     return day;
 };
 
+// The most recent trading day whose regular session has closed by now: today after its close, else the trading day before (for work
+// that must only see a finished day, such as the end of day run late after a restart)
+export const lastCompletedTradingDay = (now: Date = new Date()): string => {
+    const { dateKey } = easternParts(now);
+    const today = sessionOn(dateKey);
+    return today && now >= today.close ? dateKey : latestTradingDay(addDays(dateKey, -1));
+};
+
 // Whether the regular session is open at now, and when it next opens and closes
 export const marketStatus = (now: Date = new Date()): MarketStatus => {
     const { dateKey } = easternParts(now);

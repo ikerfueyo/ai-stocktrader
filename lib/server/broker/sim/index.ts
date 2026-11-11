@@ -2,7 +2,8 @@ import "server-only";
 import pool from "../../db";
 import { allAssets, findAsset } from "../../assets";
 import { BrokerError } from "../errors";
-import type { Broker, BrokerEvent, BrokerEventStream } from "../broker";
+import { encodeTime } from "ulid";
+import type { Broker, BrokerEvent, BrokerEventStream, EventCursor } from "../broker";
 import * as accounts from "./accounts";
 import * as transfers from "./transfers";
 import * as positions from "./positions";
@@ -41,26 +42,45 @@ export class SimBroker implements Broker {
     getCalendar = async (start: string, end: string) => toCalendar(start, end);
     getClock = async () => toClock(new Date());
 
-    // Polls sim_events every 2 seconds for the account streams asked for, after sinceId (or from now), in order
-    subscribe(streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, sinceId?: string) {
-        let last = sinceId ?? null;
+    // Polls sim_events every 2 seconds for the account streams asked for, in ID order (one order for every stream), each stream after
+    // its own cursor (or the shared one, or from now). An event the handler rejects stops the poll, and the next poll starts at it.
+    // Events are written inside the transactions whose changes they report, so one can commit after a later ID is already visible:
+    // a poll reads only IDs older than every transaction still open (their events will all have later IDs), so none is passed over.
+    subscribe(streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, since?: EventCursor) {
+        const handled: Partial<Record<BrokerEventStream, string>> = {};
+        for (const stream of streams) {
+            const start = since?.streams[stream] ?? since?.shared;
+            if (start) handled[stream] = start;
+        }
+        // Everything up to here has been handled or skipped
+        let scanned: string | null = null;
         let stopped = false;
         let polling = false;
         const poll = async () => {
             if (stopped || polling) return;
             polling = true;
             try {
-                if (last === null) {
-                    const { rows: [newest] } = await pool.query<{ id: string }>("SELECT max(id) AS id FROM sim_events");
-                    last = newest?.id ?? "";
+                if (scanned === null) {
+                    // From the oldest stream's cursor; a stream without one starts from now
+                    const { rows: [newest] } = await pool.query<{ id: string | null }>("SELECT max(id) AS id FROM sim_events");
+                    for (const stream of streams) handled[stream] ??= newest?.id ?? "";
+                    scanned = streams.map(stream => handled[stream]!).sort()[0] ?? "";
                 }
+                const { rows: [{ ms }] } = await pool.query<{ ms: string }>(
+                    `SELECT (EXTRACT(EPOCH FROM LEAST(clock_timestamp(), COALESCE(min(xact_start), clock_timestamp())) - interval '1 second') * 1000)::bigint AS ms
+                     FROM pg_stat_activity WHERE datname = current_database() AND backend_type = 'client backend' AND xact_start IS NOT NULL AND pid <> pg_backend_pid()`
+                );
+                const before = `${encodeTime(Number(ms), 10)}${"0".repeat(16)}`;
                 const { rows } = await pool.query<{ id: string; account_id: string; stream: BrokerEventStream; at: Date; payload: unknown }>(
-                    "SELECT * FROM sim_events WHERE id > $1 AND stream = ANY($2) ORDER BY id LIMIT 500", [last, streams]
+                    "SELECT * FROM sim_events WHERE id > $1 AND id < $2 AND stream = ANY($3) ORDER BY id LIMIT 500", [scanned, before, streams]
                 );
                 for (const row of rows) {
                     if (stopped) break;
-                    await handler({ id: row.id, stream: row.stream, accountId: row.account_id, at: row.at.toISOString(), payload: row.payload });
-                    last = row.id;
+                    if (row.id > handled[row.stream]!) {
+                        await handler({ id: row.id, stream: row.stream, accountId: row.account_id, at: row.at.toISOString(), payload: row.payload });
+                        handled[row.stream] = row.id;
+                    }
+                    scanned = row.id;
                 }
             } catch (error) {
                 console.error(`Sim events: ${error instanceof Error ? error.message : error}`);

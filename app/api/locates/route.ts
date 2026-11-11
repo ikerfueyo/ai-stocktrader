@@ -3,6 +3,7 @@ import { getBroker } from "@/lib/server/broker";
 import { requireAccount } from "@/lib/server/brokerAccounts";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { isHttpError } from "@/lib/server/httpError";
+import { requireSecondFactor } from "@/lib/server/sensitive";
 import { ledgerAccountId, withAccountLock } from "@/lib/server/portfolio";
 import type { BrokerLocateRequest, Locate } from "@/lib/types";
 
@@ -24,6 +25,8 @@ export const GET = withUser(async (request, context, userId) => {
 export const POST = withUser(async (request, context, userId) => {
     const body = await request.json().catch(() => null) as Partial<BrokerLocateRequest> | null;
     if (!body || typeof body !== "object") throw new HttpError("A locate request is required", 400);
+    // A locate charges its fee at once, ahead of a short sale, so it needs what placing an order does
+    await requireSecondFactor(userId);
     const { accountId } = await requireAccount(request, userId, "trade");
     const locate = await withAccountLock(userId, () => getBroker().createLocate(accountId, body as BrokerLocateRequest));
     return NextResponse.json<Locate>(locate, { status: 201 });

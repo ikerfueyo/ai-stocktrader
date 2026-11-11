@@ -17,14 +17,26 @@ import type { Account, AccountConfigurations, AccountCreationRequest, AccountSta
 
 const nextUlid = monotonicFactory();
 
-// Appends an event to one of the simulator's streams (sim_events), like Alpaca's SSE streams
+// Appends an event to one of the simulator's streams (sim_events), like Alpaca's SSE streams. Pass the transaction's client when the
+// event reports what a transaction writes, so the event exists only if the change does.
 export const emitEvent = async (accountId: string, stream: BrokerEventStream, payload: Record<string, unknown>, at = new Date(), db: Pick<typeof pool, "query"> = pool) => {
     // In the order events are emitted, not by the time they're dated (a dividend is dated at its payment date's close), so a
-    // consumer resuming after the last ID it handled can't miss one
-    const id = nextUlid();
-    await db.query("INSERT INTO sim_events (id, account_id, stream, at, payload) VALUES ($1, $2, $3, $4, $5)",
-        [id, accountId, stream, at, JSON.stringify({ ...payload, event_ulid: id, at: at.toISOString() })]);
-    return id;
+    // consumer resuming after the last ID it handled can't miss one. The ID is made once the statement's connection is in hand (inside
+    // the caller's transaction, or a connection of its own), so its time is never older than the transaction writing it, which is what
+    // the consumer's cutoff for transactions still open relies on (SimBroker.subscribe)
+    const insert = async (client: Pick<typeof pool, "query">) => {
+        const id = nextUlid();
+        await client.query("INSERT INTO sim_events (id, account_id, stream, at, payload) VALUES ($1, $2, $3, $4, $5)",
+            [id, accountId, stream, at, JSON.stringify({ ...payload, event_ulid: id, at: at.toISOString() })]);
+        return id;
+    };
+    if (db !== pool) return insert(db);
+    const client = await pool.connect();
+    try {
+        return await insert(client);
+    } finally {
+        client.release();
+    }
 };
 
 const statusEvent = (row: Pick<SimAccountRow, "id" | "account_number">, from: string | null, to: string, extra: Record<string, unknown> = {}) =>
