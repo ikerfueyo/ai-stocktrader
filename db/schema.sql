@@ -113,7 +113,6 @@ CREATE TABLE sim_accounts (
     enabled_assets TEXT[] NOT NULL DEFAULT '{us_equity}',
     kyc_results JSONB,
     configurations JSONB NOT NULL,
-    options_approved_level INTEGER NOT NULL DEFAULT 0,
     documents JSONB NOT NULL DEFAULT '[]',
     trading_blocked BOOLEAN NOT NULL DEFAULT false,
     transfers_blocked BOOLEAN NOT NULL DEFAULT false,
@@ -123,18 +122,6 @@ CREATE TABLE sim_accounts (
     closed_at TIMESTAMPTZ
 );
 CREATE INDEX sim_accounts_review_idx ON sim_accounts (status, status_due_at);
-
--- Options approval requests (POST /v1/accounts/{id}/options/approval), decided when due_at passes
-CREATE TABLE sim_options_approvals (
-    id UUID PRIMARY KEY,
-    account_id UUID NOT NULL REFERENCES sim_accounts(id),
-    requested_level INTEGER NOT NULL CHECK (requested_level BETWEEN 1 AND 3),
-    approved_level INTEGER NOT NULL DEFAULT 0,
-    status VARCHAR(32) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'LOWER_LEVEL_APPROVED', 'REJECTED')),
-    due_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 
 -- The simulator's event streams (Alpaca's SSE streams): one row per event, its ULID id ordered within each account, the payload in
 -- the stream's own shape
@@ -213,7 +200,7 @@ CREATE TABLE sim_orders (
     side VARCHAR(4) NOT NULL CHECK (side IN ('buy', 'sell')),
     "type" VARCHAR(16) NOT NULL CHECK ("type" IN ('market', 'limit', 'stop', 'stop_limit', 'trailing_stop')),
     time_in_force VARCHAR(4) NOT NULL CHECK (time_in_force IN ('day', 'gtc', 'opg', 'cls', 'ioc', 'fok')),
-    order_class VARCHAR(8) NOT NULL DEFAULT 'simple' CHECK (order_class IN ('simple', 'bracket', 'oco', 'oto', 'mleg')),
+    order_class VARCHAR(8) NOT NULL DEFAULT 'simple' CHECK (order_class IN ('simple', 'bracket', 'oco', 'oto')),
     position_intent VARCHAR(16),
     qty NUMERIC(18, 9),
     notional NUMERIC(14, 2),
@@ -231,11 +218,7 @@ CREATE TABLE sim_orders (
     -- Bracket, OCO and OTO orders: the legs' parent, the group they share and each one's role
     parent_id UUID REFERENCES sim_orders(id),
     group_id UUID,
-    group_role VARCHAR(12) CHECK (group_role IN ('entry', 'take_profit', 'stop_loss', 'leg')),
-    -- An mleg order's leg: contracts per unit of the order
-    ratio_qty INTEGER,
-    -- What an option order holds back from buying power while open (its requirement plus any debit)
-    buying_power_held NUMERIC(14, 2),
+    group_role VARCHAR(12) CHECK (group_role IN ('entry', 'take_profit', 'stop_loss')),
     replaces UUID REFERENCES sim_orders(id),
     replaced_by UUID REFERENCES sim_orders(id),
     stop_triggered_at TIMESTAMPTZ,
@@ -612,15 +595,6 @@ CREATE TABLE price_alerts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX price_alerts_active_idx ON price_alerts (status, symbol);
-
--- Phase 9 (migration 021_options.sql): do-not-exercise instructions for long option contracts at expiration
-CREATE TABLE sim_option_instructions (
-    account_id UUID NOT NULL REFERENCES sim_accounts(id),
-    symbol VARCHAR(32) NOT NULL,
-    instruction VARCHAR(16) NOT NULL CHECK (instruction IN ('do_not_exercise')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (account_id, symbol)
-);
 
 -- Migration 028_broker_state.sql: what the app keeps of a broker it reads only through the Broker interface (BROKER=alpaca, or
 -- BROKER_LEDGER=broker). Why an order ended, from its trade event (Alpaca sends the reason only there)

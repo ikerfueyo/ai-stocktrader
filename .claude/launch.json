@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "next-dev",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "source \"$HOME/.nvm/nvm.sh\" && nvm use --silent default && exec npx next dev --webpack"],
+      "port": 3000
+    },
+    {
+      "name": "next-dev-alpaca",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "export PATH=\"/usr/local/bin:$PATH\" BROKER=alpaca ALPACA_BROKER_ENV=sandbox REQUIRE_MFA=false && exec npx next dev --webpack"],
+      "port": 3000
+    }
+  ]
+}
