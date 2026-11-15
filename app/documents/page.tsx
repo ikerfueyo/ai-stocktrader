@@ -9,9 +9,7 @@ export default async function Documents({ searchParams }: { searchParams: Promis
 
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <DocumentsPage tab={TABS.find(id => id === tab) ?? "documents"} />
             </div>

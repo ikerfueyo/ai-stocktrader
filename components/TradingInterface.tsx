@@ -93,17 +93,21 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
                         <p>Loading...</p>
                     ) : (
                         <Fragment>
-                            <Price price={shown.price} previousClose={shown.previousClose} quote={quote} />
-                            {quote ? (
-                                <BuySellFunctionality ticker={ticker} quote={quote} market={market} onTraded={() => setQuoteVersion(version => version + 1)} />
-                            ) : quoteError ? (
-                                <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
-                            ) : null}
+                            <section className="trade-card">
+                                <Price price={shown.price} previousClose={shown.previousClose} quote={quote} />
+                                {quote ? (
+                                    <BuySellFunctionality ticker={ticker} quote={quote} market={market} onTraded={() => setQuoteVersion(version => version + 1)} />
+                                ) : quoteError ? (
+                                    <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
+                                ) : null}
+                            </section>
                             <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
                             <QuoteDetails ticker={ticker.toUpperCase()} data={data} quote={quote} />
                             <EarningsDetails ticker={ticker.toUpperCase()} />
                             <CorporateActions ticker={ticker.toUpperCase()} />
-                            <CandlestickChart ticker={ticker.toUpperCase()} data={data} />
+                            <section className="chart-card">
+                                <CandlestickChart ticker={ticker.toUpperCase()} data={data} />
+                            </section>
                         </Fragment>
                     )}
                 </div>

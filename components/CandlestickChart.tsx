@@ -6,6 +6,7 @@ import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { Shape } from "plotly.js";
 import type { DailyBar, IntradayBar } from "@/lib/types";
+import { CHART_COLORS, CHART_LAYOUT } from "@/lib/chartTheme";
 
 // Plotly needs the browser's window, so the chart only renders on the client
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false, loading: () => <p>Loading chart...</p> });
@@ -93,16 +94,22 @@ const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: Reco
                 <p>Loading chart data...</p>
             ) : (
                 <Plot
-                    data={[{ ...candles, type: "candlestick", xaxis: "x", yaxis: "y", name: ticker }]}
+                    data={[{
+                        ...candles, type: "candlestick", xaxis: "x", yaxis: "y", name: ticker,
+                        increasing: { line: { color: CHART_COLORS.gain } },
+                        decreasing: { line: { color: CHART_COLORS.loss } }
+                    }]}
                     layout={{
-                        margin: { t: 10, r: 10, b: 40, l: 50 },
+                        ...CHART_LAYOUT,
+                        margin: { t: 10, r: 10, b: 40, l: 56 },
                         xaxis: {
+                            ...CHART_LAYOUT.xaxis,
                             rangeslider: { visible: false },
                             // Skip weekends, and nights (8:00 p.m. to 4:00 a.m.) for 5-minute bars, so the candles don't have gaps
                             rangebreaks: sessions ? [{ bounds: ["sat", "mon"] }, { bounds: [20, 4], pattern: "hour" }] : [{ bounds: ["sat", "mon"] }]
                         },
                         shapes: extendedShading,
-                        yaxis: { title: { text: "Price (USD)" } }
+                        yaxis: { ...CHART_LAYOUT.yaxis, title: { text: "Price (USD)", font: { size: 12, color: CHART_COLORS.text } } }
                     }}
                     config={{ displayModeBar: false, responsive: true }}
                     style={{ width: "100%", height: "420px" }}

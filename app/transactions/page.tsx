@@ -9,9 +9,7 @@ export default async function Transactions({ searchParams }: { searchParams: Pro
 
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <TransactionsList tab={TABS.find(id => id === tab) ?? "trades"} />
             </div>

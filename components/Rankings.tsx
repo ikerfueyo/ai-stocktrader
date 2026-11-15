@@ -24,17 +24,17 @@ const Rankings = () => {
     }, []);
 
     if (error) {
-        return <p className="text-danger">Couldn&apos;t load rankings: {error}</p>;
+        return <p className="text-danger text-center mt-4">Couldn&apos;t load rankings: {error}</p>;
     }
 
     return (
         <Fragment>
             <div className="rankings-container">
                 <div>
-                    {rankings ? <StockRanking title="Buy Top 5 by AI" stocks={rankings.buy} emptyText="No stocks have a buy verdict right now." /> : <p>Loading...</p>}
+                    {rankings ? <StockRanking title="Top 5 buys by AI" side="buy" stocks={rankings.buy} emptyText="No stocks have a buy verdict right now." /> : <p className="rankings-loading">Loading buy rankings...</p>}
                 </div>
                 <div>
-                    {rankings ? <StockRanking title="Sell Top 5 by AI" stocks={rankings.sell} emptyText="No stocks have a sell verdict right now." /> : <p>Loading...</p>}
+                    {rankings ? <StockRanking title="Top 5 sells by AI" side="sell" stocks={rankings.sell} emptyText="No stocks have a sell verdict right now." /> : <p className="rankings-loading">Loading sell rankings...</p>}
                 </div>
             </div>
         </Fragment>

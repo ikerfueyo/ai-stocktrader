@@ -102,7 +102,7 @@ const DocumentList = () => {
                 Trade confirmations arrive the day after a trading day with trades, statements after each month&apos;s first weekend, and the consolidated 1099 by February 15.
                 Each opens as a page to print or save as PDF.{simulated && " They’re simulated: not for tax filing."}
             </p>
-            {error ? <p className="text-danger">Couldn&apos;t load your documents: {error}</p> : documents === null ? <p>Loading...</p> : documents.length === 0 ? <p>No documents yet.</p> : (
+            {error ? <p className="text-danger">Couldn&apos;t load your documents: {error}</p> : documents === null ? <p className="empty-state">Loading...</p> : documents.length === 0 ? <p className="empty-state">No documents yet.</p> : (
                 <div className="table-container">
                     <table className="table text-center">
                         <thead className="thead-dark">
@@ -155,8 +155,8 @@ const TaxableGainsReport = () => {
     }, [year]);
 
     if (error) return <p className="text-danger mt-3">Couldn&apos;t load the report: {error}</p>;
-    if (report === undefined) return <p className="mt-3">Loading...</p>;
-    if (report === null) return <p className="mt-3">Open an account first.</p>;
+    if (report === undefined) return <p className="empty-state">Loading...</p>;
+    if (report === null) return <p className="empty-state">Open an account first.</p>;
     const { totals, sales, federalWithheld } = report.form1099B;
     const unrealizedTotal = report.unrealized.reduce((sum, lot) => sum + (lot.unrealized ?? 0), 0);
     return (

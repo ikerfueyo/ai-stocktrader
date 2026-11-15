@@ -7,9 +7,7 @@ import MarketMovers from "@/components/MarketMovers";
 export default function Home() {
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <Watchlist />
                 <MarketMovers />

@@ -5,9 +5,7 @@ import TransferForm from "@/components/TransferForm";
 export default function Deposit() {
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <TransferForm direction="deposit" />
             </div>

@@ -9,9 +9,7 @@ export default async function Notifications({ searchParams }: { searchParams: Pr
 
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <NotificationsCenter tab={TABS.find(id => id === tab) ?? "notifications"} symbol={symbol?.toUpperCase() ?? ""} />
             </div>

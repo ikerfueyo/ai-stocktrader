@@ -5,9 +5,7 @@ import TransferForm from "@/components/TransferForm";
 export default function Withdraw() {
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <TransferForm direction="withdraw" />
             </div>

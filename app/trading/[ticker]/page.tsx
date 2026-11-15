@@ -7,9 +7,7 @@ export default async function Trading({ params }: { params: Promise<{ ticker: st
 
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div className="mt-5">
                 <TradingInterface ticker={ticker} />
             </div>

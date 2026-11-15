@@ -67,9 +67,9 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
             ) : error ? (
                 <p className="text-danger mt-3">Couldn&apos;t load your history: {error}</p>
             ) : orders === null || trades === null || cash === null ? (
-                <p className="mt-3">Loading...</p>
+                <p className="empty-state">Loading...</p>
             ) : tab === "orders" ? (
-                orders.length === 0 ? <p className="mt-3">No orders yet.</p> : (
+                orders.length === 0 ? <p className="empty-state">No orders yet.</p> : (
                     <div className="table-container mt-3">
                         <table className="table text-center">
                             <thead className="thead-dark">
@@ -114,7 +114,7 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                     </div>
                 )
             ) : tab === "trades" ? (
-                trades.length === 0 ? <p className="mt-3">No trades yet.</p> : (
+                trades.length === 0 ? <p className="empty-state">No trades yet.</p> : (
                     <div className="table-container mt-3">
                         <table className="table text-center">
                             <thead className="thead-dark">
@@ -163,7 +163,7 @@ const TransactionsList = ({ tab = "trades" }: { tab?: HistoryTab }) => {
                     </div>
                 )
             ) : (
-                cash.length === 0 ? <p className="mt-3">No cash activity yet. Transfers in progress are on the <Link href="/transfers">Transfers</Link> page.</p> : (
+                cash.length === 0 ? <p className="empty-state">No cash activity yet. Transfers in progress are on the <Link href="/transfers">Transfers</Link> page.</p> : (
                     <div className="table-container mt-3">
                         <p className="text-muted">Deposits post when they&apos;re credited (up to the instant limit at once, the rest when they settle) and withdrawals when they leave; transfers in progress are on the <Link href="/transfers">Transfers</Link> page.</p>
                         <table className="table text-center">

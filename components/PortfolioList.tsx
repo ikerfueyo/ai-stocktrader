@@ -70,14 +70,14 @@ const PortfolioList = () => {
         return <p className="text-danger mt-5">Couldn&apos;t load portfolio: {error}</p>;
     }
     if (positions === null) {
-        return <p className="mt-5">Loading...</p>;
+        return <p className="empty-state">Loading...</p>;
     }
     if (positions.length === 0) {
         return (
             <Fragment>
                 <PerformanceChart />
                 <MarginPanel />
-                <p className="mt-5">No open positions.</p>
+                <p className="empty-state">No open positions. Search a ticker above to place your first trade.</p>
                 <OpenOrders refreshKey={ordersVersion} />
             </Fragment>
         );

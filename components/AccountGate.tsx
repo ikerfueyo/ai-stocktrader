@@ -24,7 +24,7 @@ const ACCOUNT_HEADER = "X-Account-Id";
 
 // A bare header for the screens before an account is open: the logo and the user menu (to sign out)
 export const OnboardingHeader = () => (
-    <header className="py-4 shadow-lg header-container onboarding-header">
+    <header className="header-container onboarding-header">
         <div className="header-left">
             <span className="text-2xl font-extrabold flex items-center">
                 <Image src={logo} alt="AI StockTrader Logo" className="logo mr-2" priority />

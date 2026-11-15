@@ -5,9 +5,7 @@ import PortfolioList from "@/components/PortfolioList";
 export default function Portfolio() {
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <PortfolioList />
             </div>

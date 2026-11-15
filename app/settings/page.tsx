@@ -5,9 +5,7 @@ import AccountSettings from "@/components/AccountSettings";
 export default function Settings() {
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <AccountSettings />
             </div>

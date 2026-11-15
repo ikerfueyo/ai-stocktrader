@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Metadata, Viewport } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
+import { Inter } from "next/font/google";
 // Bootstrap 4 first, so Tailwind and the app's own classes win where class names overlap (mt-5, py-4, mr-2, shadow-lg)
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./globals.css";
@@ -11,6 +12,9 @@ import { BrokerInfoProvider } from "@/context/BrokerInfoContext";
 import { brokerMode } from "@/lib/server/broker/broker";
 import { agreementDocuments } from "@/lib/server/agreements";
 
+// Self-hosted by Next.js at build time; globals.css puts it first in --font-sans
+const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-inter" });
+
 export const metadata: Metadata = {
     title: "AI StockTrader",
     description: "Web site for trading stocks using AI",
@@ -19,7 +23,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-    themeColor: "#000000"
+    themeColor: "#343a40"
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
@@ -27,7 +31,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     await connection();
     const brokerInfo = { simulated: brokerMode() === "sim", agreements: agreementDocuments() };
     return (
-        <html lang="en">
+        <html lang="en" className={inter.variable}>
             <body>
                 <ClerkProvider>
                     <BrokerInfoProvider value={brokerInfo}>

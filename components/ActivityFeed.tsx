@@ -82,8 +82,8 @@ const ActivityFeed = () => {
                 <button type="button" className="btn btn-sm btn-outline-dark" disabled={rows.length === 0} onClick={exportCsv}>Export CSV</button>
             </div>
             {error ? <p className="text-danger">Couldn&apos;t load the activity: {error}</p>
-                : activities === null ? <p>Loading...</p>
-                : rows.length === 0 ? <p className="mt-3">No activity yet.</p>
+                : activities === null ? <p className="empty-state">Loading...</p>
+                : rows.length === 0 ? <p className="empty-state">No activity yet.</p>
                 : (
                     <div className="table-container mt-2">
                         <table className="table text-center">

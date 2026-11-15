@@ -5,9 +5,7 @@ import TransfersPage from "@/components/TransfersPage";
 export default function Transfers() {
     return (
         <Fragment>
-            <div>
-                <Header />
-            </div>
+            <Header />
             <div>
                 <TransfersPage />
             </div>
