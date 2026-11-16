@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn, requireSecondFactor } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { brokerMode, getBroker } from "@/lib/server/broker";
 import { findUserAccount, requireAccount } from "@/lib/server/brokerAccounts";
 import { forgetBrokerLedger, withAccountLock } from "@/lib/server/portfolio";
+import { forgetUpkeep } from "@/lib/server/upkeep";
 import { marginSnapshot, withdrawalError } from "@/lib/server/broker/sim/marginAccount";
 import pool from "@/lib/server/db";
-import { TRANSFER_FEES } from "@/lib/server/broker/sim/funding";
+import { DEPOSIT_HOLD_DAYS } from "@/lib/server/broker/sim/funding";
+import { fundingTerms } from "@/lib/server/funding";
 import type { CreateTransferRequest } from "@/lib/server/broker/types";
 import type { BrokerTransfer, TransferRequest } from "@/lib/types";
 import type { AccountContext } from "../route";
 import { contributionProblem } from "@/lib/server/ira";
 import { easternParts } from "@/lib/marketHours";
+import { parseDollarAmount } from "@/lib/payments";
 
 // Get the account's transfers, newest first, with their status (QUEUED, SENT_TO_CLEARING, COMPLETE, CANCELED, RETURNED, ...) and
 // expires_at, when the money is expected
@@ -32,9 +36,11 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
     const { type, direction, amount: requested, relationshipId, bankId, ira } = body?.transfer ?? {};
     if (type !== "ach" && type !== "wire") throw new HttpError("type must be ach or wire", 400);
     if (direction !== "INCOMING" && direction !== "OUTGOING") throw new HttpError("direction must be INCOMING or OUTGOING", 400);
-    const amount = Number(requested);
-    if (!(amount > 0) || Math.round(amount * 100) !== amount * 100) throw new HttpError("amount must be a positive dollar amount", 400);
+    const amount = parseDollarAmount(requested);
+    if (amount === null) throw new HttpError("amount must be a positive dollar amount in whole cents", 400);
     const { accountId } = await requireAccount(request, userId, direction === "INCOMING" ? "deposit" : "withdraw");
+    // Money leaving needs a recent sign-in; any transfer needs two-step verification where it's required
+    await (direction === "OUTGOING" ? requireRecentSignIn(userId) : requireSecondFactor(userId));
     if (accountId !== account_id) throw new HttpError("Switch to this account to move money in or out of it", 409);
     // An IRA's contribution is for a tax year, checked against the user's limit across their IRAs (the broker only checks it by age,
     // after the fact); a distribution carries its reason and tax withholding
@@ -42,10 +48,6 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
     const isIra = account.account_type === "ira";
     if (ira && !isIra) throw new HttpError("IRA details are only for IRA accounts", 400);
     const taxYear = Number(ira?.taxYear ?? easternParts(new Date()).dateKey.slice(0, 4));
-    if (isIra && direction === "INCOMING") {
-        const problem = await contributionProblem(userId, account_id, amount, taxYear);
-        if (problem) throw new HttpError(`Can't contribute $${amount.toFixed(2)}: ${problem}`, 400);
-    }
     const transfer: CreateTransferRequest = {
         transfer_type: type, direction, amount: amount.toFixed(2),
         ...(type === "ach" ? { relationship_id: String(relationshipId ?? "") } : { bank_id: String(bankId ?? "") }),
@@ -57,11 +59,18 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         } : {})
     };
     if (direction === "INCOMING") {
-        const deposit = await getBroker().createTransfer(account_id, transfer);
+        // An IRA contribution is checked and made under the user's lock, so two at once can't both fit in what's left of the limit
+        const deposit = !isIra ? await getBroker().createTransfer(account_id, transfer) : await withAccountLock(userId, async () => {
+            const problem = await contributionProblem(userId, account_id, amount, taxYear);
+            if (problem) throw new HttpError(`Can't contribute $${amount.toFixed(2)}: ${problem}`, 400);
+            return getBroker().createTransfer(account_id, transfer);
+        });
         forgetBrokerLedger(account_id);
+        // Its instant credit may meet a margin call, which the header's next read should show
+        forgetUpkeep(account_id);
         return NextResponse.json<BrokerTransfer>(deposit, { status: 201 });
     }
-    const fee = type === "wire" ? TRANSFER_FEES.wireOutDomestic : 0;
+    const fee = type === "wire" ? fundingTerms().wireFee : 0;
     const created = await withAccountLock(userId, async () => {
         if (brokerMode() !== "sim") {
             const withdrawable = Number((await getBroker().getTradeAccount(account_id)).cash_withdrawable ?? 0);
@@ -73,13 +82,18 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
         const snapshot = await marginSnapshot(pool, account_id);
         const problem = withdrawalError(snapshot, amount + fee);
         if (problem) {
-            // Neither instant deposit credit nor sale proceeds can leave before they settle
-            const { unsettledInstant, unsettledProceeds } = snapshot.ledger;
+            // Neither instant deposit credit nor sale proceeds can leave before they settle, nor a deposit while the broker holds it
+            const { unsettledInstant, unsettledProceeds, heldDeposits, nextDepositRelease } = snapshot.ledger;
             const unsettled = [
                 unsettledInstant > 0 ? `$${unsettledInstant.toFixed(2)} of instant deposit credit` : null,
                 unsettledProceeds > 0 ? `$${unsettledProceeds.toFixed(2)} of sale proceeds` : null
             ].filter(Boolean);
-            const note = unsettled.length > 0 && problem.status === 400 && snapshot.calls.length === 0 ? ` (${unsettled.join(" and ")} can't be withdrawn until settled)` : "";
+            const release = nextDepositRelease?.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+            const notes = [
+                unsettled.length > 0 ? `${unsettled.join(" and ")} can't be withdrawn until settled` : null,
+                heldDeposits > 0 ? `$${heldDeposits.toFixed(2)} of deposits are held for ${DEPOSIT_HOLD_DAYS} business days after they arrive, the next released on ${release}` : null
+            ].filter(Boolean);
+            const note = notes.length > 0 && problem.status === 400 && snapshot.calls.length === 0 ? ` (${notes.join("; ")})` : "";
             throw new HttpError(`${problem.message}${fee > 0 ? `, including the $${fee} wire fee` : ""}${note}`, problem.status);
         }
         return getBroker().createTransfer(account_id, transfer);

@@ -6,13 +6,6 @@ next-env.d.ts
 .env*.local
 .DS_Store
 
-# Claude Code session worktrees
-.claude/worktrees/
-
-# Terraform
-terraform/**/.terraform/
-terraform/**/*.tfstate
-terraform/**/*.tfstate.*
-terraform/**/.terraform.tfstate.lock.info
-terraform/terraform.tfvars
-terraform/backend.hcl
+# Claude Code: share the dev server launch configurations, not session state (worktrees, local settings)
+.claude/*
+!.claude/launch.json

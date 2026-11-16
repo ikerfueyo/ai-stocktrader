@@ -1,27 +1,27 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import Link from "next/link";
 import axios from "axios";
 import { useUser } from "@clerk/nextjs";
+import { useBrokerInfo } from "@/context/BrokerInfoContext";
+import AgreementLink, { useShownRevisions } from "./AgreementLink";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import {
-    EXPERIENCE_LEVELS, FUNDING_SOURCES, US_STATES,
-    optionsSuitabilityErrors, validateApplication, type AccountApplication, type AgreementName, type ExperienceLevel, type FundingSource
+    EXPERIENCE_LEVELS, FUNDING_SOURCES, MARITAL_STATUSES, US_STATES,
+    validateApplication, type AccountApplication, type AgreementName, type ExperienceLevel, type FundingSource, type MaritalStatus
 } from "@/lib/kyc";
-import { EXPERIENCE_LABELS, Field, RANGES, SuitabilityFields } from "./OptionsSuitability";
+import { EXPERIENCE_LABELS, Field, MARITAL_LABELS, RANGES } from "./FormFields";
 import { easternParts } from "@/lib/marketHours";
 import type { OpenAccountRequest } from "@/lib/types";
 
 const STEPS = ["Account", "Contact", "Identity", "Employment", "Finances", "Trusted contact", "Review"] as const;
 // Which fields each step shows, by the prefix of validateApplication's error paths
 const STEP_FIELDS: string[][] = [
-    ["options_level"],
+    [],
     ["contact."],
     ["identity.given_name", "identity.family_name", "identity.date_of_birth", "identity.tax_id", "identity.country_of"],
     ["disclosures."],
-    ["identity.funding_source", "identity.annual_income", "identity.liquid_net_worth", "identity.total_net_worth", "identity.investment_experience",
-        "identity.liquidity_needs", "identity.risk_tolerance", "identity.investment_objective", "identity.investment_time_horizon", "identity.marital_status", "identity.number_of_dependents"],
+    ["identity.funding_source", "identity.annual_income", "identity.liquid_net_worth", "identity.total_net_worth", "identity.investment_experience", "identity.marital_status"],
     ["trusted_contact."],
     ["agreements", "w9", "disclosures_delivered"]
 ];
@@ -29,11 +29,6 @@ const STEP_FIELDS: string[][] = [
 const FUNDING_LABELS: Record<FundingSource, string> = {
     employment_income: "Employment income", investments: "Investments", inheritance: "Inheritance", business_income: "Business income", savings: "Savings", family: "Family"
 };
-const OPTIONS_LEVELS = [
-    { level: 1, label: "Level 1: covered calls and cash-secured puts" },
-    { level: 2, label: "Level 2: also buying calls and puts" },
-    { level: 3, label: "Level 3: also spreads" }
-];
 
 const emptyApplication = (email: string): AccountApplication => ({
     contact: { email_address: email, phone_number: "", street_address: ["", ""], unit: "", city: "", state: "", postal_code: "", country: "USA" },
@@ -55,9 +50,10 @@ type Context = NonNullable<AccountApplication["disclosures"]["context"]>[number]
 // Each step is checked with lib/kyc.ts's validateApplication before moving on; the server checks it all again.
 const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> }) => {
     const { user } = useUser();
+    const { simulated } = useBrokerInfo();
+    const shownRevisions = useShownRevisions();
     const [application, setApplication] = useState<AccountApplication>(() => emptyApplication(user?.primaryEmailAddress?.emailAddress ?? ""));
     const [margin, setMargin] = useState(false);
-    const [options, setOptions] = useState(false);
     const [step, setStep] = useState(0);
     const [showErrors, setShowErrors] = useState(false);
     const [submitting, setSubmitting] = useState(false);
@@ -66,16 +62,12 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
     // The application as submitted: the chosen account type's agreements are added to the two everyone signs on the review step
     const withAccountType = (base: AccountApplication): AccountApplication => {
         const signed = base.agreements.filter(agreement => agreement === "customer_agreement" || agreement === "account_agreement");
-        const agreements: AgreementName[] = [...signed, ...(margin && base.agreements.includes("margin_agreement") ? ["margin_agreement" as const] : []),
-            ...(options && base.agreements.includes("options_agreement") ? ["options_agreement" as const] : [])];
-        return { ...base, agreements, options_level: options ? base.options_level : undefined };
+        const agreements: AgreementName[] = [...signed, ...(margin && base.agreements.includes("margin_agreement") ? ["margin_agreement" as const] : [])];
+        return { ...base, agreements };
     };
     const allErrors = validateApplication(withAccountType(application), easternParts(new Date()).dateKey);
     const accountTypeErrors: Record<string, string> = {};
-    if (options && !application.options_level) accountTypeErrors.options_level = "Choose an options level";
-    if (options) Object.assign(accountTypeErrors, optionsSuitabilityErrors(application.identity));
     if (step === 6 && margin && !application.agreements.includes("margin_agreement")) accountTypeErrors.agreements = "Accept the margin agreement, or go back and choose a cash account";
-    if (step === 6 && options && !application.agreements.includes("options_agreement")) accountTypeErrors.agreements = "Accept the options agreement, or go back and drop options";
     const errors = { ...allErrors, ...accountTypeErrors };
     const stepErrors = (index: number) => Object.keys(errors).filter(path => STEP_FIELDS[index].some(prefix => path.startsWith(prefix)));
     const error = (path: string) => showErrors ? errors[path] : undefined;
@@ -120,7 +112,8 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
             const submitted = withAccountType(application);
             const trusted = submitted.trusted_contact;
             await axios.post("/api/accounts", {
-                application: { ...submitted, trusted_contact: trusted?.given_name || trusted?.family_name ? trusted : undefined }
+                application: { ...submitted, trusted_contact: trusted?.given_name || trusted?.family_name ? trusted : undefined },
+                revisions: shownRevisions([...submitted.agreements, "form_crs", "privacy_notice"])
             } satisfies OpenAccountRequest);
             await onSubmitted();
         } catch (error) {
@@ -169,10 +162,12 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
             <ol className="onboarding-steps" aria-label="Steps">
                 {STEPS.map((name, index) => <li key={name} className={index === step ? "active" : index < step ? "done" : ""}>{name}</li>)}
             </ol>
-            <p className="onboarding-test-note">
-                This is a simulator. Enter made-up test details, not your real ones: only the last 4 digits of the tax ID are kept. Last names
-                &quot;Review&quot;, &quot;ActionRequired&quot; and &quot;Reject&quot; try the other review outcomes.
-            </p>
+            {simulated && (
+                <p className="onboarding-test-note">
+                    This is a simulator. Enter made-up test details, not your real ones: only the last 4 digits of the tax ID are kept. Last names
+                    &quot;Review&quot;, &quot;ActionRequired&quot; and &quot;Reject&quot; try the other review outcomes.
+                </p>
+            )}
 
             {step === 0 && (
                 <div className="transfer-fields">
@@ -185,18 +180,6 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                             ? "A margin account can borrow against its stocks (up to 2× overnight) and sell short, once it holds at least $2,000. Borrowing costs interest, and losses can exceed what you deposit."
                             : "A cash account buys with the money in it, never borrowed. It can't sell short. You can upgrade to margin later in Settings."}
                     </p>
-                    <label className="onboarding-check">
-                        <input type="checkbox" checked={options} onChange={event => setOptions(event.target.checked)} />
-                        Also apply for options trading
-                    </label>
-                    {options && (
-                        <Field label="Options level" error={error("options_level")}>
-                            <select className="form-control" value={application.options_level ?? ""} onChange={event => setApplication({ ...application, options_level: Number(event.target.value) || undefined })}>
-                                <option value="">Choose…</option>
-                                {OPTIONS_LEVELS.map(({ level, label }) => <option key={level} value={level}>{label}</option>)}
-                            </select>
-                        </Field>
-                    )}
                 </div>
             )}
 
@@ -252,8 +235,8 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                                 <option value="USA_ITIN">ITIN</option>
                             </select>
                         </Field>
-                        <Field label={identity.tax_id_type === "USA_SSN" ? "SSN" : "ITIN"} error={error("identity.tax_id")} hint={process.env.NEXT_PUBLIC_DEMO === "true" ? "Demo: use a made-up number such as 123-45-6789, not your own" : "Only the last 4 digits are kept"}>
-                            <input className="form-control" type="password" autoComplete="off" inputMode="numeric" placeholder="123-45-6789" value={identity.tax_id} onChange={event => set("identity", { tax_id: event.target.value })} />
+                        <Field label={identity.tax_id_type === "USA_SSN" ? "SSN" : "ITIN"} error={error("identity.tax_id")} hint="Only the last 4 digits are kept">
+                            <input className="form-control" type="password" autoComplete="off" inputMode="numeric" placeholder="XXX-XX-XXXX" value={identity.tax_id} onChange={event => set("identity", { tax_id: event.target.value })} />
                         </Field>
                     </div>
                     <Field label="Citizenship" error={error("identity.country_of_citizenship")}>
@@ -349,15 +332,12 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                             {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
                         </select>
                     </Field>
-                    {options && (
-                        <Field label="Experience trading options" error={error("identity.investment_experience_with_options")}>
-                            <select className="form-control" value={identity.investment_experience_with_options ?? ""} onChange={event => set("identity", { investment_experience_with_options: (event.target.value || undefined) as ExperienceLevel | undefined })}>
-                                <option value="">Choose…</option>
-                                {EXPERIENCE_LEVELS.map(level => <option key={level} value={level}>{EXPERIENCE_LABELS[level]}</option>)}
-                            </select>
-                        </Field>
-                    )}
-                    {options && <SuitabilityFields answers={identity} onChange={changes => set("identity", changes)} error={error} />}
+                    <Field label="Marital status" hint="Optional. For a retirement account, it tells whether your spouse's consent may be needed for its beneficiaries." error={error("identity.marital_status")}>
+                        <select className="form-control" value={identity.marital_status ?? ""} onChange={event => set("identity", { marital_status: (event.target.value || undefined) as MaritalStatus | undefined })}>
+                            <option value="">Choose…</option>
+                            {MARITAL_STATUSES.map(status => <option key={status} value={status}>{MARITAL_LABELS[status]}</option>)}
+                        </select>
+                    </Field>
                 </div>
             )}
 
@@ -386,7 +366,7 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
             {step === 6 && (
                 <div className="transfer-fields">
                     <dl className="onboarding-review">
-                        <dt>Account</dt><dd>{margin ? "Margin" : "Cash"} account{options && application.options_level ? `, options level ${application.options_level}` : ""}</dd>
+                        <dt>Account</dt><dd>{margin ? "Margin" : "Cash"} account</dd>
                         <dt>Name</dt><dd>{[identity.given_name, identity.middle_name, identity.family_name].filter(Boolean).join(" ")}</dd>
                         <dt>Address</dt><dd>{[...contact.street_address.filter(Boolean), `${contact.city}, ${contact.state} ${contact.postal_code}`].join(", ")}</dd>
                         <dt>Tax ID</dt><dd>•••-••-{identity.tax_id.replace(/\D/g, "").slice(-4)}</dd>
@@ -395,12 +375,11 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                     {([
                         ["customer_agreement", "Customer agreement"],
                         ["account_agreement", "Account agreement"],
-                        ...(margin ? [["margin_agreement", "Margin agreement"]] : []),
-                        ...(options ? [["options_agreement", "Options agreement"]] : [])
+                        ...(margin ? [["margin_agreement", "Margin agreement"]] : [])
                     ] as [AgreementName, string][]).map(([agreement, label]) => (
                         <label key={agreement} className="onboarding-check">
                             <input type="checkbox" checked={application.agreements.includes(agreement)} onChange={event => toggleAgreement(agreement, event.target.checked)} />
-                            I&apos;ve read and accept the <Link href={`/agreements/${agreement}`} target="_blank">{label.toLowerCase()}</Link>
+                            I&apos;ve read and accept the <AgreementLink name={agreement}>{label.toLowerCase()}</AgreementLink>
                         </label>
                     ))}
                     {error("agreements") && <small className="text-danger">{error("agreements")}</small>}
@@ -417,7 +396,7 @@ const OnboardingWizard = ({ onSubmitted }: { onSubmitted: () => Promise<void> })
                     <label className="onboarding-check">
                         <input type="checkbox" checked={application.disclosures_delivered.form_crs && application.disclosures_delivered.privacy_notice}
                             onChange={event => set("disclosures_delivered", { form_crs: event.target.checked, privacy_notice: event.target.checked })} />
-                        I&apos;ve received the <Link href="/agreements/form_crs" target="_blank">relationship summary (Form CRS)</Link> and the <Link href="/agreements/privacy_notice" target="_blank">privacy notice</Link>
+                        I&apos;ve received the <AgreementLink name="form_crs">relationship summary (Form CRS)</AgreementLink> and the <AgreementLink name="privacy_notice">privacy notice</AgreementLink>
                     </label>
                     {error("disclosures_delivered") && <small className="text-danger">{error("disclosures_delivered")}</small>}
                     {submitError && <p className="text-danger">{submitError}</p>}

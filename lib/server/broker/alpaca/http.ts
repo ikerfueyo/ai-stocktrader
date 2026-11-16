@@ -32,7 +32,11 @@ export const buildUrl = (base: string, path: string, query: Query = {}) => {
     return url.toString();
 };
 
-// The BrokerError (4xx) or UpstreamError (5xx) for a reply that isn't OK
+// Masks anything shaped like an SSN or ITIN (9 digits, with or without dashes) to its last 4 digits. An error message is logged
+// (errorResponse) and shown to the user, so a tax ID Alpaca echoes back about an application must not survive in it.
+export const redactTaxIds = (text: string) => text.replace(/(?<![\d-])\d{3}(-?)\d{2}\1(\d{4})(?![\d-])/g, "xxx-xx-$2");
+
+// The BrokerError (4xx) or UpstreamError (5xx) for a reply that isn't OK, its message with tax IDs masked
 export const errorFor = (status: number, text: string, what: string): BrokerError | UpstreamError => {
     let body: { code?: unknown; message?: unknown } = {};
     try {
@@ -40,7 +44,7 @@ export const errorFor = (status: number, text: string, what: string): BrokerErro
     } catch {
         // Not JSON: a proxy's page or a bare message
     }
-    const message = typeof body.message === "string" && body.message ? body.message : text.trim().slice(0, 200) || `HTTP ${status}`;
+    const message = redactTaxIds(typeof body.message === "string" && body.message ? body.message : text.trim().slice(0, 200) || `HTTP ${status}`);
     // A 401 even with a fresh token means the app's credentials are refused, not the user's session: never answered as a 401
     if (status >= 500 || status === 401) return new UpstreamError(`Alpaca ${what}: ${status} ${message}`, status === 504 ? 504 : 502);
     const code = typeof body.code === "number" ? body.code : Number(body.code) || fallbackCode(status);

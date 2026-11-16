@@ -12,8 +12,7 @@ import { computeMargin, effectiveMultiplier, shortingBlocked, type MarginPositio
 import { intradayMarginLevel, restrictionActive } from "./intradayMargin";
 import { reservedForOrders } from "./matching";
 import { toTradeAccount } from "./tradeAccount";
-import { totalOptionRequirement } from "./options";
-import { contractMultiplier, isOptionSymbol } from "../../../options";
+import { BROKER_MAX_MULTIPLIER } from "./kyc";
 import type { SimAccountRow, SimOrderRow } from "./shapes";
 import type { AssetRow } from "../../universe";
 import type { TradeAccount } from "../types";
@@ -55,9 +54,9 @@ export const accountRow = async (db: Db, accountId: string): Promise<SimAccountR
 
 const hasMarginAgreement = (row: Pick<SimAccountRow, "agreements">) => row.agreements.some(({ agreement }) => agreement === "margin_agreement");
 
-// The multiplier the account allows: 1 without the margin agreement, else its max_margin_multiplier
+// The multiplier the account allows: 1 without the margin agreement, else its max_margin_multiplier, unset the broker's limit
 export const maxMultiplierOf = (row: Pick<SimAccountRow, "agreements" | "configurations">): number =>
-    hasMarginAgreement(row) ? Math.max(1, Number(row.configurations?.max_margin_multiplier ?? 2)) : 1;
+    hasMarginAgreement(row) ? Math.max(1, Math.min(BROKER_MAX_MULTIPLIER, Number(row.configurations?.max_margin_multiplier ?? BROKER_MAX_MULTIPLIER))) : 1;
 
 export interface MarginSnapshot {
     row: SimAccountRow;
@@ -76,25 +75,17 @@ export interface MarginSnapshot {
     // Why the account can't open shorts now, or null
     shortingBlocked: string | null;
     withdrawable: number;
+    // What could move within the broker (Alpaca's cash_transferable): withdrawable with held deposits counted
+    transferable: number;
     // Intraday margin deficits still outstanding, and the last day of a 90-day restriction in force (null if none)
     intradayDeficits: IntradayDeficitRow[];
     restrictedUntil: string | null;
 }
 
-// What the account's open orders hold back from buying power (reservedForOrders), leaving out exceptIds. Option orders hold what was
-// worked out when they were placed (buying_power_held: the requirement they add plus any debit), for the part still to fill; an mleg
-// order's legs hold nothing of their own.
+// What the account's open orders hold back from buying power (reservedForOrders), leaving out exceptIds
 export const reservedCash = async (db: Db, accountId: string, { positions, multiplier, exceptIds = [] }: { positions: { ticker: string; quantity: number }[]; multiplier: number; exceptIds?: string[] }): Promise<number> => {
     const { rows } = await db.query<SimOrderRow>("SELECT * FROM sim_orders WHERE account_id = $1 AND status = ANY($2)", [accountId, OPEN_ORDER_STATUSES]);
-    const kept = rows.filter(({ id, parent_id }) => !exceptIds.includes(id) && !(parent_id && exceptIds.includes(parent_id)));
-    const optionHeld = kept.filter(row => row.order_class === "mleg" || isOptionSymbol(row.symbol)).reduce((sum, row) => {
-        if (row.group_role === "leg" || row.buying_power_held === null || row.buying_power_held === undefined) return sum;
-        const qty = Number(row.qty ?? 0);
-        const left = qty > 0 ? Math.max(0, qty - Number(row.filled_qty)) / qty : 1;
-        return sum + Math.max(0, Number(row.buying_power_held)) * left;
-    }, 0);
-    const open = kept.filter(row => row.order_class !== "mleg" && !isOptionSymbol(row.symbol));
-    if (open.length === 0) return optionHeld;
+    const open = rows.filter(({ id, parent_id }) => !exceptIds.includes(id) && !(parent_id && exceptIds.includes(parent_id)));
     if (open.length === 0) return 0;
     const symbols = [...new Set(open.map(({ symbol }) => symbol))];
     const unpriced = [...new Set(open.filter(row => row.limit_price === null && row.stop_price === null && row.notional === null).map(({ symbol }) => symbol))];
@@ -103,7 +94,7 @@ export const reservedCash = async (db: Db, accountId: string, { positions, multi
         Promise.all(symbols.map(async symbol => [symbol, (await findAsset(symbol))?.marginable ?? null] as const))
     ]);
     const num = (value: string | null) => value === null ? null : Number(value);
-    return optionHeld + reservedForOrders(
+    return reservedForOrders(
         open.map(row => ({
             symbol: row.symbol, side: row.side, limitPrice: num(row.limit_price), stopPrice: num(row.stop_price), qty: num(row.qty), notional: num(row.notional),
             filledQty: Number(row.filled_qty), filledNotional: Number(row.filled_notional), held: row.status === "held"
@@ -119,9 +110,9 @@ type Ledger = Awaited<ReturnType<typeof ledgerState>>;
 // A position's margin flags from its asset. A stock that has left the universe (null: delisted, moved to OTC as liquidation-only, as
 // Alpaca handles it) is non-marginable, so whatever price it's valued at can't be borrowed against; while the universe has never been
 // synced (undefined), nothing is known.
-const marginAssetOf = (symbol: string, asset: AssetRow | null | undefined): MarginPosition["asset"] => {
+const marginAssetOf = (asset: AssetRow | null | undefined): MarginPosition["asset"] => {
     if (asset) return { marginable: asset.marginable, marginRequirementLong: asset.marginRequirementLong, marginRequirementShort: asset.marginRequirementShort };
-    return asset === null && !isOptionSymbol(symbol) ? { marginable: false, marginRequirementLong: null, marginRequirementShort: null } : null;
+    return asset === null ? { marginable: false, marginRequirementLong: null, marginRequirementShort: null } : null;
 };
 
 // The ledger's positions at current quotes (a position without one at its last known price, or its cost), with their assets' margin
@@ -136,19 +127,17 @@ const valuePositions = async (ledger: Ledger) => {
     const found = Object.fromEntries(assetList);
     const positions: MarginPosition[] = ledger.positions.map(({ ticker, quantity, avgCost }) => ({
         symbol: ticker, qty: quantity, price: prices[ticker] ?? avgCost,
-        asset: marginAssetOf(ticker, found[ticker]),
-        ...(isOptionSymbol(ticker) ? { multiplier: contractMultiplier(ticker), option: true } : {})
+        asset: marginAssetOf(found[ticker])
     }));
-    const optionRequirement = totalOptionRequirement(ledger.positions.map(({ ticker, quantity }) => ({ symbol: ticker, qty: quantity })));
-    return { symbols, quotes, prices, staleTickers, assets, positions, optionRequirement, cash: roundCents(ledger.cash - ledger.pendingTransferOut) };
+    return { symbols, quotes, prices, staleTickers, assets, positions, cash: roundCents(ledger.cash - ledger.pendingTransferOut) };
 };
 
 // The account's intraday margin level now (FINRA Rule 4210(a)(17)): equity less the maintenance requirement at current quotes, or
 // null for an account that isn't a margin account (cash accounts and IRAs, which the rule leaves out)
 export const marginLevel = async (db: Db, accountId: string, now = new Date()): Promise<number | null> => {
     if (maxMultiplierOf(await accountRow(db, accountId)) <= 1) return null;
-    const { positions, optionRequirement, cash } = await valuePositions(await ledgerState(db, accountId, now));
-    return intradayMarginLevel(computeMargin({ cash, positions, maxMultiplier: 1, session: "closed", optionRequirement }));
+    const { positions, cash } = await valuePositions(await ledgerState(db, accountId, now));
+    return intradayMarginLevel(computeMargin({ cash, positions, maxMultiplier: 1, session: "closed" }));
 };
 
 export interface IntradayDeficitRow {
@@ -179,7 +168,7 @@ export const restrictionReason = (restrictedUntil: string) =>
 export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds = [], session, now = new Date() }: { exceptOrderIds?: string[]; session?: Session; now?: Date } = {}): Promise<MarginSnapshot> => {
     const row = await accountRow(db, accountId);
     const ledger = await ledgerState(db, accountId, now);
-    const [{ symbols, quotes, prices, staleTickers, assets, positions, optionRequirement, cash }, market, calls] = await Promise.all([
+    const [{ symbols, quotes, prices, staleTickers, assets, positions, cash }, market, calls] = await Promise.all([
         valuePositions(ledger),
         session ? null : getMarketStatus(),
         openCalls(db, accountId, now)
@@ -187,20 +176,24 @@ export const marginSnapshot = async (db: Db, accountId: string, { exceptOrderIds
     const intraday = await intradayStatus(db, accountId, dayOf(now));
     const sessionNow = session ?? (market!.session as Session);
     const maxMultiplier = intraday.restrictedUntil ? 1 : maxMultiplierOf(row);
-    const unreserved = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, optionRequirement });
+    const unreserved = computeMargin({ cash, positions, maxMultiplier, session: sessionNow });
     const reserved = await reservedCash(db, accountId, { positions: ledger.positions, multiplier: unreserved.multiplier, exceptIds: exceptOrderIds });
-    const state = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, reserved, optionRequirement });
-    // Withdrawable: settled cash (less instant credit and sale proceeds not yet settled), no more than the excess over Reg T initial
-    // margin less what open orders hold, and nothing during a margin call
+    const state = computeMargin({ cash, positions, maxMultiplier, session: sessionNow, reserved });
+    // Withdrawable: settled cash (less instant credit and sale proceeds not yet settled, and deposits the broker still holds), no more
+    // than the excess over Reg T initial margin less what open orders hold, and nothing during a margin call. Transferable is the same
+    // with held deposits counted, as Alpaca's cash_transferable (for journals) counts them.
     const settledCash = cash - ledger.unsettledInstant - ledger.unsettledProceeds;
-    const withdrawable = calls.length > 0 ? 0 : Math.max(0, roundCents(Math.min(settledCash, unreserved.sma - reserved / Math.max(1, unreserved.multiplier))));
+    const excess = unreserved.sma - reserved / Math.max(1, unreserved.multiplier);
+    const available = (settled: number) => calls.length > 0 ? 0 : Math.max(0, roundCents(Math.min(settled, excess)));
+    const withdrawable = available(settledCash - ledger.heldDeposits);
+    const transferable = available(settledCash);
     return {
         row, ledger, cash, positions, assets, quotes, staleTickers: staleTickers.filter(ticker => symbols.includes(ticker)).concat(symbols.filter(symbol => prices[symbol] === undefined)),
         reserved, state, calls, session: sessionNow,
         shortingBlocked: row.account_type === "ira" ? "IRAs can't sell short"
             : intraday.restrictedUntil ? restrictionReason(intraday.restrictedUntil)
             : shortingBlocked({ hasMarginAgreement: hasMarginAgreement(row), noShorting: row.configurations?.no_shorting === true, equity: state.equity }),
-        withdrawable, intradayDeficits: intraday.deficits, restrictedUntil: intraday.restrictedUntil
+        withdrawable, transferable, intradayDeficits: intraday.deficits, restrictedUntil: intraday.restrictedUntil
     };
 };
 
@@ -235,6 +228,7 @@ export const getTradeAccount = async (accountId: string): Promise<TradeAccount> 
         multiplier: effectiveMultiplier(state.equity, state.maxMultiplier, "regular"),
         shortingEnabled: snapshot.shortingBlocked === null,
         withdrawable: snapshot.withdrawable,
+        transferable: snapshot.transferable,
         accruedFees: ledger.accruedFees,
         pendingTransferOut: ledger.pendingTransferOut,
         last: last ? {

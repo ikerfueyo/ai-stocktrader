@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
+import { useBrokerInfo } from "@/context/BrokerInfoContext";
 import Link from "next/link";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
@@ -37,6 +38,7 @@ const DocumentsPage = ({ tab = "documents" }: { tab?: DocumentsTab }) => (
 );
 
 const DocumentList = () => {
+    const { simulated } = useBrokerInfo();
     const [year, setYear] = useState<number | "all">(thisYear);
     const [type, setType] = useState("");
     const [documents, setDocuments] = useState<BrokerDocument[] | null>(null);
@@ -89,7 +91,7 @@ const DocumentList = () => {
                         {Object.entries(TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
                 </label>
-                {process.env.NODE_ENV !== "production" && (
+                {process.env.NODE_ENV !== "production" && simulated && (
                     <button type="button" className="btn btn-sm btn-outline-secondary" onClick={onPreliminary} disabled={making}
                         title="Development only: this month's statement, today's confirmation and the year's 1099 so far, marked preliminary">
                         {making ? "Making…" : "Make preliminary documents"}
@@ -98,9 +100,9 @@ const DocumentList = () => {
             </div>
             <p className="text-muted">
                 Trade confirmations arrive the day after a trading day with trades, statements after each month&apos;s first weekend, and the consolidated 1099 by February 15.
-                Each opens as a page to print or save as PDF. They&apos;re simulated: not for tax filing.
+                Each opens as a page to print or save as PDF.{simulated && " They’re simulated: not for tax filing."}
             </p>
-            {error ? <p className="text-danger">Couldn&apos;t load your documents: {error}</p> : documents === null ? <p>Loading...</p> : documents.length === 0 ? <p>No documents yet.</p> : (
+            {error ? <p className="text-danger">Couldn&apos;t load your documents: {error}</p> : documents === null ? <p className="empty-state">Loading...</p> : documents.length === 0 ? <p className="empty-state">No documents yet.</p> : (
                 <div className="table-container">
                     <table className="table text-center">
                         <thead className="thead-dark">
@@ -110,7 +112,8 @@ const DocumentList = () => {
                             {documents.map(document => (
                                 <tr key={document.id}>
                                     <td>{document.date}</td>
-                                    <td>{document.name}</td>
+                                    {/* Alpaca leaves some documents' name empty, such as the account application */}
+                                    <td>{document.name || `${TYPE_LABELS[document.type] ?? document.type}${document.date ? ` (${String(document.date).slice(0, 10)})` : ""}`}</td>
                                     <td>{TYPE_LABELS[document.type] ?? document.type}</td>
                                     <td><a href={`/api/documents/${document.id}`} target="_blank" rel="noopener noreferrer">Open</a></td>
                                 </tr>
@@ -152,8 +155,8 @@ const TaxableGainsReport = () => {
     }, [year]);
 
     if (error) return <p className="text-danger mt-3">Couldn&apos;t load the report: {error}</p>;
-    if (report === undefined) return <p className="mt-3">Loading...</p>;
-    if (report === null) return <p className="mt-3">Open an account first.</p>;
+    if (report === undefined) return <p className="empty-state">Loading...</p>;
+    if (report === null) return <p className="empty-state">Open an account first.</p>;
     const { totals, sales, federalWithheld } = report.form1099B;
     const unrealizedTotal = report.unrealized.reduce((sum, lot) => sum + (lot.unrealized ?? 0), 0);
     return (

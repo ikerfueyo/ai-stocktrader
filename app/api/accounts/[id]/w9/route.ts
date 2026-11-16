@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { clientIp, findUserAccount } from "@/lib/server/brokerAccounts";
@@ -25,6 +26,7 @@ export const GET = withUser(async (request, { params }: AccountContext, userId) 
 // with the time and IP like the one signed at onboarding
 export const POST = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
+    await requireRecentSignIn(userId);
     const body = await request.json().catch(() => null) as { backupWithholding?: unknown; certify?: unknown } | null;
     if (typeof body?.backupWithholding !== "boolean") throw new HttpError("backupWithholding must be true or false", 400);
     if (body.certify !== true) throw new HttpError("The W-9 certification must be accepted (certify: true)", 400);

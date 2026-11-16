@@ -1,4 +1,5 @@
 // Shapes shared by the API route handlers (app/api) and the pages that call them
+import type { ShownRevisions } from "./agreements";
 import type { AccountApplication } from "./kyc";
 import type { ListLocateQuotesResponse as BrokerLocateQuotes, Order as BrokerOrder } from "./server/broker/types";
 import type { TaxYear as TaxYearFigures } from "./server/broker/sim/tax";
@@ -145,13 +146,6 @@ export interface IntradayDeficit {
 export interface Account {
     // Cash less queued withdrawals (negative when borrowing on margin)
     totalCash: number;
-    // Options: what option orders can use (options_buying_power: options are paid in full, short ones need their requirement), the
-    // short options' requirement (the universal spread rule), and the effective level (the lower of the approved one and the account's
-    // own maximum) with the approved one
-    optionsBuyingPower: number;
-    optionRequirement: number;
-    optionsLevel: number;
-    optionsApprovedLevel: number;
     // What new positions can use: cash at 1x, (equity - initial margin) × the multiplier on margin, less what open orders hold back
     buyingPower: number;
     regtBuyingPower: number;
@@ -179,6 +173,9 @@ export interface Account {
     // Intraday margin deficits outstanding, and the last day of a 90-day restriction (1x, no new shorts) in force, or null
     intradayDeficits: IntradayDeficit[];
     marginRestrictedUntil: string | null;
+    // With a broker that doesn't report its margin calls (Alpaca's API has none), how far equity is below the maintenance requirement
+    // in its trading account, when it is (null otherwise, and always with the simulator, whose calls are in marginCalls)
+    belowMaintenance: number | null;
     // Whether new shorts are allowed, and if not, why
     shortingEnabled: boolean;
     shortingBlockedReason: string | null;
@@ -424,7 +421,17 @@ export interface DailyBar {
     "5. volume": string;
 }
 
-// GET /api/trading/[ticker]: Alpha Vantage's TIME_SERIES_DAILY reply, passed through as is
+// GET /api/trading/[ticker]: a stock's daily bars as parallel arrays, oldest first
+export interface DailyBars {
+    dates: string[];
+    open: number[];
+    high: number[];
+    low: number[];
+    close: number[];
+    volume: number[];
+}
+
+// Alpha Vantage's TIME_SERIES_DAILY reply
 export interface DailySeries {
     "Meta Data": Record<string, string>;
     "Time Series (Daily)": Record<string, DailyBar>;
@@ -441,45 +448,6 @@ export type TaxReport = TaxYearFigures & {
         washAdjustment: number; marketValue: number | null; unrealized: number | null; term: "short" | "long";
     }[];
 };
-
-// GET /api/options/[ticker]: one expiration of a stock's option chain, with every listed expiration. source is realtime (Alpha Vantage's
-// realtime options, or Alpaca's OPRA feed), indicative (Alpaca's free feed: quotes adjusted from OPRA's) or modeled (each quote moved
-// from the last close's by the stock's price since, at the contract's implied volatility); in an Alpaca chain, contracts without a
-// current quote there are modeled.
-export interface OptionChainResponse {
-    underlying: { symbol: string; price: number; previousClose: number | null; quoteTime: string; delay: QuoteDelay };
-    source: OptionQuoteSourceName;
-    // The session the closing prices are from ("YYYY-MM-DD"), or the newest quote's time
-    asOf: string;
-    today: string;
-    expirations: string[];
-    expiration: string;
-    contracts: OptionChainContract[];
-}
-
-export type OptionQuoteSourceName = "realtime" | "indicative" | "modeled";
-
-export interface OptionChainContract {
-    symbol: string;
-    quoteSource: OptionQuoteSourceName;
-    type: "call" | "put";
-    strike: number;
-    expiration: string;
-    bid: number;
-    ask: number;
-    mark: number;
-    // The last session's closing mark, volume and open interest
-    closeMark: number | null;
-    volume: number | null;
-    openInterest: number | null;
-    impliedVolatility: number;
-    delta: number;
-    gamma: number;
-    // Per day
-    theta: number;
-    // Per point of volatility
-    vega: number;
-}
 
 // GET /api/notifications: a notification (from a broker event, a price alert, a recurring buy, dividend reinvestment or a document)
 export interface NotificationItem {
@@ -611,14 +579,18 @@ export interface OpenIraRequest {
     subType: "traditional" | "roth";
     // The account holder's Social Security number, entered again (it isn't kept)
     taxId: string;
+    // Required when the individual account has no marital status (Alpaca needs it for beneficiaries); ignored when it has one
+    maritalStatus?: AccountApplication["identity"]["marital_status"];
     beneficiaries: { given_name: string; middle_name?: string | null; family_name: string; date_of_birth: string; tax_id: string; relationship: "spouse" | "other"; type: "primary" | "contingent"; share_pct: string }[];
     acceptedAgreements: boolean;
     iraDisclosure: boolean;
+    // The revisions of the agreements and disclosures the form showed
+    revisions: ShownRevisions;
 }
 
 // Brokerage accounts. Account objects are Alpaca's (the broker's shape), re-exported for the pages.
 export type {
-    Account as BrokerAccount, AccountConfigurations, OptionsApprovalResponse, ACHRelationship as AchRelationship, Bank as RecipientBank,
+    Account as BrokerAccount, AccountConfigurations, ACHRelationship as AchRelationship, Bank as RecipientBank,
     Transfer as BrokerTransfer, TradeAccount as BrokerTradeAccount, Activity as BrokerActivity, Position as BrokerPosition,
     Order as BrokerOrder, CreateOrderRequest as BrokerOrderRequest, UpdateOrderRequest as BrokerOrderUpdate, Asset as BrokerAsset, Locate, LocateQuote,
     ListLocateQuotesResponse, CreateLocateRequest as BrokerLocateRequest, AccountDocument as BrokerDocument
@@ -654,9 +626,11 @@ export interface BrokerAccountSummary {
     active: boolean;
 }
 
-// POST /api/accounts: an application for an individual account; options_level, with the options agreement, also asks for options
+// POST /api/accounts: an application for an individual account
 export interface OpenAccountRequest {
     application: AccountApplication;
+    // The revisions of the agreements and disclosures the form showed (lib/agreements.ts); 409 when one has changed since
+    revisions: ShownRevisions;
 }
 
 // Every error response

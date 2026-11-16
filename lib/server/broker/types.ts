@@ -69,11 +69,6 @@ export type AccountDocument = Schemas["AccountDocument"];
 export type AccountDocumentType = Schemas["AccountDocumentType"];
 export type OwnerDocumentUploadRequest = Schemas["OwnerDocumentUploadRequest"];
 
-// Options
-export type OptionContract = Schemas["OptionContract"];
-export type OptionsApprovalRequest = Schemas["OptionsApprovalRequest"];
-export type OptionsApprovalResponse = Schemas["OptionsApprovalResponse"];
-
 // Locates for hard-to-borrow short sales. Alpaca offers them in the Trading API (/v1/locates; vendor/alpaca/trading-api.json),
 // not yet in the Broker API, so their shapes come from that spec.
 export type Locate = TradingSchemas["Locate"];

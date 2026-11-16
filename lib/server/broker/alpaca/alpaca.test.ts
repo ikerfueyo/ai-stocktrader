@@ -5,13 +5,13 @@ import { BrokerError } from "../errors";
 import { HttpError, UpstreamError } from "../../httpError";
 import { alpacaConfigFromEnv, type AlpacaBrokerConfig } from "./config";
 import { TokenSource } from "./auth";
-import { buildUrl, errorFor, fallbackCode } from "./http";
-import { AlpacaBroker, redactAccount } from "./client";
+import { buildUrl, errorFor, fallbackCode, redactTaxIds } from "./http";
+import { AlpacaBroker, redactAccount, redactAchRelationship, redactBank } from "./client";
 import { resumeId, SeenIds, toBrokerEvent, RESUME_WINDOW_MS } from "./events";
-import { SseParser } from "./sse";
+import { isRoutineComment, SseParser } from "./sse";
 import { PlaidClient } from "./plaid";
 import type { BrokerEvent } from "../broker";
-import type { Account } from "../types";
+import type { Account, ACHRelationship, Bank } from "../types";
 
 // A fetch that records each call and answers from respond (a token request gets a fresh token unless respond handles it)
 interface Call {
@@ -118,7 +118,6 @@ describe("requests", () => {
         const { fetcher, apiCalls } = mockFetch(({ url, method }) => {
             if (url.includes("/oauth2/token")) return undefined;
             if (method === "DELETE" && url.endsWith("/orders")) return json([{ id: "a", status: 200 }, { id: "b", status: 500, body: {} }], 207);
-            if (url.includes("/options/approvals")) return json({ options_approvals: [] });
             return method === "DELETE" ? new Response(null, { status: 204 }) : json([]);
         });
         const broker = new AlpacaBroker(config(fetcher));
@@ -128,9 +127,7 @@ describe("requests", () => {
         await broker.listActivities(ACCOUNT, { activity_types: "FILL,DIV", page_size: 100 } as never);
         await broker.cancelOrder(ACCOUNT, "o1");
         assert.deepEqual(await broker.cancelAllOrders(ACCOUNT), [{ id: "a", status: 200 }, { id: "b", status: 500 }]);
-        await broker.listOptionsApprovals(ACCOUNT);
         await broker.getCalendar("2026-10-01", "2026-10-31");
-        await broker.exerciseOption(ACCOUNT, "F261120C00012000", { qty: "1" });
         await broker.listTransfers(ACCOUNT, { direction: "INCOMING" } as never);
         await broker.deleteAchRelationship(ACCOUNT, "r1");
         const requests = apiCalls().map(({ method, url }) => `${method} ${url.replace("https://broker.test", "").replaceAll(ACCOUNT, "{id}")}`);
@@ -141,9 +138,7 @@ describe("requests", () => {
             "GET /v1/accounts/activities?activity_types=FILL%2CDIV&page_size=100&account_id={id}",
             "DELETE /v1/trading/accounts/{id}/orders/o1",
             "DELETE /v1/trading/accounts/{id}/orders",
-            "GET /v1/accounts/options/approvals?account_id={id}",
             "GET /v1/calendar?start=2026-10-01&end=2026-10-31",
-            "POST /v1/trading/accounts/{id}/positions/F261120C00012000/exercise",
             "GET /v1/accounts/{id}/transfers?direction=INCOMING",
             "DELETE /v1/accounts/{id}/ach_relationships/r1"
         ]);
@@ -153,18 +148,6 @@ describe("requests", () => {
         const { fetcher, apiCalls } = mockFetch(({ url }) => url.includes("ach_relationships") ? json({ id: "r1", status: "QUEUED" }) : undefined);
         await new AlpacaBroker(config(fetcher)).createAchRelationship(ACCOUNT, { processor_token: "processor-sandbox-1" } as never);
         assert.deepEqual(JSON.parse(apiCalls()[0].body!), { processor_token: "processor-sandbox-1" });
-    });
-
-    test("paged lists are followed to the limit asked for", async () => {
-        const { fetcher, apiCalls } = mockFetch(({ url }) => {
-            if (!url.includes("/options/contracts")) return undefined;
-            const token = new URL(url).searchParams.get("page_token");
-            const contracts = Array.from({ length: 3 }, (_, index) => ({ symbol: `${token ?? "p0"}-${index}` }));
-            return json({ option_contracts: contracts, next_page_token: token === "p2" ? null : token ? `p${Number(token.slice(1)) + 1}` : "p1" });
-        });
-        const contracts = await new AlpacaBroker(config(fetcher)).listOptionContracts({ underlying_symbols: "F", limit: 7 });
-        assert.deepEqual(contracts.map(({ symbol }) => symbol), ["p0-0", "p0-1", "p0-2", "p1-0", "p1-1", "p1-2", "p2-0"]);
-        assert.deepEqual(apiCalls().map(({ url }) => new URL(url).searchParams.get("limit")), ["7", "4", "1"]);
     });
 
     test("configurations are the trading account's user configurations", async () => {
@@ -248,6 +231,14 @@ describe("errors", () => {
         assert.equal((errorFor(404, "", "GET /x") as BrokerError).message, "HTTP 404");
     });
 
+    test("a tax ID Alpaca echoes back is masked to its last 4 digits, in 4xx and 5xx messages alike", () => {
+        const echoed = errorFor(422, JSON.stringify({ code: 40010001, message: "identity.tax_id 123-45-6789 is invalid (also 987654321)" }), "POST /v1/accounts");
+        assert.equal(echoed.message, "identity.tax_id xxx-xx-6789 is invalid (also xxx-xx-4321)");
+        assert.ok(!errorFor(500, "tax_id=123456789", "POST /v1/accounts").message.includes("123456789"));
+        // Dates, UUIDs, amounts and account numbers inside longer runs are left alone
+        assert.equal(redactTaxIds("2026-11-10 9e3815e4-1234-4321-8888-123456789012 $1,234.56"), "2026-11-10 9e3815e4-1234-4321-8888-123456789012 $1,234.56");
+    });
+
     test("5xx replies are the upstream's, a 504 kept as a timeout", () => {
         const bad = errorFor(500, "{}", "GET /v1/clock");
         assert.ok(bad instanceof UpstreamError && !(bad instanceof BrokerError));
@@ -289,6 +280,12 @@ describe("tax IDs", () => {
         const account = { id: ACCOUNT, identity: { given_name: "A", family_name: "B" } } as unknown as Account;
         assert.deepEqual(redactAccount(account), account);
     });
+
+    test("bank account numbers come back with their last 4 digits only", () => {
+        const link = { id: "r1", bank_account_number: "123456789", bank_routing_number: "011000015", status: "QUEUED" } as unknown as ACHRelationship;
+        assert.equal(redactAchRelationship(link).bank_account_number, "••••6789");
+        assert.equal(redactBank({ id: "b1", account_number: "0001234567", bank_code: "011000015" } as unknown as Bank).account_number, "••••4567");
+    });
 });
 
 describe("events", () => {
@@ -299,6 +296,9 @@ describe("events", () => {
         assert.deepEqual(parser.push(":1}\r\n\r\ndata: line one\ndata: line two\nid: 7\n"), [{ data: "{\"a\":1}", id: undefined, event: undefined }]);
         assert.deepEqual(parser.push("\n\n"), [{ data: "line one\nline two", id: "7", event: undefined }]);
         assert.deepEqual(comments, ["you are reading too slowly, dropped 10 messages"]);
+        // Keep-alives and the greeting aren't logged; the slow-client notice is
+        assert.ok(isRoutineComment("heartbeat") && isRoutineComment(" welcome to the Alpaca events"));
+        assert.ok(!isRoutineComment("you are reading too slowly, dropped 10 messages"));
     });
 
     test("a stream resumes a few minutes before the checkpoint", () => {
@@ -372,7 +372,7 @@ describe("events", () => {
             stop = broker.subscribe(["trades", "accounts"], async event => {
                 received.push(event);
                 if (received.filter(({ stream }) => stream === "trades").length === 3) resolve();
-            }, checkpoint);
+            }, { streams: {}, shared: checkpoint });
         });
         await done;
         stop();
@@ -387,6 +387,46 @@ describe("events", () => {
         const count = connections.length;
         await new Promise(next => setTimeout(next, 20));
         assert.ok(connections.length <= count + 2);
+    });
+
+    test("each stream resumes from its own cursor, and an event the handler rejects comes again before any later one", async () => {
+        const sse = (...events: unknown[]) => new Response(new ReadableStream({
+            start(controller) {
+                for (const event of events) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+                controller.close();
+            }
+        }), { headers: { "Content-Type": "text/event-stream" } });
+        const fill = (id: string) => ({ event_id: id, account_id: ACCOUNT, at: "2026-10-28T15:00:00Z", event: "fill", order: {} });
+        const connections: string[] = [];
+        let tradeConnections = 0;
+        const { fetcher } = mockFetch(({ url }) => {
+            if (url.includes("/oauth2/token")) return undefined;
+            connections.push(url.replace("https://broker.test", ""));
+            if (url.includes("/v2/events/trades")) {
+                tradeConnections++;
+                // Alpaca sends what follows the since_id it was given
+                return tradeConnections === 1 ? sse(fill("01D"), fill("01E"), fill("01F")) : sse(fill("01E"), fill("01F"));
+            }
+            return sse();
+        });
+        const handled: string[] = [];
+        let failures = 0;
+        let stop = () => {};
+        await new Promise<void>(resolve => {
+            const broker = new AlpacaBroker(config(fetcher), { minBackoffMs: 1, maxBackoffMs: 1, log: () => {}, sleep: () => new Promise(next => setTimeout(next, 1)) });
+            stop = broker.subscribe(["trades", "accounts"], async event => {
+                // 01E fails the first time (a database write, say)
+                if (event.id === "01E" && failures++ === 0) throw new Error("write failed");
+                handled.push(event.id);
+                if (handled.includes("01F")) resolve();
+            }, { streams: { trades: "01C" }, shared: ulid(Date.UTC(2026, 9, 28, 15)) });
+        });
+        stop();
+        assert.deepEqual(handled, ["01D", "01E", "01F"]);
+        // trades from its own cursor exactly, then after the last event handled (01D, not 01E); accounts, without its own, near the shared one
+        assert.equal(connections.filter(url => url.startsWith("/v2/events/trades"))[0], "/v2/events/trades?since_id=01C");
+        assert.equal(connections.filter(url => url.startsWith("/v2/events/trades"))[1], "/v2/events/trades?since_id=01D");
+        assert.ok(connections.includes(`/v1/events/accounts/status?since_ulid=${resumeId(ulid(Date.UTC(2026, 9, 28, 15)))}`));
     });
 });
 

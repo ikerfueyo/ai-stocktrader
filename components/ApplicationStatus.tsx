@@ -3,6 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
+import { useBrokerInfo } from "@/context/BrokerInfoContext";
 import type { BrokerAccount, BrokerAccountSummary } from "@/lib/types";
 
 const MESSAGES: Record<string, { title: string; body: string }> = {
@@ -30,6 +31,7 @@ const readBase64 = (file: File) => new Promise<string>((resolve, reject) => {
 // The application's review status while the account isn't open yet (AccountGate polls it): pending, waiting on a document
 // (with an upload form), rejected or closed (with a way to apply again)
 const ApplicationStatus = ({ account, onChanged, onReapply }: { account: BrokerAccountSummary; onChanged: () => Promise<void>; onReapply: () => void }) => {
+    const { simulated } = useBrokerInfo();
     const [details, setDetails] = useState<BrokerAccount | null>(null);
     const [subType, setSubType] = useState(ID_TYPES[0].subType);
     const [file, setFile] = useState<File | null>(null);
@@ -91,7 +93,7 @@ const ApplicationStatus = ({ account, onChanged, onReapply }: { account: BrokerA
                     <label className="transfer-field">
                         <span className="transfer-field-label">Photo or scan (PDF, PNG or JPEG, up to 5 MB)</span>
                         <input className="form-control" type="file" accept="application/pdf,image/png,image/jpeg" onChange={event => setFile(event.target.files?.[0] ?? null)} />
-                        <small className="text-muted">In the simulator only the file&apos;s type and a fingerprint are kept; use a test image.</small>
+                        {simulated && <small className="text-muted">In the simulator only the file&apos;s type and a fingerprint are kept; use a test image.</small>}
                     </label>
                     {error && <p className="text-danger">{error}</p>}
                     <button type="submit" className="btn btn-dark" disabled={!file || uploading}>{uploading ? "Uploading…" : "Upload"}</button>

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount } from "@/lib/server/brokerAccounts";
@@ -11,6 +12,7 @@ interface BankContext {
 export const DELETE = withUser(async (request, { params }: BankContext, userId) => {
     const { id, bankId } = await params;
     const { account_id } = await findUserAccount(userId, id);
+    await requireRecentSignIn(userId);
     await getBroker().deleteRecipientBank(account_id, bankId);
     return new NextResponse(null, { status: 204 });
 });

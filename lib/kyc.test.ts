@@ -1,12 +1,12 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { ageOn, isValidItin, isValidSsn, maskTaxId, validateApplication, type AccountApplication } from "./kyc";
+import { AGREEMENTS, ageOn, isValidItin, isValidSsn, maskTaxId, validateApplication, type AccountApplication, type AgreementName, type MaritalStatus } from "./kyc";
 
 const TODAY = "2026-10-27";
 const application = (overrides: Partial<AccountApplication> = {}): AccountApplication => ({
     contact: { email_address: "test@example.com", phone_number: "(555) 555-0100", street_address: ["20 N San Mateo Dr"], city: "San Mateo", state: "CA", postal_code: "94401", country: "USA" },
     identity: {
-        given_name: "Test", family_name: "User", date_of_birth: "1990-01-15", tax_id: "123-45-6789", tax_id_type: "USA_SSN",
+        given_name: "Test", family_name: "User", date_of_birth: "1990-01-15", tax_id: "512-39-8476", tax_id_type: "USA_SSN",
         country_of_citizenship: "USA", country_of_tax_residence: "USA", funding_source: ["employment_income"]
     },
     disclosures: { is_control_person: false, is_affiliated_exchange_or_finra: false, is_politically_exposed: false, immediate_family_exposed: false, employment_status: "retired" },
@@ -18,7 +18,10 @@ const application = (overrides: Partial<AccountApplication> = {}): AccountApplic
 
 describe("Tax IDs", () => {
     test("SSNs can't have a 000, 666 or 9xx area, a 00 group or a 0000 serial", () => {
-        assert.equal(isValidSsn("123-45-6789"), true);
+        assert.equal(isValidSsn("512-39-8476"), true);
+        assert.equal(isValidSsn("123-45-6788"), true);
+        // Patterns Alpaca refuses: increasing (wrapping 9 to 0), decreasing, all the same
+        for (const ssn of ["123-45-6789", "345-67-8901", "876-54-3210", "555-55-5555"]) assert.equal(isValidSsn(ssn), false, ssn);
         for (const ssn of ["000-12-3456", "666-12-3456", "912-34-5678", "123-00-4567", "123-45-0000", "12345678"]) assert.equal(isValidSsn(ssn), false, ssn);
     });
 
@@ -58,29 +61,26 @@ describe("validateApplication", () => {
         assert.deepEqual(Object.keys(errors).sort(), ["disclosures.immediate_family_exposed", "disclosures.is_control_person"]);
     });
 
-    test("needs the customer and account agreements, the W-9 and the disclosures, and options need a level and experience", () => {
+    test("needs the customer and account agreements, the W-9 and the disclosures", () => {
         const errors = validateApplication(application({
-            agreements: ["customer_agreement", "options_agreement"],
+            agreements: ["customer_agreement"],
             w9: { certified: false, backup_withholding: false },
             disclosures_delivered: { form_crs: true, privacy_notice: false }
         }), TODAY);
-        assert.deepEqual(Object.keys(errors).sort(), ["agreements", "disclosures_delivered", "identity.annual_income_min", "identity.investment_experience_with_options",
-            "identity.investment_objective", "identity.investment_time_horizon", "identity.liquidity_needs", "identity.marital_status", "identity.number_of_dependents",
-            "identity.risk_tolerance", "options_level", "w9"]);
+        assert.deepEqual(Object.keys(errors).sort(), ["agreements", "disclosures_delivered", "w9"]);
     });
 
-    test("options pass with the level, experience, income and suitability answers", () => {
+    test("there's no options agreement, and an old form's asks for nothing more", () => {
+        assert.equal((AGREEMENTS as readonly string[]).includes("options_agreement"), false);
         const base = application();
-        const errors = validateApplication(application({
-            agreements: [...base.agreements, "options_agreement"],
-            options_level: 2,
-            identity: {
-                ...base.identity, annual_income_min: "50000", annual_income_max: "99999", investment_experience_with_options: "1_to_5_years",
-                liquidity_needs: "somewhat_important", risk_tolerance: "moderate", investment_objective: "growth", investment_time_horizon: "3_to_5_years",
-                marital_status: "SINGLE", number_of_dependents: 0
-            }
-        }), TODAY);
+        const errors = validateApplication({ ...base, agreements: [...base.agreements, "options_agreement" as AgreementName] }, TODAY);
         assert.deepEqual(errors, {});
+    });
+
+    test("marital status is optional, and one of Alpaca's values", () => {
+        const base = application();
+        assert.deepEqual(validateApplication(application({ identity: { ...base.identity, marital_status: "MARRIED" } }), TODAY), {});
+        assert.deepEqual(Object.keys(validateApplication(application({ identity: { ...base.identity, marital_status: "ENGAGED" as MaritalStatus } }), TODAY)), ["identity.marital_status"]);
     });
 
     test("an employed applicant names the employer and position", () => {

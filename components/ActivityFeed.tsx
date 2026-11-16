@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { contractMultiplier, contractName } from "@/lib/options";
+import { readableDescription } from "@/lib/activityText";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { useBrokerAccount } from "@/context/BrokerAccountContext";
@@ -17,26 +17,23 @@ const FILTERS = [
     { label: "Interest", types: "INT" },
     { label: "Withholding", types: "WH" },
     { label: "Dividends", types: "DIV" },
-    { label: "Corporate actions", types: "SPLIT,MA,SPIN,REORG,CIL" },
-    { label: "Option exercises & expirations", types: "OPEXC,OPASN,OPEXP" }
+    { label: "Corporate actions", types: "SPLIT,MA,SPIN,REORG,CIL" }
 ];
-const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split", INT: "Interest", MA: "Merger", SPIN: "Spinoff", REORG: "Removal", CIL: "Cash in lieu", WH: "Withholding",
-    OPEXC: "Option exercise", OPASN: "Option assignment", OPEXP: "Option expiration" };
+const TYPE_LABELS: Record<string, string> = { FILL: "Trade", CSD: "Deposit", CSW: "Withdrawal", FEE: "Fee", DIV: "Dividend", SPLIT: "Split", INT: "Interest", MA: "Merger", SPIN: "Spinoff", REORG: "Removal", CIL: "Cash in lieu", WH: "Withholding" };
 
 // The fields the feed shows, from either a trade activity or a non-trade one
 const describe = (activity: BrokerActivity) => {
     const fill = activity as BrokerActivity & { transaction_time?: string; side?: string; qty?: string; price?: string; symbol?: string };
     const other = activity as BrokerActivity & { created_at?: string; date?: string; description?: string; net_amount?: string };
     if (activity.activity_type === "FILL") {
-        // An option's contracts are 100 shares each
-        const amount = Number(fill.qty) * Number(fill.price) * contractMultiplier(fill.symbol ?? "");
+        const amount = Number(fill.qty) * Number(fill.price);
         return {
             date: fill.transaction_time ?? "", type: TYPE_LABELS.FILL,
-            details: `${fill.side === "buy" ? "Bought" : "Sold"} ${formatShares(Number(fill.qty))} ${contractName(fill.symbol ?? "")} at ${formatCurrency(Number(fill.price))}`,
+            details: `${fill.side === "buy" ? "Bought" : "Sold"} ${formatShares(Number(fill.qty))} ${fill.symbol ?? ""} at ${formatCurrency(Number(fill.price))}`,
             amount: fill.side === "buy" ? -amount : amount
         };
     }
-    return { date: other.created_at ?? other.date ?? "", type: TYPE_LABELS[activity.activity_type] ?? activity.activity_type, details: other.description ?? "", amount: Number(other.net_amount ?? 0) };
+    return { date: other.created_at ?? other.date ?? "", type: TYPE_LABELS[activity.activity_type] ?? activity.activity_type, details: readableDescription(other.description ?? ""), amount: Number(other.net_amount ?? 0) };
 };
 
 const csvCell = (value: string | number) => /[",\n]/.test(String(value)) ? `"${String(value).replaceAll('"', '""')}"` : String(value);
@@ -85,8 +82,8 @@ const ActivityFeed = () => {
                 <button type="button" className="btn btn-sm btn-outline-dark" disabled={rows.length === 0} onClick={exportCsv}>Export CSV</button>
             </div>
             {error ? <p className="text-danger">Couldn&apos;t load the activity: {error}</p>
-                : activities === null ? <p>Loading...</p>
-                : rows.length === 0 ? <p className="mt-3">No activity yet.</p>
+                : activities === null ? <p className="empty-state">Loading...</p>
+                : rows.length === 0 ? <p className="empty-state">No activity yet.</p>
                 : (
                     <div className="table-container mt-2">
                         <table className="table text-center">

@@ -2,7 +2,8 @@ import "server-only";
 import { filterTradable } from "./assets";
 import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
-import { cachePromise, singleton, type CacheEntry } from "./cache";
+import { cachePromise, singleton, staleWhileRevalidate, type CacheEntry, type StaleEntry } from "./cache";
+import { inBackgroundLane } from "./rateLimit";
 import { UpstreamError } from "./httpError";
 import pool from "./db";
 import { fetchCompanyOverview, fetchDailyCloses, fetchEarnings, fetchEarningsEstimates, fetchNews, fetchNextReport, fetchTickerNews, mainTickers, parseNewsTime, type NewsItem } from "./marketData";
@@ -32,6 +33,14 @@ const formatNews = (news: NewsItem[]) => news.map(item => `Published: ${formatPu
 
 type AnalystOptions = Pick<ChatCompletionCreateParamsNonStreaming, "response_format" | "temperature">;
 
+// OpenAI's errors as the error contract's: a timeout 504, any other API error 502. Mapped here rather than in errors.ts, so the API
+// routes don't all bundle the OpenAI SDK.
+const toUpstreamError = (error: unknown) => {
+    if (error instanceof OpenAI.APIConnectionTimeoutError) return new UpstreamError(error.message, 504);
+    if (error instanceof OpenAI.APIError) return new UpstreamError(error.message);
+    return error;
+};
+
 const askAnalyst = async (content: string, options: AnalystOptions = {}) => {
     const response = await openai().chat.completions.create({
         model: MODEL,
@@ -43,7 +52,7 @@ const askAnalyst = async (content: string, options: AnalystOptions = {}) => {
             { role: "user", content }
         ],
         ...options
-    });
+    }).catch(error => { throw toUpstreamError(error); });
     return (response.choices[0].message.content ?? "").trim();
 };
 
@@ -254,12 +263,14 @@ export interface PositionContext {
 }
 
 // The Portfolio page's hold/sell (or hold/cover) verdict, taken from analyzeTicker, and a structured analysis written for the
-// position that explains it, from the same inputs plus the position. Cached per user, ticker, side and verdict, so a refreshed
+// position that explains it, from the same inputs plus the position. Cached per user, account, ticker, side, verdict, shares and average cost, so a refreshed
 // ticker analysis with a new verdict gets a new one.
-export const analyzePosition = async (userId: string, ticker: string, side: Side, context: PositionContext): Promise<PositionAnalysis> => {
+export const analyzePosition = async (userId: string, accountId: string, ticker: string, side: Side, context: PositionContext): Promise<PositionAnalysis> => {
     const { verdict: tickerVerdict, inputs } = await analyzeTicker(ticker);
     const verdict = POSITION_VERDICTS[side][tickerVerdict];
-    return cachePromise(positionAnalysisCache, `${userId}:${ticker}:${side}:${verdict}`, ANALYSIS_CACHE_MS, async () => {
+    // Per account and position too: an IRA and the individual account can hold the same stock, and a trade changes the position
+    const key = [userId, accountId, ticker, side, verdict, figure(context.shares, 6), figure(context.avgCost, 4)].join(":");
+    return cachePromise(positionAnalysisCache, key, ANALYSIS_CACHE_MS, async () => {
         const position = [
             side === "long" ? `The user owns ${figure(context.shares, 6)} shares of ${ticker}` : `The user is short ${figure(context.shares, 6)} shares of ${ticker}`,
             ` at an average ${side === "long" ? "cost" : "sale price"} of $${figure(context.avgCost)}`,
@@ -287,7 +298,7 @@ const STOCKS_PER_SIDE = 30;
 // Average sentiment beyond which Alpha Vantage labels news somewhat bullish or bearish
 const MIN_STOCK_SENTIMENT = 0.15;
 const ARTICLES_PER_STOCK = 4;
-const rankingsCache = singleton("rankingsCache", () => new Map<string, CacheEntry<Rankings>>());
+const rankingsCache = singleton("rankings", (): StaleEntry<Rankings> => ({ loaded: false, expires: 0 }));
 
 interface StockNews {
     ticker: string;
@@ -377,5 +388,8 @@ const buildRankings = async (): Promise<Rankings> => {
     return { buy: confirmedBuys.picks, sell: confirmedSells.picks };
 };
 
-// Up to 5 buy and 5 sell stocks, cached for 30 minutes
-export const getRankings = () => cachePromise(rankingsCache, "rankings", RANKINGS_CACHE_MS, buildRankings);
+// Up to 5 buy and 5 sell stocks, rebuilt every 30 minutes. Once they exist, a rebuild runs behind the last rankings, which are served
+// meanwhile (a rebuild takes tens of seconds), and its Alpha Vantage calls go in the background lane, behind the quotes and pages
+// waiting on Alpha Vantage. While it runs, a listed stock's Trading page may already show its new analysis.
+export const getRankings = () => staleWhileRevalidate(rankingsCache, RANKINGS_CACHE_MS, () => inBackgroundLane(buildRankings),
+    error => console.error(`GET /api/rankings: rebuilding: ${error instanceof Error ? error.message : error}; serving the previous rankings`));

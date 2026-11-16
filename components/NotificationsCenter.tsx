@@ -11,6 +11,7 @@ import { ALERT_LABELS, describeAlert, FREQUENCY_LABELS, type AlertCondition, typ
 import { KIND_LABELS, NOTIFICATION_KINDS } from "@/lib/server/notificationRules";
 import { timeAgo } from "./NotificationBell";
 import type { DripSettings, NotificationItem, NotificationPreferences, NotificationsResponse, PriceAlert, RecurringInvestment } from "@/lib/types";
+import { leavePage } from "@/lib/pageRequests";
 
 export type NotificationsTab = "notifications" | "alerts" | "recurring" | "drip" | "preferences";
 
@@ -100,7 +101,7 @@ const NotificationList = () => {
         if (!item.read) markRead([item.id]);
         if (!item.link) return;
         if (item.link.startsWith("/api/")) window.open(item.link, "_blank", "noopener,noreferrer");
-        else router.push(item.link);
+        else { leavePage(item.link); router.push(item.link); }
     };
     if (error) return <p className="text-danger">{error}</p>;
     if (!data) return <p>Loading...</p>;

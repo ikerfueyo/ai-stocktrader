@@ -54,8 +54,6 @@ export interface OrderContext {
     // The account's other open orders in the symbol
     openOrders: OpenOrderSummary[];
     configurations: { fractional_trading?: boolean; no_shorting?: boolean };
-    // Long shares that cover short calls (./options.ts sharesCoveringCalls), which can't be sold while they do
-    lockedShares?: number;
 }
 
 const invalid = (message: string) => new BrokerError(422, 40010001, message);
@@ -99,7 +97,7 @@ export const parseOrderRequest = (request: Partial<CreateOrderRequest> | null): 
     if (!ORDER_TYPES.includes(request.type as OrderType)) throw invalid(`invalid order type ${request.type ?? ""}`.trim());
     if (!TIMES_IN_FORCE.includes(request.time_in_force as TimeInForce)) throw invalid(`invalid time_in_force ${request.time_in_force ?? ""}`.trim());
     const orderClass = (request.order_class || "simple") as SimOrderClass;
-    if (request.order_class === "mleg") throw invalid("mleg orders are for options");
+    if (request.order_class === "mleg") throw invalid("multi-leg orders aren't offered");
     if (!ORDER_CLASSES.includes(orderClass)) throw invalid(`invalid order_class ${request.order_class}`);
     if (request.position_intent !== undefined && !POSITION_INTENTS.includes(request.position_intent)) throw invalid(`invalid position_intent ${request.position_intent}`);
     const clientOrderId = request.client_order_id === undefined || request.client_order_id === "" ? null : String(request.client_order_id);
@@ -263,7 +261,7 @@ export const validateOrder = (spec: OrderSpec, context: OrderContext, { groupId 
     // An order can't go through zero: against a position it closes no more than the shares the other open orders don't already hold
     // (a *_to_close order is capped at the position when it fills, so it only needs some to be available)
     if (closesPosition(side, context.position)) {
-        const available = Math.max(0, Math.abs(context.position) - heldByOrders(spec, context) - (side === "sell" ? context.lockedShares ?? 0 : 0));
+        const available = Math.max(0, Math.abs(context.position) - heldByOrders(spec, context));
         const requested = qty ?? (context.price ? notional! / context.price : 0);
         const capped = spec.positionIntent?.endsWith("_to_close");
         if (capped ? available <= 1e-9 : requested > available + 1e-9) {

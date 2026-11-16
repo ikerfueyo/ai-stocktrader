@@ -9,7 +9,7 @@ import type { PortfolioPosition } from "@/lib/types";
 // cache). Runs the
 // paid dividends and the collateral buy-in check first.
 export const GET = withUser(async (request, context, userId) => {
-    await withAccountLock(userId, db => updateAccount(userId, "GET /api/portfolio", db));
+    await withAccountLock(userId, db => updateAccount(userId, "GET /api/portfolio", db, { throttle: true }));
     const positions = (await getPositions(userId)).sort((a, b) => a.ticker.localeCompare(b.ticker));
     // One ticker's price failing (rate limit, outage) shouldn't hide the rest of the portfolio
     const quotes = await Promise.allSettled(fetchQuotes(positions.map(({ ticker }) => ticker)));

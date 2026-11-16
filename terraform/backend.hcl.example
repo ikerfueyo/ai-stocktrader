@@ -1,6 +1,0 @@
-# Copy to backend.hcl and run `terraform init -backend-config=backend.hcl`. The bucket is the one bootstrap/ creates.
-bucket       = "ai-stocktrader-tfstate-123456789012"
-key          = "ai-stocktrader/terraform.tfstate"
-region       = "us-east-1"
-encrypt      = true
-use_lockfile = true

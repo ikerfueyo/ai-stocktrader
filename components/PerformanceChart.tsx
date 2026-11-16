@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { formatCurrency, formatSigned } from "@/lib/orders";
 import type { HistoryRange, PortfolioHistory } from "@/lib/types";
+import { CHART_COLORS, CHART_LAYOUT } from "@/lib/chartTheme";
+import Plot from "./Plot";
 
-// Plotly needs the browser's window, so the chart only renders on the client
-const Plot = dynamic(() => import("react-plotly.js"), { ssr: false, loading: () => <p>Loading chart...</p> });
 
 const RANGES: HistoryRange[] = ["1W", "1M", "3M", "YTD", "1Y", "ALL"];
 
@@ -87,19 +86,20 @@ const PerformanceChart = () => {
                     data={[
                         {
                             x: points.map(({ date }) => date), y: points.map(({ twr }) => twr === null ? null : twr * 100),
-                            type: "scatter", mode: "lines", name: "Your return", line: { color: "#00a5a8", width: 3 },
+                            type: "scatter", mode: "lines", name: "Your return", line: { color: CHART_COLORS.teal, width: 2.5 }, fill: "tozeroy", fillcolor: "rgba(0, 165, 168, 0.08)",
                             customdata: points.map(({ equity }) => formatCurrency(equity)),
                             hovertemplate: "%{x}<br>Return %{y:.2f}%<br>Equity %{customdata}<extra></extra>"
                         },
                         {
                             x: points.map(({ date }) => date), y: points.map(({ benchmark }) => benchmark === null ? null : benchmark * 100),
-                            type: "scatter", mode: "lines", name: history.benchmark, line: { color: "#868e96", width: 2, dash: "dot" },
+                            type: "scatter", mode: "lines", name: history.benchmark, line: { color: CHART_COLORS.benchmark, width: 1.5, dash: "dot" },
                             hovertemplate: "%{x}<br>" + history.benchmark + " %{y:.2f}%<extra></extra>"
                         }
                     ]}
                     layout={{
+                        ...CHART_LAYOUT,
                         margin: { t: 10, r: 10, b: 40, l: 50 },
-                        yaxis: { ticksuffix: "%", zeroline: true },
+                        yaxis: { ...CHART_LAYOUT.yaxis, ticksuffix: "%", zeroline: true },
                         legend: { orientation: "h", y: -0.15 },
                         hovermode: "x unified"
                     }}

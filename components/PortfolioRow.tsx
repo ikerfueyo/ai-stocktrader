@@ -10,7 +10,6 @@ import PositionLots from "./PositionLots";
 import { useAccount } from "@/context/AccountContext";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { convertValue, describePlacedOrder, formatCurrency, formatPrice, formatShares, formatSigned, roundCents, toOrder, type TradeMode } from "@/lib/orders";
-import { contractMultiplier, contractName, daysToExpiration, parseOptionSymbol } from "@/lib/options";
 import type { AppOrder, BrokerOrderRequest, PortfolioPosition, PositionAnalysis, PositionVerdict } from "@/lib/types";
 
 const VERDICT_LABELS: Record<PositionVerdict, string> = { HOLD: "Hold", SELL: "Sell", COVER: "Cover" };
@@ -36,10 +35,6 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
     const { ticker, quantity, avgCost, price, previousClose, bid, ask, error } = position;
     const isLong = quantity > 0;
     const shares = Math.abs(quantity);
-    // An option position is in contracts of 100 shares: its values are × 100, and it closes in whole contracts
-    const contract = parseOptionSymbol(ticker);
-    const multiplier = contractMultiplier(ticker);
-    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
 
     // tradeValue is a number of shares, or a dollar amount in "dollars" mode
     const [mode, setMode] = useState<TradeMode>("shares");
@@ -50,7 +45,6 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
     const [analysisError, setAnalysisError] = useState<string | null>(null);
     const [loadingAnalysis, setLoadingAnalysis] = useState(false);
     const [showLots, setShowLots] = useState(false);
-    const [exercising, setExercising] = useState(false);
     const { refreshAccount } = useAccount();
 
     const hasPrice = price !== null;
@@ -60,15 +54,15 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
     // A partial sell can leave the stepper above what's left of the position
     const stepperValue = Math.min(tradeValue, maxValue);
     const sized = toOrder({ mode, value: stepperValue, price: tradePrice, maxShares: shares });
-    // Contracts close in whole contracts, and shorts are covered in whole shares, since a fractional cover is refused
-    const wholeOnly = contract !== null || !isLong;
+    // Shorts are covered in whole shares, since a fractional cover is refused
+    const wholeOnly = !isLong;
     const closeQuantity = wholeOnly ? Math.floor(sized.quantity) : sized.quantity;
-    const total = roundCents(sized.total * multiplier);
+    const total = roundCents(sized.total);
     // quantity is signed, so a short gains when the price falls
-    const gain = hasPrice ? (price - avgCost) * quantity * multiplier : null;
-    const dayChange = hasPrice && previousClose !== null ? (price - previousClose) * quantity * multiplier : null;
+    const gain = hasPrice ? (price - avgCost) * quantity : null;
+    const dayChange = hasPrice && previousClose !== null ? (price - previousClose) * quantity : null;
     const dayPercent = hasPrice && previousClose ? ((price - previousClose) / previousClose) * 100 * Math.sign(quantity) : null;
-    const gainPercent = gain !== null && avgCost > 0 ? (gain / (shares * avgCost * multiplier)) * 100 : null;
+    const gainPercent = gain !== null && avgCost > 0 ? (gain / (shares * avgCost)) * 100 : null;
 
     const onModeChange = (nextMode: TradeMode) => {
         if (nextMode === mode) return;
@@ -100,7 +94,7 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
                 setStatus({ ok: true, message: `The market is closed: ${action === "sell" ? "selling" : "covering"} ${size.qty ? `${formatShares(size.qty)} ${ticker}` : `${formatCurrency(size.notional!)} of ${ticker}`} is queued as a market order for the open.` });
                 onQueued();
             } else if (order.status === "filled") {
-                setStatus({ ok: true, message: `${isLong ? "Sold" : "Covered"} ${formatShares(filled)} ${contractName(ticker)} at ${formatPrice(order.filled_avg_price!)} (${formatCurrency(filled * Number(order.filled_avg_price) * multiplier)})` });
+                setStatus({ ok: true, message: `${isLong ? "Sold" : "Covered"} ${formatShares(filled)} ${ticker} at ${formatPrice(order.filled_avg_price!)} (${formatCurrency(filled * Number(order.filled_avg_price))})` });
                 onTrade(ticker, isLong ? -filled : filled);
             } else {
                 const placed = describePlacedOrder(order);
@@ -114,24 +108,6 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
             setStatus({ ok: false, message: `Couldn't ${action} ${ticker}: ${apiErrorMessage(error)}` });
         } finally {
             setSubmitting(false);
-        }
-    };
-
-    // Exercises every contract of a long option now: a call buys its shares at the strike, a put sells them
-    const onExercise = async () => {
-        if (!contract || !window.confirm(`Exercise ${formatShares(shares)} ${contractName(ticker)}? This ${contract.type === "call" ? "buys" : "sells"} ${formatShares(shares * multiplier)} shares of ${contract.underlying} at $${contract.strike}.`)) return;
-        setExercising(true);
-        setStatus(null);
-        try {
-            await axios.post(`/api/positions/${ticker}/exercise`, {});
-            setStatus({ ok: true, message: `Exercised ${formatShares(shares)} ${contractName(ticker)}: ${contract.type === "call" ? "bought" : "sold"} ${formatShares(shares * multiplier)} ${contract.underlying} at $${contract.strike}` });
-            onTrade(ticker, -quantity);
-            refreshAccount();
-        } catch (error) {
-            logError(error);
-            setStatus({ ok: false, message: `Couldn't exercise ${contractName(ticker)}: ${apiErrorMessage(error)}` });
-        } finally {
-            setExercising(false);
         }
     };
 
@@ -157,14 +133,13 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
         <Fragment>
             <tr>
                 <td>
-                    <Link href={`/trading/${contract?.underlying ?? ticker}`} className="portfolio-ticker">{contract ? contractName(ticker) : ticker}</Link>
+                    <Link href={`/trading/${ticker}`} className="portfolio-ticker">{ticker}</Link>
                     <span className={`position-side ${isLong ? "long" : "short"}`}>{isLong ? "LONG" : "SHORT"}</span>
-                    {contract && <span className="option-dte" title={`Expires ${contract.expiration}`}>{daysToExpiration(contract.expiration, today)}d</span>}
                 </td>
-                <td>{formatShares(shares)}{contract ? <span className="fill-detail">contract{shares === 1 ? "" : "s"}</span> : null}</td>
+                <td>{formatShares(shares)}</td>
                 <td>{formatCurrency(avgCost)}</td>
                 <td title={error ?? undefined}>{hasPrice ? formatCurrency(price) : "—"}</td>
-                <td>{hasPrice ? formatCurrency(shares * price * multiplier) : "—"}</td>
+                <td>{hasPrice ? formatCurrency(shares * price) : "—"}</td>
                 <td className={`price-change ${(dayChange ?? 0) >= 0 ? "positive" : "negative"}`}>
                     {dayChange !== null && dayPercent !== null ? `${formatSigned(dayChange)} (${dayPercent >= 0 ? "+" : ""}${dayPercent.toFixed(2)}%)` : "—"}
                 </td>
@@ -181,21 +156,16 @@ const PortfolioRow = ({ position, onTrade, setStatus, marketOpen = true, onQueue
                         </div>
                         <button className={isLong ? "sell-btn" : "buy-btn"} onClick={onClosePosition} disabled={submitting || !hasPrice || closeQuantity <= 0}
                             title={marketOpen ? undefined : "The market is closed: the order is queued for the open"}>
-                            {marketOpen ? "" : "Queue "}{isLong ? (marketOpen ? "Sell" : "sell") : contract ? (marketOpen ? "Buy to close" : "buy to close") : (marketOpen ? "Cover" : "cover")} {hasPrice ? formatCurrency(total) : ""}
+                            {marketOpen ? "" : "Queue "}{isLong ? (marketOpen ? "Sell" : "sell") : (marketOpen ? "Cover" : "cover")} {hasPrice ? formatCurrency(total) : ""}
                         </button>
-                        {contract && isLong && (
-                            <button className="exercise-btn" onClick={onExercise} disabled={exercising} title="Exercise the contracts now (Alpaca also exercises in-the-money contracts at expiration)">
-                                {exercising ? "Exercising..." : "Exercise"}
-                            </button>
-                        )}
                     </div>
                 </td>
                 <td>
                     <button className={`lots-btn ${showLots ? "open" : ""}`} onClick={() => setShowLots(!showLots)} title="Tax lots" aria-expanded={showLots}>Lots</button>
-                    {!contract && <button className={`ai-btn ${showAnalysis ? "open" : ""}`} onClick={onAnalysisClick}
+                    <button className={`ai-btn ${showAnalysis ? "open" : ""}`} onClick={onAnalysisClick}
                         title={`AI ${isLong ? "hold/sell" : "hold/cover"} analysis`} aria-expanded={showAnalysis}>
                         {loadingAnalysis ? <span className="spinner-border spinner-border-sm" role="status" /> : "AI"}
-                    </button>}
+                    </button>
                 </td>
             </tr>
             {showLots && (

@@ -1,14 +1,13 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
-import dynamic from "next/dynamic";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { Shape } from "plotly.js";
-import type { DailyBar, IntradayBar } from "@/lib/types";
+import type { DailyBars, IntradayBar } from "@/lib/types";
+import { CHART_COLORS, CHART_LAYOUT } from "@/lib/chartTheme";
+import Plot from "./Plot";
 
-// Plotly needs the browser's window, so the chart only renders on the client
-const Plot = dynamic(() => import("react-plotly.js"), { ssr: false, loading: () => <p>Loading chart...</p> });
 
 type ChartRange = "1D" | "5D" | "1M" | "6M" | "1Y" | "5Y" | "MAX";
 const RANGES: ChartRange[] = ["1D", "5D", "1M", "6M", "1Y", "5Y", "MAX"];
@@ -26,7 +25,7 @@ interface Candles {
 
 // Daily bars (data, the full history the page already loaded) filtered to the range, or, for 1D and 5D, 5-minute bars from
 // /api/trading/[ticker]/intraday
-const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: Record<string, DailyBar> | null }) => {
+const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: DailyBars | null }) => {
     const [range, setRange] = useState<ChartRange>("6M");
     const [intraday, setIntraday] = useState<{ ticker: string; range: ChartRange; bars: IntradayBar[] } | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -47,7 +46,17 @@ const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: Reco
         getIntraday();
     }, [ticker, range, sessions]);
 
-    if (!data || Object.keys(data).length === 0) {
+    // The daily candles in the range, worked out again only when the range or the data changes
+    const dailyCandles = useMemo((): Candles | null => {
+        if (!data || data.dates.length === 0 || sessions) return null;
+        const days = DAILY_RANGE_DAYS[range];
+        const start = days ? new Date(Date.parse(`${data.dates.at(-1)}T00:00:00Z`) - days * 86400000).toISOString().slice(0, 10) : "";
+        // Dates are oldest first, so the range is the tail from the first date on or after start
+        const from = Math.max(0, data.dates.findIndex(date => date >= start));
+        return { x: data.dates.slice(from), open: data.open.slice(from), high: data.high.slice(from), low: data.low.slice(from), close: data.close.slice(from) };
+    }, [data, range, sessions]);
+
+    if (!data || data.dates.length === 0) {
         return <p>Loading chart data...</p>;
     }
 
@@ -65,17 +74,7 @@ const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: Reco
             extendedShading = days.flatMap(day => [shade(`${day} 04:00:00`, `${day} 09:30:00`), shade(`${day} 16:00:00`, `${day} 20:00:00`)]);
         }
     } else {
-        const dates = Object.keys(data).sort();
-        const days = DAILY_RANGE_DAYS[range];
-        const start = days ? new Date(Date.parse(`${dates.at(-1)}T00:00:00Z`) - days * 86400000).toISOString().slice(0, 10) : "";
-        const shown = dates.filter(date => date >= start);
-        candles = {
-            x: shown,
-            open: shown.map(date => parseFloat(data[date]["1. open"])),
-            high: shown.map(date => parseFloat(data[date]["2. high"])),
-            low: shown.map(date => parseFloat(data[date]["3. low"])),
-            close: shown.map(date => parseFloat(data[date]["4. close"]))
-        };
+        candles = dailyCandles;
     }
 
     return (
@@ -93,16 +92,24 @@ const CandlestickChart = ({ ticker, data = null }: { ticker: string; data?: Reco
                 <p>Loading chart data...</p>
             ) : (
                 <Plot
-                    data={[{ ...candles, type: "candlestick", xaxis: "x", yaxis: "y", name: ticker }]}
+                    data={[{
+                        ...candles, type: "candlestick", xaxis: "x", yaxis: "y", name: ticker,
+                        increasing: { line: { color: CHART_COLORS.gain } },
+                        decreasing: { line: { color: CHART_COLORS.loss } }
+                    }]}
                     layout={{
-                        margin: { t: 10, r: 10, b: 40, l: 50 },
+                        ...CHART_LAYOUT,
+                        margin: { t: 10, r: 10, b: 40, l: 56 },
                         xaxis: {
+                            ...CHART_LAYOUT.xaxis,
+                            // Set rather than guessed: Plotly's finance bundle guesses a candlestick's price axis is dates
+                            type: "date",
                             rangeslider: { visible: false },
                             // Skip weekends, and nights (8:00 p.m. to 4:00 a.m.) for 5-minute bars, so the candles don't have gaps
                             rangebreaks: sessions ? [{ bounds: ["sat", "mon"] }, { bounds: [20, 4], pattern: "hour" }] : [{ bounds: ["sat", "mon"] }]
                         },
                         shapes: extendedShading,
-                        yaxis: { title: { text: "Price (USD)" } }
+                        yaxis: { ...CHART_LAYOUT.yaxis, type: "linear", title: { text: "Price (USD)", font: { size: 12, color: CHART_COLORS.text } } }
                     }}
                     config={{ displayModeBar: false, responsive: true }}
                     style={{ width: "100%", height: "420px" }}

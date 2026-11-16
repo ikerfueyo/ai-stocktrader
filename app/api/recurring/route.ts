@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { requireAccount } from "@/lib/server/brokerAccounts";
+import { requireSecondFactor } from "@/lib/server/sensitive";
 import { createRecurring, listRecurring } from "@/lib/server/automation/recurring";
 import type { Frequency } from "@/lib/automation";
 
@@ -13,6 +14,8 @@ export const POST = withUser(async (request, context, userId) => {
     const body = await request.json().catch(() => null) as { recurring?: { symbol?: unknown; amount?: unknown; frequency?: unknown; startDate?: unknown } } | null;
     const input = body?.recurring;
     if (typeof input?.symbol !== "string" || !input.symbol.trim()) throw new HttpError("recurring.symbol is required", 400);
+    // Each run places an order, so scheduling them needs what placing one does
+    await requireSecondFactor(userId);
     const { accountId } = await requireAccount(request, userId, "trade");
     return NextResponse.json({
         recurring: await createRecurring(userId, accountId, { symbol: input.symbol.trim(), amount: Number(input.amount), frequency: input.frequency as Frequency, startDate: String(input.startDate ?? "") })

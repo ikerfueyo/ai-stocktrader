@@ -1,4 +1,4 @@
-import type { BrokerEvent, BrokerEventStream } from "../broker";
+import type { BrokerEvent, BrokerEventStream, EventCursor } from "../broker";
 import type { AlpacaHttp } from "./http";
 import { resumeId, SeenIds, STREAMS, toBrokerEvent } from "./events";
 
@@ -59,6 +59,10 @@ export interface SubscriptionOptions {
     sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
+// Alpaca's keep-alive and greeting comments, sent every few seconds on every stream, aren't worth a log line; anything else (such as
+// the slow-client notice that messages were dropped) is
+export const isRoutineComment = (comment: string) => /^(heartbeat|welcome to the alpaca events)\b/i.test(comment.trim());
+
 const abortableSleep = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
     const timer = setTimeout(resolve, ms);
     timer.unref?.();
@@ -68,10 +72,11 @@ const abortableSleep = (ms: number, signal: AbortSignal) => new Promise<void>(re
     }, { once: true });
 });
 
-// Subscribes to the streams asked for, after sinceId (each stream from RESUME_WINDOW_MS before it), or from now without it (Alpaca
-// sends no history without a since parameter). Returns a function that closes every connection.
+// Subscribes to the streams asked for, each after its own cursor, else from RESUME_WINDOW_MS before the shared one, else from now
+// (Alpaca sends no history without a since parameter). An event the handler rejects isn't counted as seen: the connection is dropped
+// and resumed from the stream's last handled event, so it comes again. Returns a function that closes every connection.
 export const subscribeToStreams = (
-    http: AlpacaHttp, streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, sinceId?: string, options: SubscriptionOptions = {}
+    http: AlpacaHttp, streams: BrokerEventStream[], handler: (event: BrokerEvent) => Promise<void>, since?: EventCursor, options: SubscriptionOptions = {}
 ): (() => void) => {
     const controller = new AbortController();
     const { signal } = controller;
@@ -79,24 +84,27 @@ export const subscribeToStreams = (
     const log = options.log ?? (message => console.error(`Alpaca events: ${message}`));
     const sleep = options.sleep ?? abortableSleep;
     const fetcher = http.config.fetch ?? fetch;
-    // The handler runs for one event at a time, whichever stream it's from
-    let queue = Promise.resolve();
-    const deliver = (event: BrokerEvent) => {
-        queue = queue.then(() => signal.aborted ? undefined : handler(event)).catch(error => log(`${event.stream} ${event.id}: ${error instanceof Error ? error.message : error}`));
-        return queue;
+    // The handler runs for one event at a time, whichever stream it's from; deliver rejects when it does
+    let queue: Promise<unknown> = Promise.resolve();
+    const deliver = (event: BrokerEvent): Promise<void> => {
+        const run = queue.then(() => signal.aborted ? undefined : handler(event));
+        queue = run.catch(() => undefined);
+        return run;
     };
 
     const follow = async (stream: BrokerEventStream) => {
         const definition = STREAMS[stream];
         const seen = new SeenIds();
-        // The stream's own newest event, which a reconnection resumes from exactly
-        let last = null as string | null;
+        // The stream's own newest event handled, which a reconnection resumes from exactly: its cursor at first (the shared one, kept
+        // across streams whose IDs don't interleave, only gives a window to resume from, with the repeats dropped by ID)
+        let last = since?.streams[stream] ?? null;
+        const start = last ?? (since?.shared ? resumeId(since.shared) : undefined);
         let backoff = minBackoff;
         while (!signal.aborted) {
-            const since = last ?? (sinceId ? resumeId(sinceId) : undefined);
+            const from = last ?? start;
             try {
                 const token = await http.tokens.token();
-                const response = await fetcher(http.url(definition.path, since ? { [definition.sinceParam]: since } : {}), {
+                const response = await fetcher(http.url(definition.path, from ? { [definition.sinceParam]: from } : {}), {
                     headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" }, signal
                 });
                 if (response.status === 401) http.tokens.invalidate(token);
@@ -104,7 +112,9 @@ export const subscribeToStreams = (
                     await response.body?.cancel();
                     throw new Error(`${response.status} ${response.statusText}`);
                 }
-                const parser = new SseParser(comment => log(`${stream}: ${comment}`));
+                const parser = new SseParser(comment => {
+                    if (!isRoutineComment(comment)) log(`${stream}: ${comment}`);
+                });
                 const decoder = new TextDecoder();
                 for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
                     for (const message of parser.push(decoder.decode(chunk, { stream: true }))) {
@@ -117,10 +127,12 @@ export const subscribeToStreams = (
                         }
                         for (const data of Array.isArray(parsed) ? parsed : [parsed]) {
                             const id = data?.[definition.idField];
-                            if (typeof id !== "string" || !seen.add(id)) continue;
-                            if (last === null || id > last) last = id;
+                            if (typeof id !== "string" || seen.has(id)) continue;
+                            // Counted only once handled: a rejection drops the connection (the catch below), to resume after the last one
                             const event = toBrokerEvent(stream, data);
                             if (event) await deliver(event);
+                            seen.add(id);
+                            if (last === null || id > last) last = id;
                         }
                     }
                     backoff = minBackoff;

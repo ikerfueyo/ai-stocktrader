@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { configurationError, decideApplication, decideOptionsApproval, defaultConfigurations, nextReviewStep, submittedDueAt, updateNeedsReview } from "./kyc";
+import { configurationError, decideApplication, defaultConfigurations, nextReviewStep, submittedDueAt, updateNeedsReview } from "./kyc";
 
 const noDisclosures = { is_control_person: false, is_affiliated_exchange_or_finra: false, is_politically_exposed: false, immediate_family_exposed: false };
 const applicant = (familyName: string, disclosures = noDisclosures) => ({
@@ -69,33 +69,25 @@ describe("Profile changes", () => {
 });
 
 describe("Trading configurations", () => {
-    test("a margin account starts at 2x with shorting; a cash account at 1x without", () => {
-        assert.equal(defaultConfigurations(["customer_agreement", "account_agreement", "margin_agreement"]).max_margin_multiplier, "2");
+    test("no account starts with its own multiplier, as on Alpaca; a margin account starts with shorting, a cash account without", () => {
+        const margin = defaultConfigurations(["customer_agreement", "account_agreement", "margin_agreement"]);
+        assert.equal("max_margin_multiplier" in margin, false);
+        assert.equal(margin.no_shorting, false);
         const cash = defaultConfigurations(["customer_agreement", "account_agreement"]);
-        assert.equal(cash.max_margin_multiplier, "1");
+        assert.equal("max_margin_multiplier" in cash, false);
         assert.equal(cash.no_shorting, true);
     });
 
-    test("margin, shorting and options can't go beyond what's agreed and approved", () => {
-        const cash = { hasMarginAgreement: false, approvedOptionsLevel: 1 };
+    test("margin and shorting can't go beyond what's agreed, and options aren't offered", () => {
+        const cash = { hasMarginAgreement: false };
         assert.match(configurationError({ max_margin_multiplier: "2" }, cash)!, /margin agreement/);
         assert.match(configurationError({ no_shorting: false }, cash)!, /margin account/);
-        assert.match(configurationError({ max_options_trading_level: 2 }, cash)!, /level 1/);
-        assert.equal(configurationError({ max_margin_multiplier: "4", no_shorting: false }, { hasMarginAgreement: true, approvedOptionsLevel: 0 }), null);
-        assert.match(configurationError({ max_margin_multiplier: "3" }, { hasMarginAgreement: true, approvedOptionsLevel: 0 })!, /1, 2 or 4/);
-    });
-});
-
-describe("Options approval", () => {
-    const agreements = ["customer_agreement" as const, "account_agreement" as const, "options_agreement" as const];
-
-    test("needs the options agreement", () => {
-        assert.deepEqual(decideOptionsApproval(1, { agreements: ["customer_agreement"] }), { status: "REJECTED", approvedLevel: 0 });
-    });
-
-    test("spreads need options experience; without it a lower level is approved", () => {
-        assert.deepEqual(decideOptionsApproval(3, { agreements, stocksExperience: "over_5_years", optionsExperience: "1_to_5_years" }), { status: "APPROVED", approvedLevel: 3 });
-        assert.deepEqual(decideOptionsApproval(3, { agreements, stocksExperience: "over_5_years", optionsExperience: "none" }), { status: "LOWER_LEVEL_APPROVED", approvedLevel: 2 });
-        assert.deepEqual(decideOptionsApproval(2, { agreements, stocksExperience: "none", optionsExperience: "none" }), { status: "LOWER_LEVEL_APPROVED", approvedLevel: 1 });
+        assert.match(configurationError({ max_options_trading_level: 1 }, { hasMarginAgreement: true })!, /Options trading isn't offered/);
+        assert.equal(configurationError({ max_options_trading_level: 0 }, cash), null);
+        assert.equal(configurationError({ max_margin_multiplier: "4", no_shorting: false }, { hasMarginAgreement: true }), null);
+        assert.match(configurationError({ max_margin_multiplier: "3" }, { hasMarginAgreement: true })!, /1, 2 or 4/);
+        assert.match(configurationError({ max_margin_multiplier: "2" }, { hasMarginAgreement: true, brokerLimit: 1 })!, /exceeds the current limit 1/);
+        assert.match(configurationError({ max_margin_multiplier: "4" }, { hasMarginAgreement: true, brokerLimit: 2 })!, /exceeds the current limit 2/);
+        assert.equal(configurationError({ max_margin_multiplier: "2" }, { hasMarginAgreement: true, brokerLimit: 2 }), null);
     });
 });

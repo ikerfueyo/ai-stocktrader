@@ -27,7 +27,7 @@ const AccountSwitcher = () => {
     };
 
     return (
-        <span className="account-switcher mr-3">
+        <span className="account-switcher">
             {open.length > 1 ? (
                 <select className="form-control form-control-sm" value={active.accountId} aria-label="Account" onChange={event => switchTo(event.target.value)}>
                     {open.map(({ accountId, kind, accountNumber }) => <option key={accountId} value={accountId}>{label(kind, accountNumber)}</option>)}

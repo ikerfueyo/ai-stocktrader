@@ -1,18 +1,18 @@
 // The app's view of an account read through the Broker interface alone, for brokers whose ledger the app can't query (BROKER=alpaca;
 // with the simulator, lib/server/portfolio.ts reads its richer ledger directly). Everything comes from Alpaca's endpoints: positions,
-// the trading account, and the account's activities, whose fills are replayed FIFO with the stored corporate actions and the option
-// exercises, assignments and expiries (replayFills) for what Alpaca doesn't report: realized P&L per fill, open tax lots and the
+// the trading account, and the account's activities, whose fills are replayed FIFO with the stored corporate actions (replayFills)
+// for what Alpaca doesn't report: realized P&L per fill, open tax lots and the
 // year's gains and losses (its 1099 is the record). Kept free of the database and server-only modules, so it's tested with a fake
 // broker, and the scenarios check it against SimBroker.
-import { easternParts, easternTime, settlementDate } from "../marketHours";
-import { contractMultiplier, isOptionSymbol, parseOptionSymbol } from "../options";
+import { addDays, easternParts, easternTime, settlementDate } from "../marketHours";
+import { readableDescription } from "../activityText";
 import { applyFill, applySplit, isLongTerm, type Lot } from "./broker/sim/ledger";
 import { reportSales, sharesSince, taxYear, unrealizedRows, type Acquisition, type Disposal, type ShareChange, type TaxYear } from "./broker/sim/tax";
 import { applyActionToLots, type ActionPrices, type CorporateAction } from "./broker/sim/corporateActions";
-import { deliveryFor, totalOptionRequirement } from "./broker/sim/options";
+import { reservedForOrders } from "./broker/sim/matching";
 import type { Broker } from "./broker/broker";
-import type { AccountConfigurations, Activity, Position as BrokerPosition, TradeAccount } from "./broker/types";
-import type { Account, CashActivityRow, Position, TaxLot, TradeHistoryRow } from "../types";
+import type { AccountConfigurations, Activity, Order as BrokerOrder, Position as BrokerPosition, TradeAccount, Transfer } from "./broker/types";
+import type { Account, CashActivityRow, Position, Quote, TaxLot, TradeHistoryRow } from "../types";
 import type { Split, Trade } from "./account";
 
 const roundCents = (value: number) => Math.round(value * 100) / 100;
@@ -21,10 +21,11 @@ const dayOf = (iso: string) => easternParts(new Date(iso)).dateKey;
 // Alpaca's page size for activities, and its largest
 const PAGE_SIZE = 100;
 
-// Every activity of the types asked for, oldest first, following Alpaca's page_token paging (the last ID of each page)
-export const listAllActivities = async (broker: Pick<Broker, "listActivities">, accountId: string, types: string[]): Promise<Activity[]> => {
+// Every activity of the types asked for, oldest first, following Alpaca's page_token paging (the last ID of each page); after an
+// activity's ID, only those that come after it
+export const listAllActivities = async (broker: Pick<Broker, "listActivities">, accountId: string, types: string[], after?: string): Promise<Activity[]> => {
     const all: Activity[] = [];
-    let pageToken: string | undefined;
+    let pageToken: string | undefined = after;
     for (;;) {
         const page = await broker.listActivities(accountId, { activity_types: types.join(","), direction: "asc", page_size: PAGE_SIZE, ...(pageToken ? { page_token: pageToken } : {}) } as never);
         all.push(...page);
@@ -32,6 +33,70 @@ export const listAllActivities = async (broker: Pick<Broker, "listActivities">, 
         if (page.length < PAGE_SIZE || !last || last === pageToken) return all;
         pageToken = last;
     }
+};
+
+// Every transfer of the account, newest first, following limit/offset paging (both brokers answer one page of 100 by default)
+export const listAllTransfers = async (broker: Pick<Broker, "listTransfers">, accountId: string): Promise<Transfer[]> => {
+    const all: Transfer[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+        const page = await broker.listTransfers(accountId, { limit: PAGE_SIZE, offset });
+        all.push(...page);
+        if (page.length < PAGE_SIZE) return all;
+    }
+};
+
+// An order and its legs, flattened (Alpaca nests a bracket's, OCO's and OTO's legs under the entry)
+export const flattenOrders = (orders: BrokerOrder[]): BrokerOrder[] => orders.flatMap(order => [order, ...flattenOrders((order.legs ?? []) as BrokerOrder[])]);
+
+const OPEN_STATUSES = new Set(["new", "accepted", "partially_filled", "held", "pending_new", "pending_cancel", "pending_replace", "accepted_for_bidding"]);
+
+// The symbols whose open orders need a quote to say what they hold: market orders, and short sales (held at 3% over the ask)
+export const unpricedSymbols = (orders: BrokerOrder[]) => [...new Set(flattenOrders(orders)
+    .filter(order => OPEN_STATUSES.has(String(order.status)) && order.limit_price == null && order.stop_price == null && order.notional == null)
+    .map(order => String(order.symbol)))];
+
+// What open orders hold back from buying power, as the simulator works it out (reservedForOrders), for Alpaca's open orders: Alpaca
+// doesn't report it apart, its buying_power already being net of it, so it's shown only
+export const openOrderReservation = (
+    orders: BrokerOrder[], positions: Record<string, number>, quotes: Record<string, Pick<Quote, "price" | "ask" | "bid"> | undefined>,
+    options: { marginable?: Record<string, boolean | null>; multiplier?: number } = {}
+): number => {
+    const num = (value: unknown) => value === null || value === undefined || value === "" ? null : Number(value);
+    return reservedForOrders(flattenOrders(orders).filter(order => OPEN_STATUSES.has(String(order.status))).map(order => {
+        const filledQty = Number(order.filled_qty ?? 0);
+        return {
+            symbol: String(order.symbol), side: order.side as "buy" | "sell", limitPrice: num(order.limit_price), stopPrice: num(order.stop_price),
+            qty: num(order.qty), notional: num(order.notional), filledQty,
+            // Alpaca has no filled_notional: the shares filled at their average price
+            filledNotional: filledQty * Number(order.filled_avg_price ?? 0),
+            // Legs waiting for their entry: Alpaca reports them held, though the spec's OrderStatus leaves it out
+            held: String(order.status) === "held"
+        };
+    }), positions, quotes, options);
+};
+
+// The Eastern day an activity is dated: a non-trade activity's date, else a fill's transaction time
+export const activityDay = (activity: Activity): string => {
+    const { date, transaction_time: time } = activity as { date?: string; transaction_time?: string };
+    return date ? String(date).slice(0, 10) : time ? dayOf(String(time)) : easternParts(new Date()).dateKey;
+};
+
+// How far back each sync re-reads the stored copy (lib/server/activityStore.ts), for activities that post late or are corrected
+export const ACTIVITY_WINDOW_DAYS = 3;
+
+// The stored activity to page after: the newest (by ID, which sorts by time) dated before the window, null to read everything
+export const windowCursor = (stored: { id: string; day: string }[], today: string, windowDays = ACTIVITY_WINDOW_DAYS): string | null => {
+    const start = addDays(today, -windowDays);
+    let cursor: string | null = null;
+    for (const { id, day } of stored) if (day < start && (cursor === null || id > cursor)) cursor = id;
+    return cursor;
+};
+
+// The copy after a sync: the stored activities up to the cursor, then what the broker returned after it, oldest first, each once
+export const mergeWindow = <T extends { id: string }>(stored: T[], fetched: T[], cursor: string | null): T[] => {
+    const kept = cursor === null ? [] : stored.filter(({ id }) => id <= cursor);
+    const byId = new Map([...kept, ...fetched].map(activity => [activity.id, activity]));
+    return [...byId.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 };
 
 // A fill as the replay reads it
@@ -79,26 +144,6 @@ export interface ShareAction {
     prices: ActionPrices;
 }
 
-// An option exercise, assignment or expiry as the replay reads it (Alpaca's OPEXC, OPASN, OPEXP): the contracts it closed
-export interface OptionEvent {
-    id: string;
-    kind: "exercise" | "assignment" | "expiry";
-    symbol: string;
-    qty: number;
-    at: string;
-}
-
-const OPTION_EVENT_KINDS: Record<string, OptionEvent["kind"]> = { OPEXC: "exercise", OPASN: "assignment", OPEXP: "expiry" };
-export const OPTION_EVENT_TYPES = Object.keys(OPTION_EVENT_KINDS);
-
-export const optionEventsOf = (activities: Activity[]): OptionEvent[] =>
-    (activities as (Activity & { id?: string; activity_type?: string; symbol?: string; qty?: string; date?: string; created_at?: string })[])
-        .filter(activity => OPTION_EVENT_KINDS[String(activity.activity_type)] && isOptionSymbol(String(activity.symbol ?? "")) && Number(activity.qty) !== 0)
-        .map(activity => ({
-            id: String(activity.id), kind: OPTION_EVENT_KINDS[String(activity.activity_type)], symbol: String(activity.symbol).toUpperCase(), qty: Math.abs(Number(activity.qty)),
-            at: activity.created_at ?? easternTime(String(activity.date), "16:00").toISOString()
-        }));
-
 // The symbols and days cash in lieu was paid on (CIL activities), so an action is replayed paying out its fractional share as the
 // broker did
 export const cashInLieuOf = (activities: Activity[]): Set<string> => new Set(
@@ -113,11 +158,10 @@ const DISPOSAL_KINDS: Partial<Record<string, Disposal["kind"]>> = { CASH_MERGER:
 
 // Replays the fills FIFO (lib/server/broker/sim/ledger.ts's applyFill) as the simulator keeps its lots, since Alpaca's activities
 // keep the terms of their day: each split, and each stored share-changing action (applyActionToLots: stock dividends, mergers,
-// spinoffs, symbol changes, worthless removals), applied to the lots acquired before its effective date; option expiries closing the
-// contracts at nothing, and exercises and assignments closing them without P&L, with the premium rolled into the price of the shares
-// delivered (deliveryFor), the FILL at the strike that follows. The broker's positions stay the source of what's held.
-export const replayFills = (fills: BrokerFill[], splits: Split[], today = easternParts(new Date()).dateKey, { actions = [], optionEvents = [], cashInLieu = new Set() }: {
-    actions?: ShareAction[]; optionEvents?: OptionEvent[]; cashInLieu?: Set<string>;
+// spinoffs, symbol changes, worthless removals), applied to the lots acquired before its effective date. The broker's positions stay
+// the source of what's held.
+export const replayFills = (fills: BrokerFill[], splits: Split[], today = easternParts(new Date()).dateKey, { actions = [], cashInLieu = new Set() }: {
+    actions?: ShareAction[]; cashInLieu?: Set<string>;
 } = {}): Replay => {
     const lots = new Map<string, ReplayedLot[]>();
     const realizedByFill = new Map<string, number | null>();
@@ -189,63 +233,21 @@ export const replayFills = (fills: BrokerFill[], splits: Split[], today = easter
         while (pending.length > 0 && pending[0].exDate <= day) pending.shift()!.apply();
     };
 
-    // The shares an exercise or assignment delivers, waiting for their FILL
-    const deliveries: { underlying: string; side: "buy" | "sell"; shares: number; lotPrice: number; at: number }[] = [];
-    const applyOptionEvent = (event: OptionEvent) => {
-        const open = [...(lots.get(event.symbol) ?? [])].sort((a, b) => a.acquiredAt.localeCompare(b.acquiredAt) || a.id.localeCompare(b.id));
-        if (open.length === 0) return;
-        const multiplier = contractMultiplier(event.symbol);
-        if (event.kind === "expiry") {
-            // Closed at nothing: a long's premium lost, a short's kept
-            for (const lot of open) {
-                disposals.push({ id: `${event.id}|${lot.id}`, lotId: lot.id, symbol: event.symbol, side: lot.side, qty: lot.qty * multiplier, lotPrice: lot.price, price: 0, acquiredAt: lot.acquiredAt, closedAt: event.at, kind: "sale" });
-                realized += (lot.side === "long" ? -1 : 1) * lot.price * lot.qty * multiplier;
-            }
-            lots.set(event.symbol, []);
-            return;
-        }
-        // The contracts taken, oldest first, closed without P&L; their average premium goes into the shares delivered
-        let left = event.qty, taken = 0, paid = 0;
-        const remaining: ReplayedLot[] = [];
-        for (const lot of open) {
-            const qty = Math.min(lot.qty, left);
-            if (qty > 0) {
-                taken += qty;
-                paid += qty * lot.price;
-                left -= qty;
-            }
-            if (lot.qty - qty > 1e-9) remaining.push({ ...lot, qty: lot.qty - qty });
-        }
-        lots.set(event.symbol, remaining);
-        const contract = parseOptionSymbol(event.symbol);
-        if (!contract || !(taken > 0)) return;
-        const delivery = deliveryFor({ type: contract.type, strike: contract.strike, qty: open[0].side === "long" ? taken : -taken, premium: paid / taken });
-        deliveries.push({ underlying: contract.underlying, side: delivery.side, shares: delivery.shares, lotPrice: delivery.lotPrice, at: Date.parse(event.at) });
-    };
-    // The delivery a FILL completes: the underlying's shares on the side and in the number delivered, within a minute of the event
-    const deliveryFill = (fill: BrokerFill) => {
-        const index = deliveries.findIndex(delivery => delivery.underlying === fill.symbol && delivery.side === fill.side && Math.abs(delivery.shares - fill.qty) < 1e-6
-            && Math.abs(Date.parse(fill.at) - delivery.at) <= 60000);
-        return index >= 0 ? deliveries.splice(index, 1)[0] : null;
-    };
-
     const applyTrade = (fill: BrokerFill) => {
-        const multiplier = contractMultiplier(fill.symbol);
-        // An exercise's or assignment's shares take their lots' price with the premium in
-        const price = deliveryFill(fill)?.lotPrice ?? fill.price;
+        const { price } = fill;
         const open = lots.get(fill.symbol) ?? [];
-        const result = applyFill(open, { side: fill.side, qty: fill.qty, price, at: fill.at }, `lot-${fill.id}`, fill.symbol, multiplier);
+        const result = applyFill(open, { side: fill.side, qty: fill.qty, price, at: fill.at }, `lot-${fill.id}`, fill.symbol);
         const byId = new Map(open.map(lot => [lot.id, lot]));
         for (const closing of result.closings) {
             const lot = byId.get(closing.lotId)!;
             disposals.push({
-                id: `${fill.id}|${closing.lotId}`, lotId: closing.lotId, symbol: fill.symbol, side: lot.side, qty: closing.qty * multiplier, lotPrice: closing.price, price,
+                id: `${fill.id}|${closing.lotId}`, lotId: closing.lotId, symbol: fill.symbol, side: lot.side, qty: closing.qty, lotPrice: closing.price, price,
                 acquiredAt: lot.acquiredAt, closedAt: fill.at, kind: "sale"
             });
         }
         if (result.opened) {
             original.set(result.opened.id, result.opened.qty);
-            const acquisition = { lotId: result.opened.id, symbol: fill.symbol, side: result.opened.side, qty: result.opened.qty * multiplier, acquiredAt: fill.at };
+            const acquisition = { lotId: result.opened.id, symbol: fill.symbol, side: result.opened.side, qty: result.opened.qty, acquiredAt: fill.at };
             acquisitions.push(acquisition);
             acquisitionOf.set(result.opened.id, acquisition);
         }
@@ -254,14 +256,9 @@ export const replayFills = (fills: BrokerFill[], splits: Split[], today = easter
         realized += result.realized;
     };
 
-    // Fills and option events in time order, an event before the fill delivering its shares
-    const steps = [
-        ...optionEvents.map(event => ({ at: event.at, rank: 0, id: event.id, run: () => applyOptionEvent(event) })),
-        ...fills.map(fill => ({ at: fill.at, rank: 1, id: fill.id, run: () => applyTrade(fill) }))
-    ].sort((a, b) => a.at.localeCompare(b.at) || a.rank - b.rank || a.id.localeCompare(b.id));
-    for (const step of steps) {
-        changesThrough(dayOf(step.at));
-        step.run();
+    for (const fill of [...fills].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))) {
+        changesThrough(dayOf(fill.at));
+        applyTrade(fill);
     }
     changesThrough(today);
 
@@ -290,14 +287,42 @@ export const toAppPositions = (positions: BrokerPosition[]): Position[] => posit
 // Fills as the trades the equity history and dividend planning replay
 export const tradesOf = (fills: BrokerFill[]): Trade[] => fills.map(fill => ({
     ticker: fill.symbol, type: fill.side === "buy" ? "BUY" : "SELL", price: String(fill.price), quantity: String(fill.qty),
-    total: (fill.qty * fill.price * contractMultiplier(fill.symbol)).toFixed(2), date: new Date(fill.at)
+    total: (fill.qty * fill.price).toFixed(2), date: new Date(fill.at)
 }));
+
+// The activities that move shares without a fill (MA, SPIN, REORG and CIL with a quantity, and stock dividends: DIV SDIV), as the
+// no-cost trades the simulator's fillsAsTrades gives the equity history: without them, a cash merger's shares would stay held at their
+// last close while its cash was counted too. Splits aren't here: the history applies them from the stored splits.
+export const shareMovesOf = (activities: Activity[]): Trade[] =>
+    (activities as (Activity & { activity_type?: string; activity_sub_type?: string; symbol?: string; qty?: string; date?: string; created_at?: string })[])
+        .filter(activity => (["MA", "SPIN", "REORG", "CIL"].includes(String(activity.activity_type)) || (activity.activity_type === "DIV" && activity.activity_sub_type === "SDIV"))
+            && activity.symbol && Number(activity.qty ?? 0) !== 0)
+        .map(activity => {
+            const qty = Number(activity.qty);
+            const date = activity.created_at ? new Date(activity.created_at) : easternTime(String(activity.date), "09:30");
+            return { ticker: String(activity.symbol).toUpperCase(), type: qty > 0 ? "BUY" as const : "SELL" as const, price: 0, quantity: Math.abs(qty), total: 0, date };
+        });
+
+// The trades the equity history replays: the fills and the share moves, oldest first, each under the symbol it trades as now (a trade
+// before a symbol change is under the new symbol, as its closes are), following the stored symbol changes in order
+export const historyTradesOf = (activities: Activity[], actions: ShareAction[] = []): Trade[] => {
+    const renames = actions.map(({ action }) => action).filter(action => action.type === "NAME_CHANGE" && action.newSymbol).sort((a, b) => a.exDate.localeCompare(b.exDate));
+    return [...tradesOf(fillsOf(activities)), ...shareMovesOf(activities)]
+        .map(trade => {
+            const date = new Date(trade.date!);
+            let ticker = trade.ticker;
+            const day = easternParts(date).dateKey;
+            for (const { symbol, newSymbol, exDate } of renames) if (ticker === symbol && day < exDate) ticker = newSymbol!;
+            return { ...trade, ticker, date };
+        })
+        .sort((a, b) => a.date.getTime() - b.date.getTime());
+};
 
 // Fills as the Trades tab's rows, newest first, with the P&L the replay found and their settlement (T+1)
 export const transactionRowsOf = (fills: BrokerFill[], replay: Pick<Replay, "realizedByFill">, userId: string): TradeHistoryRow[] =>
     [...fills].reverse().map(fill => ({
         id: fill.id, user_id: userId, date: fill.at, type: fill.side === "buy" ? "BUY" : "SELL", ticker: fill.symbol, price: String(fill.price), quantity: String(fill.qty),
-        total: (fill.qty * fill.price * contractMultiplier(fill.symbol)).toFixed(2), reason: null, quote_time: null, fill_policy: null, order_id: fill.orderId,
+        total: (fill.qty * fill.price).toFixed(2), reason: null, quote_time: null, fill_policy: null, order_id: fill.orderId,
         realized_pnl: replay.realizedByFill.get(fill.id) ?? null, settle_date: settlementDate(dayOf(fill.at))
     }));
 
@@ -314,7 +339,7 @@ export const cashRowsOf = (activities: Activity[], userId: string): CashActivity
                 id: String(activity.id), user_id: userId, date: activity.created_at ?? `${activity.date}T16:00:00.000Z`,
                 type: type.startsWith("DIV") ? (amount >= 0 ? "DIVIDEND_IN" : "DIVIDEND_OUT") : type === "CSD" ? "DEPOSIT" : type === "CSW" ? "WITHDRAW" : type === "INT" ? "INTEREST"
                     : type === "WH" ? "WITHHOLDING" : type === "MA" || type === "CIL" ? (amount >= 0 ? "CORPORATE_ACTION_IN" : "CORPORATE_ACTION_OUT") : "FEE",
-                method: activity.description ?? type, amount: Math.abs(amount).toFixed(2), ticker: activity.symbol ?? null, reference: null
+                method: activity.description ? readableDescription(activity.description) : type, amount: Math.abs(amount).toFixed(2), ticker: activity.symbol ?? null, reference: null
             } satisfies CashActivityRow;
         });
 
@@ -326,11 +351,11 @@ export const ledgerOf = ({ trade, positions, activities, splits, actions = [], t
     trade: TradeAccount; positions: BrokerPosition[]; activities: Activity[]; splits: Split[]; actions?: ShareAction[]; today?: string;
 }) => {
     const fills = fillsOf(activities);
-    const replay = replayFills(fills, splits, today, { actions, optionEvents: optionEventsOf(activities), cashInLieu: cashInLieuOf(activities) });
+    const replay = replayFills(fills, splits, today, { actions, cashInLieu: cashInLieuOf(activities) });
     const cash = cashRowsOf(activities, "");
     // Sales that settle after today (T+1): tradable, not yet withdrawable
     const unsettledProceeds = roundCents(fills.filter(fill => fill.side === "sell" && settlementDate(dayOf(fill.at)) > today)
-        .reduce((sum, fill) => sum + fill.qty * fill.price * contractMultiplier(fill.symbol), 0));
+        .reduce((sum, fill) => sum + fill.qty * fill.price, 0));
     return {
         fills, replay, positions: toAppPositions(positions),
         // As the simulator's: the trading account's cash less the withdrawals already requested
@@ -346,23 +371,20 @@ export const ledgerOf = ({ trade, positions, activities, splits, actions = [], t
 
 // GET /api/account's figures from the broker's trading account (Alpaca's TradeAccount): what it reports as is, the rest derived
 // (excess liquidity, the debit) or unknown to the API (buying power held for open orders, accrued interest, margin calls: none)
-export const accountSummary = ({ trade, positions, configurations, ledger, marginRate }: {
+export const accountSummary = ({ trade, positions, configurations, ledger, marginRate, reservedCash = 0 }: {
     trade: TradeAccount; positions: BrokerPosition[]; configurations: AccountConfigurations; ledger: ReturnType<typeof ledgerOf>; marginRate: number;
+    // Buying power held for open orders (openOrderReservation), shown only: Alpaca's buying_power already nets it
+    reservedCash?: number;
 }): Account => {
     const money = (value: unknown) => roundCents(Number(value ?? 0));
     const equity = money(trade.equity), maintenance = money(trade.maintenance_margin);
-    const optionsApproved = Number(trade.options_approved_level ?? 0);
     const unrealized = positions.reduce((sum, position) => sum + Number(position.unrealized_pl ?? 0), 0);
     return {
         totalCash: ledger.totalCash,
-        optionsBuyingPower: money(trade.options_buying_power),
-        optionRequirement: roundCents(totalOptionRequirement(positions.map(position => ({ symbol: String(position.symbol), qty: Number(position.qty) })))),
-        optionsLevel: Number(trade.options_trading_level ?? Math.min(optionsApproved, Number(configurations.max_options_trading_level ?? optionsApproved))),
-        optionsApprovedLevel: optionsApproved,
         buyingPower: money(trade.buying_power),
         regtBuyingPower: money(trade.regt_buying_power),
         nonMarginableBuyingPower: money(trade.non_marginable_buying_power),
-        reservedCash: 0,
+        reservedCash: roundCents(reservedCash),
         multiplier: Number(trade.multiplier ?? 1),
         maxMultiplier: Number(configurations.max_margin_multiplier ?? trade.multiplier ?? 1),
         equity,
@@ -379,6 +401,8 @@ export const accountSummary = ({ trade, positions, configurations, ledger, margi
         marginCalls: [],
         intradayDeficits: [],
         marginRestrictedUntil: null,
+        // Alpaca's API reports no margin calls; equity under its maintenance margin is the sign of one
+        belowMaintenance: maintenance > 0 && equity < maintenance ? roundCents(maintenance - equity) : null,
         shortingEnabled: trade.shorting_enabled === true,
         shortingBlockedReason: trade.shorting_enabled ? null : "Short selling isn't enabled for this account",
         unrealizedPnl: roundCents(unrealized),
@@ -400,7 +424,7 @@ export const taxLotsOf = (replay: Pick<Replay, "lots">, symbol?: string, now = n
         .sort((a, b) => a.symbol.localeCompare(b.symbol) || a.acquiredAt.localeCompare(b.acquiredAt))
         .map(lot => ({
             id: lot.id, symbol: lot.symbol, side: lot.side, qty: lot.qty, originalQty: lot.originalQty, price: lot.price,
-            costBasis: roundCents(lot.qty * lot.price * contractMultiplier(lot.symbol)), acquiredAt: lot.acquiredAt, longTerm: isLongTerm(lot.acquiredAt, now)
+            costBasis: roundCents(lot.qty * lot.price), acquiredAt: lot.acquiredAt, longTerm: isLongTerm(lot.acquiredAt, now)
         }));
 
 // The year's gains and losses report (the 1099 figures so far, with wash sales) and the open lots' unrealized gains, from the replay
@@ -421,14 +445,14 @@ export const taxReportOf = ({ replay, activities, year, prices, now = new Date()
         }))
     });
     const unrealized = [...replay.lots].sort((a, b) => a.symbol.localeCompare(b.symbol) || a.acquiredAt.localeCompare(b.acquiredAt)).flatMap(lot => unrealizedRows(
-        { id: lot.id, symbol: lot.symbol, side: lot.side, qty: lot.qty, price: lot.price, acquiredAt: lot.acquiredAt, multiplier: contractMultiplier(lot.symbol) },
+        { id: lot.id, symbol: lot.symbol, side: lot.side, qty: lot.qty, price: lot.price, acquiredAt: lot.acquiredAt },
         adjustments.get(lot.id), prices.get(lot.symbol) ?? null, now
     ));
     return { ...figures, unrealized };
 };
 
 // The fills of an order and of the orders it replaced, newest first, by following replaces through the broker
-export const orderFillRows = async (broker: Pick<Broker, "getOrder" | "listActivities">, accountId: string, orderId: string, userId: string): Promise<TradeHistoryRow[]> => {
+export const orderFillRows = async (broker: Pick<Broker, "getOrder" | "listActivities">, accountId: string, orderId: string, userId: string, realizedByFill?: Replay["realizedByFill"]): Promise<TradeHistoryRow[]> => {
     const fills: BrokerFill[] = [];
     let id: string | null | undefined = orderId;
     for (let depth = 0; id && depth < 20; depth++) {
@@ -437,6 +461,7 @@ export const orderFillRows = async (broker: Pick<Broker, "getOrder" | "listActiv
         id = order.replaces;
     }
     fills.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
-    return transactionRowsOf(fills, { realizedByFill: new Map() }, userId);
+    // What each fill realized, from the replay of the whole account (an order's fills alone can't say which lots they closed)
+    return transactionRowsOf(fills, { realizedByFill: realizedByFill ?? new Map() }, userId);
 };
 

@@ -1,6 +1,6 @@
 // The regulatory fees passed through on trades, by the date they take effect, as Alpaca charges them: accrued with each fill and
-// deducted at the end of the day, rounded up to the cent, as FEE activities (REG for the SEC fee, TAF, CAT, and for options ORF and OCC).
-// Commissions are $0, on stocks and options.
+// deducted at the end of the day, rounded up to the cent, as FEE activities (REG for the SEC fee, TAF and CAT).
+// Commissions are $0.
 // Pure, so it can be unit tested. Check the figures against the sources when they change; each rate lists the one it came from.
 
 interface DatedRate<T> {
@@ -27,23 +27,12 @@ const TAF_RATES: DatedRate<{ perShare: number; cap: number }>[] = [
     { from: "2027-01-01", rate: { perShare: 0.000195, cap: 9.79 } }
 ];
 
-// Consolidated Audit Trail fee: dollars per executed equivalent share, on buys and sells (an option contract is 100 of them). $0.000003
-// in Alpaca's fee schedule (files.alpaca.markets/disclosures/library/BrokFeeSched.pdf, revised Oct 12, 2026); before it, CAT Fee
-// 2026-1's reported $0.000001 (https://catnmsplan.com, fee alert 2026-1).
+// Consolidated Audit Trail fee: dollars per executed equivalent share, on buys and sells. $0.000003 in Alpaca's fee schedule
+// (files.alpaca.markets/disclosures/library/BrokFeeSched.pdf, revised Oct 12, 2026); before it, CAT Fee 2026-1's reported $0.000001
+// (https://catnmsplan.com, fee alert 2026-1).
 const CAT_RATES: DatedRate<number>[] = [
     { from: "2026-05-01", rate: 0.000001 },
     { from: "2026-10-12", rate: 0.000003 }
-];
-
-// Options, per contract, as in Alpaca's fee schedule (above): the options regulatory fee (ORF, $0.015) and the OCC clearing fee
-// ($0.025) on buys and sells; FINRA's TAF on contracts sold ($0 in the schedule; $0.00329 from FINRA's filing, with the share rate's $0
-// from Oct 1 to Dec 31, 2026); the SEC fee on sale proceeds as for stocks; CAT on 100 executed equivalent shares a contract.
-const ORF_RATES: DatedRate<number>[] = [{ from: "2026-01-01", rate: 0.015 }];
-const OCC_RATES: DatedRate<number>[] = [{ from: "2026-01-01", rate: 0.025 }];
-const OPTION_TAF_RATES: DatedRate<number>[] = [
-    { from: "2026-01-01", rate: 0.00329 },
-    { from: "2026-10-01", rate: 0 },
-    { from: "2027-01-01", rate: 0.00329 }
 ];
 
 const rateOn = <T>(rates: DatedRate<T>[], date: string): T | null => {
@@ -53,29 +42,14 @@ const rateOn = <T>(rates: DatedRate<T>[], date: string): T | null => {
 };
 
 export interface FeeAccrual {
+    // ORF and OCC are the option fees accrued while options were offered, still deducted and shown
     type: "REG" | "TAF" | "CAT" | "ORF" | "OCC";
     amount: number;
 }
 
-// The fees a fill accrues on its trade date ("YYYY-MM-DD"), unrounded; the ones that are zero are left out. multiplier is the contract's
-// shares (100 for an option, whose qty is in contracts and price per share).
-export const feesFor = ({ side, qty, price, date, multiplier = 1 }: { side: "buy" | "sell"; qty: number; price: number; date: string; multiplier?: number }): FeeAccrual[] => {
+// The fees a fill accrues on its trade date ("YYYY-MM-DD"), unrounded; the ones that are zero are left out
+export const feesFor = ({ side, qty, price, date }: { side: "buy" | "sell"; qty: number; price: number; date: string }): FeeAccrual[] => {
     const fees: FeeAccrual[] = [];
-    if (multiplier > 1) {
-        if (side === "sell") {
-            const sec = (rateOn(SEC_RATES, date) ?? 0) * qty * price * multiplier;
-            if (sec > 0) fees.push({ type: "REG", amount: sec });
-            const taf = (rateOn(OPTION_TAF_RATES, date) ?? 0) * qty;
-            if (taf > 0) fees.push({ type: "TAF", amount: taf });
-        }
-        for (const [type, rates] of [["ORF", ORF_RATES], ["OCC", OCC_RATES]] as const) {
-            const amount = (rateOn(rates, date) ?? 0) * qty;
-            if (amount > 0) fees.push({ type, amount });
-        }
-        const cat = (rateOn(CAT_RATES, date) ?? 0) * qty * multiplier;
-        if (cat > 0) fees.push({ type: "CAT", amount: cat });
-        return fees;
-    }
     if (side === "sell") {
         const sec = (rateOn(SEC_RATES, date) ?? 0) * qty * price;
         if (sec > 0) fees.push({ type: "REG", amount: sec });

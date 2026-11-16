@@ -11,9 +11,9 @@ import type { PositionAnalysis } from "@/lib/types";
 // shared with the Portfolio page by the quote cache)
 export const GET = withUser(async (request, { params }: TickerContext, userId) => {
     const ticker = (await params).ticker.toUpperCase();
-    const { positions, totalCash } = await getAccount(userId);
+    const { accountId, positions, totalCash } = await getAccount(userId);
     const position = positions.find(({ ticker: symbol }) => symbol === ticker);
-    if (!position) {
+    if (!accountId || !position) {
         throw new UpstreamError(`No open position in ${ticker}`, 404);
     }
     const { prices, staleTickers } = await fetchPrices(positions.map(({ ticker: symbol }) => symbol), `GET /api/portfolio/${ticker}/analysis`);
@@ -21,7 +21,7 @@ export const GET = withUser(async (request, { params }: TickerContext, userId) =
     const price = prices[ticker] ?? null;
     const side = position.quantity > 0 ? "long" : "short";
     const shares = Math.abs(position.quantity);
-    return NextResponse.json<PositionAnalysis>(await analyzePosition(userId, ticker, side, {
+    return NextResponse.json<PositionAnalysis>(await analyzePosition(userId, accountId, ticker, side, {
         shares, avgCost: position.avgCost, price,
         unrealizedPnlPercent: price === null ? null : (side === "long" ? price / position.avgCost - 1 : 1 - price / position.avgCost),
         weight: price !== null && equity > 0 ? shares * price / equity : null

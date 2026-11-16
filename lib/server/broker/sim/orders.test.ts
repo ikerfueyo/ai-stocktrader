@@ -40,6 +40,10 @@ describe("order validation", () => {
         check({ qty: "0.5" });
     });
 
+    test("stocks only: a multi-leg (options) order is refused", () => {
+        rejects(() => parseOrderRequest(request({ order_class: "mleg" })), 422, /multi-leg orders aren't offered/);
+    });
+
     test("qty and notional: exactly one, a notional of at least $1 in cents, up to 9 decimals of shares", () => {
         rejects(() => check({ qty: undefined }), 422, /qty or notional is required/);
         rejects(() => check({ notional: "10" }), 422, /only one of qty or notional/);
@@ -248,6 +252,15 @@ describe("order matching", () => {
         const cls = live({ timeInForce: "cls", side: "sell" });
         assert.deepEqual(evaluateOrder(cls, quote(), match({ now: at("15:00:00") })), {});
         assert.equal(evaluateOrder(cls, quote({ price: 101 }), match({ session: "after-hours", now: at("16:00:30") })).fill?.price, 101);
+    });
+
+    test("an auction order whose auction was missed expires instead of filling in a later one", () => {
+        const nextOpen = at("09:30:00", "2026-10-29");
+        const opg = live({ timeInForce: "opg", status: "accepted", expiresAt: OPEN });
+        assert.deepEqual(evaluateOrder(opg, quote(), match({ now: at("09:30:10", "2026-10-29"), regularOpen: nextOpen, regularClose: at("16:00:00", "2026-10-29") })).end,
+            { status: "expired", reason: "The opening auction passed without the order" });
+        const cls = live({ timeInForce: "cls", side: "sell", expiresAt: CLOSE });
+        assert.equal(evaluateOrder(cls, quote(), match({ session: "after-hours", now: at("16:00:30", "2026-10-29"), regularOpen: nextOpen, regularClose: at("16:00:00", "2026-10-29") })).end?.status, "expired");
     });
 
     test("day orders expire at their close, whatever the session", () => {

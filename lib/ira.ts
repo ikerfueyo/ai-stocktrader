@@ -6,12 +6,11 @@
 //   Distributions are withdrawals with a reason (the IRS needs one; it gives the 1099-R's code) and tax withholding: 10% federal unless
 //   the customer opts out, and state withholding as elected, taken from the amount requested.
 
+import { MARITAL_STATUSES, type MaritalStatus } from "./kyc";
+
 export type IraSubType = "traditional" | "roth";
 
 export const IRA_LABELS: Record<IraSubType, string> = { traditional: "Traditional IRA", roth: "Roth IRA" };
-
-// IRAs trade at 1x (no margin borrowing, no shorting) and options up to level 2 (covered calls, cash-secured puts, buying calls and puts)
-export const IRA_MAX_OPTIONS_LEVEL = 2;
 
 // The IRS's limits per tax year (IRS Notice 2024-80 for 2025; Notice 2025-67, IR-2025-111, for 2026: $7,500 and a $1,100 catch-up). A
 // later year uses the newest one known until it's added here.
@@ -193,7 +192,18 @@ export const maskBeneficiaries = (beneficiaries: BeneficiaryInput[]) => benefici
 export const COMMUNITY_PROPERTY_STATES = ["AZ", "CA", "ID", "LA", "NV", "NM", "TX", "WA", "WI"];
 
 // Whether to ask about spousal consent: the owner lives in a community property state, no spouse is a beneficiary, and they're married
-// or their marital status isn't known (the options suitability questions ask it, the application doesn't). Alpaca flags these accounts
+// or their marital status isn't known (the application asks it, but accounts opened before it did may not have it). Alpaca flags these accounts
 // to the partner, who collects the consent by hand.
 export const spousalConsentMayBeNeeded = (state: string | undefined, beneficiaries: Pick<BeneficiaryInput, "relationship">[], maritalStatus?: string | null): boolean =>
     COMMUNITY_PROPERTY_STATES.includes((state ?? "").toUpperCase()) && !beneficiaries.some(({ relationship }) => relationship === "spouse") && (!maritalStatus || maritalStatus === "MARRIED");
+
+// Alpaca refuses an IRA's beneficiaries while the owner's marital status isn't on the application (422, 40010001, in its sandbox on
+// 2026-11-10), and onboarding asks it as optional, so opening an IRA asks it when the individual account has none
+export const BENEFICIARIES_NEED_MARITAL_STATUS = "primaryAccountHolder marital_status is required to create beneficiaries";
+export const beneficiariesNeedMaritalStatus = (beneficiaries: readonly unknown[], maritalStatus?: string | null): boolean => beneficiaries.length > 0 && !maritalStatus;
+
+// The marital status an IRA is opened with: the individual account's, else the one chosen when opening it; null when neither is a valid one
+export const iraMaritalStatus = (onAccount?: string | null, chosen?: unknown): MaritalStatus | null => {
+    for (const value of [onAccount, chosen]) if (MARITAL_STATUSES.includes(value as MaritalStatus)) return value as MaritalStatus;
+    return null;
+};

@@ -5,9 +5,9 @@ import type { BrokerEvent, BrokerEventStream } from "../broker";
 // the app's consumer (lib/server/automation/events.ts) reads both alike. Each stream has its own ULIDs and its own resume parameter:
 // trade updates are /v2/events/trades (since_id, event_id); account status and non-trade activities are v1 (since_ulid, event_ulid);
 // transfer status comes from /v2/events/funding/status (since_id, event_id), since the legacy /v1/events/transfers/status isn't
-// offered to new partners. The checkpoint the app keeps is one ID for all streams, the newest it handled; each stream's own IDs are
-// time-ordered but not interleaved with the others', so a stream is resumed a few minutes before it (resumeId) and the repeats are
-// dropped by ID (the consumer tolerates any that remain, as the interface requires).
+// offered to new partners. The app keeps a checkpoint per stream, each resumed exactly. Before it kept one ID for all streams (the newest
+// it handled), and since each stream's IDs are time-ordered but not interleaved with the others', a stream with only that one is resumed a
+// few minutes before it (resumeId), the repeats dropped by ID (the consumer tolerates any that remain, as the interface requires).
 
 export interface StreamDefinition {
     path: string;
@@ -72,6 +72,10 @@ export const toBrokerEvent = (stream: BrokerEventStream, data: Record<string, un
 export class SeenIds {
     private readonly ids = new Set<string>();
     constructor(private readonly capacity = 10_000) {}
+
+    has(id: string): boolean {
+        return this.ids.has(id);
+    }
 
     // Records id; false when it was already seen
     add(id: string): boolean {

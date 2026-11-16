@@ -10,8 +10,6 @@ AI StockTrader is a Next.js App Router application for mock trading, backed by P
 - `db/schema.sql` and `db/migrations/`: database initialization and numbered SQL upgrades.
 - `public/`: static assets. Root configuration files control Next.js, TypeScript, ESLint, and Tailwind.
 
-Use these active directories; legacy `client/` and `server/` directories are excluded from TypeScript and ESLint.
-
 ## Build, Test, and Development Commands
 
 - `npm install`: install dependencies.

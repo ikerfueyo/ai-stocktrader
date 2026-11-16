@@ -3,7 +3,8 @@ import { getBroker } from "@/lib/server/broker";
 import { orderFillRows } from "@/lib/server/brokerLedger";
 import { listOrderFills } from "@/lib/server/broker/sim/orders";
 import { HttpError, withUser } from "@/lib/server/errors";
-import { forgetBrokerLedger, ledgerAccountId, readsThroughBroker, toTransactionRow, withAccountLock, withReasons } from "@/lib/server/portfolio";
+import { requireSecondFactor } from "@/lib/server/sensitive";
+import { brokerLedger, forgetBrokerLedger, ledgerAccountId, readsThroughBroker, toTransactionRow, withAccountLock, withReasons } from "@/lib/server/portfolio";
 import type { AppOrder, BrokerOrderUpdate, OrderDetails } from "@/lib/types";
 
 interface OrderContext {
@@ -22,7 +23,7 @@ export const GET = withUser(async (request, { params }: OrderContext, userId) =>
     const { id } = await params;
     const [order, fills] = await Promise.all([
         getBroker().getOrder(accountId, id),
-        !readsThroughBroker() ? listOrderFills(accountId, id).then(rows => rows.map(row => toTransactionRow(row, userId))) : orderFillRows(getBroker(), accountId, id, userId)
+        !readsThroughBroker() ? listOrderFills(accountId, id).then(rows => rows.map(row => toTransactionRow(row, userId))) : brokerLedger(accountId).then(({ ledger }) => orderFillRows(getBroker(), accountId, id, userId, ledger.replay.realizedByFill))
     ]);
     return NextResponse.json<OrderDetails>({ order: (await withReasons([order]))[0], fills });
 });
@@ -30,6 +31,8 @@ export const GET = withUser(async (request, { params }: OrderContext, userId) =>
 // Replace an open order (Alpaca's UpdateOrderRequest: qty, limit_price, stop_price, trail, time_in_force): the reply is the new order,
 // which replaces it
 export const PATCH = withUser(async (request, { params }: OrderContext, userId) => {
+    // A replace can raise the order's size or price, so it needs what placing one does
+    await requireSecondFactor(userId);
     const accountId = await accountFor(userId);
     const { id } = await params;
     const update = await request.json().catch(() => null) as BrokerOrderUpdate | null;

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { closeAccountProblem } from "@/lib/accounts";
 import { getBroker } from "@/lib/server/broker";
@@ -10,6 +11,7 @@ import type { AccountContext } from "../route";
 // then apply for a new one.
 export const POST = withUser(async (request, { params }: AccountContext, userId) => {
     const { account_id } = await findUserAccount(userId, (await params).id);
+    await requireRecentSignIn(userId);
     await withAccountLock(userId, async () => {
         const broker = getBroker();
         const [positions, orders, trading] = await Promise.all([broker.listPositions(account_id), broker.listOrders(account_id, { status: "open" }), broker.getTradeAccount(account_id)]);

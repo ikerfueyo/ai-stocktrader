@@ -119,6 +119,10 @@ export const evaluateOrder = (order: LiveOrder, quote: MatchQuote | null, contex
     // Auctions: OPG at the first tick of the regular session, CLS at the first tick after the close, on the auction price
     if (order.timeInForce === "opg" || order.timeInForce === "cls") {
         const auctionAt = order.timeInForce === "opg" ? context.regularOpen : context.regularClose;
+        // An order is for one auction (it expires at it): today's is a later one when the order's was missed (the server was down)
+        if (auctionAt !== null && auctionAt > order.expiresAt) {
+            return { end: { status: "expired", reason: `The ${order.timeInForce === "opg" ? "opening" : "closing"} auction passed without the order` } };
+        }
         const auctionDue = auctionAt !== null && now >= auctionAt && (order.timeInForce === "cls" || session === "regular");
         if (!auctionDue) {
             if (now >= order.expiresAt && order.timeInForce === "cls") return { end: { status: "expired", reason: "The closing auction passed without the order" } };

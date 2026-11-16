@@ -1,7 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import pool from "../db";
-import { getBroker } from "../broker";
+import { brokerMode, getBroker } from "../broker";
 import { HttpError, isHttpError } from "../httpError";
 import { notify } from "../notifications";
 import { requireTradableStock } from "../assets";
@@ -114,7 +114,11 @@ export const runRecurring = async (now = new Date()) => {
     const { dateKey: day, time } = easternParts(now);
     const session = sessionOn(day);
     if (!session || time < RUN_AFTER || now >= session.close) return { placed: 0, paused: 0 };
-    const { rows } = await pool.query<RecurringRow>(`SELECT ${COLUMNS} FROM recurring_investments WHERE status = 'active' AND next_date <= $1 ORDER BY next_date, created_at`, [day]);
+    // The broker in use's accounts only (a database can still hold the other broker's)
+    const { rows } = await pool.query<RecurringRow>(
+        `SELECT ${COLUMNS} FROM recurring_investments WHERE status = 'active' AND next_date <= $1
+           AND account_id IN (SELECT account_id FROM broker_accounts WHERE broker = $2) ORDER BY next_date, created_at`, [day, brokerMode()]
+    );
     let placed = 0, paused = 0;
     for (const row of rows) {
         if (runDateFor(row.next_date) > day) continue;

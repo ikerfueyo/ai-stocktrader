@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { ledgerAccountId } from "@/lib/server/portfolio";
+import { requireSecondFactor } from "@/lib/server/sensitive";
 import { getDripSettings, setDripSetting } from "@/lib/server/automation/drip";
 
 const accountFor = async (userId: string) => {
@@ -18,6 +19,8 @@ export const PUT = withUser(async (request, context, userId) => {
     const body = await request.json().catch(() => null) as { symbol?: unknown; enabled?: unknown } | null;
     const symbol = typeof body?.symbol === "string" && body.symbol.trim() ? body.symbol.trim().toUpperCase() : null;
     if (!body || !(typeof body.enabled === "boolean" || (symbol && body.enabled === null))) throw new HttpError("enabled must be true or false (or null for a position)", 400);
+    // Reinvesting places orders, so turning it on (or following a default that may be on) needs what placing one does
+    if (body.enabled !== false) await requireSecondFactor(userId);
     await setDripSetting(accountId, symbol, body.enabled as boolean | null);
     return NextResponse.json(await getDripSettings(accountId));
 });

@@ -15,7 +15,7 @@ Today the app is a self-invented mock:
 
 **Decisions made:**
 - Stocks only, no ETFs. SPY stays as a benchmark only.
-- Extras to include: recurring buys and DRIP, price alerts, options, and IRAs.
+- Extras to include: recurring buys and DRIP, price alerts, options, and IRAs. (Options were built in Phase 9 and removed on 2026-11-03: the app trades stocks only.)
 - KYC fields are validated, and the SSN is stored as its last 4 digits only.
 - **Alpha Vantage premium stays the primary data source** for everything it provides today: quotes for fills, daily and intraday bars, news with sentiment, overview, earnings, estimates, the earnings calendar, splits and dividends, search and market status. No AI inputs change.
 - **Alpaca's free market data** (Basic plan, ready for SIP) is used only for what Alpha Vantage lacks: asset flags, the calendar and clock, bid/ask sizes, extended-hours quotes, mergers, spinoffs and symbol changes, and options chains when Alpha Vantage's options plan doesn't cover them.
@@ -294,7 +294,10 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
   - Price alerts are checked every 30 seconds during the regular session only (not the extended sessions); a level alert must be set on the side the price will cross from.
   - Documents notify from the documents job (documents aren't events). Notifications for actions the user takes themselves (placing or cancelling an order, requesting a transfer) aren't sent.
 
-### Phase 9: Options (Alpaca levels 1–3)
+### Phase 9: Options (Alpaca levels 1–3) — removed
+
+**Removed on 2026-11-03.** The app trades stocks only, to go live on a stocks-only Alpaca correspondent: the code below is gone, and `db/migrations/026_no_options.sql` refuses to deploy while an account holds option contracts or has an option order working. The options tables and columns stay unused until a later migration drops them. What follows is the phase as it was built.
+
 - **Approval:** `max_options_trading_level` and `options_approved_level`, the options agreement and an experience questionnaire.
   - Level 1: covered calls and cash-secured puts.
   - Level 2: buying calls and puts.
@@ -344,7 +347,7 @@ Each phase leaves the app working, with `npm test`, `npm run typecheck` and `npm
 - **`docs/going-live.md`** lists what remains, which isn't code: a broker partnership and Alpaca's review, Plaid production access, a securities and investment-adviser counsel review (the AI recommendations, especially the personalized position analysis), market-data redistribution licensing, security work (SOC 2, multi-factor sign-in with Clerk, re-authentication before withdrawals, Reg S-P incident response), and the data the simulator can't model.
 
 - **As built (done, not yet connected):** `lib/server/broker/alpaca/` (CLAUDE.md has the details), unit-tested on mocked HTTP; the scenario suite (`lib/server/broker/scenarios.ts`) passes on `SimBroker` (`npm run test:scenarios`, its own `_test` database) and has a sandbox runner (`npm run test:scenarios:sandbox`) that hasn't run yet, since there are no sandbox credentials. Checked against Alpaca's authentication docs and ACH docs (Oct 2026), Plaid's processor docs and the vendored specs. Where it differs from the plan above:
-  - Streams: trade updates are `/v2/events/trades` (`since_id`; the v1 stream is gone), transfer status is `/v2/events/funding/status` (`since_id`; the v1 stream isn't offered to new partners), and account status and NTAs are v1 (`since_ulid`). The app keeps one checkpoint for all four, so each stream resumes 10 minutes before it and repeats are dropped by ID; the consumer was already idempotent.
+  - Streams: trade updates are `/v2/events/trades` (`since_id`; the v1 stream is gone), transfer status is `/v2/events/funding/status` (`since_id`; the v1 stream isn't offered to new partners), and account status and NTAs are v1 (`since_ulid`). The app kept one checkpoint for all four, so each stream resumed 10 minutes before it and repeats were dropped by ID; the consumer was already idempotent. A stream disconnected for longer than that while another moved on could lose events across a restart, so migration 031 made the checkpoints per stream (the shared one only seeds a stream without its own, once), with `failed_events` for events whose handling fails.
   - The Broker API has no GET for trading configurations (they're read from the trading account's `user_configurations`) and no locates (Trading API only), so AlpacaBroker refuses the locate methods with 501.
   - The SSN: the app already sent the full SSN to the broker and stored none; AlpacaBroker also masks tax IDs on every account it returns, so the app holds the same last-4 shape with either broker.
   - Plaid: `POST /api/plaid/link-token` and the ACH route's `plaid` body, with Plaid Link in `BankLink` when Alpaca and Plaid are both configured; manual numbers otherwise.

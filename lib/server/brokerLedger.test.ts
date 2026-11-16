@@ -1,10 +1,12 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-    accountSummary, cashRowsOf, fillsOf, ledgerOf, listAllActivities, optionEventsOf, orderFillRows, replayFills, taxLotsOf, taxReportOf, toAppPositions, tradesOf,
-    transactionRowsOf, type ShareAction
+    accountSummary, activityDay, cashRowsOf, fillsOf, historyTradesOf, ledgerOf, listAllActivities, listAllTransfers, shareMovesOf, mergeWindow, openOrderReservation, orderFillRows, replayFills, taxLotsOf,
+    taxReportOf, toAppPositions, tradesOf, transactionRowsOf, unpricedSymbols, windowCursor, type ShareAction
 } from "./brokerLedger";
 import type { CorporateAction } from "./broker/sim/corporateActions";
+import { readableDescription } from "../activityText";
+import { equityHistory } from "./history";
 import type { Activity, Order, Position, TradeAccount } from "./broker/types";
 
 // A FILL activity as Alpaca's /v1/accounts/activities returns it
@@ -51,15 +53,12 @@ describe("FIFO replay", () => {
         assert.deepEqual(replay.lots.map(({ qty, price }) => [qty, price]), [[3, 110]]);
     });
 
-    test("a short realizes the reverse, and option contracts count 100 shares", () => {
+    test("a short realizes the reverse", () => {
         const replay = replayFills(fillsOf([
             fill("1", "F", "sell", 5, 50, "2026-09-01T15:00:00Z"),
-            fill("2", "F", "buy", 2, 40, "2026-09-02T15:00:00Z"),
-            fill("3", "F261120C00012000", "buy", 1, 2, "2026-09-03T15:00:00Z"),
-            fill("4", "F261120C00012000", "sell", 1, 3.5, "2026-09-04T15:00:00Z")
+            fill("2", "F", "buy", 2, 40, "2026-09-02T15:00:00Z")
         ]), [], "2026-10-28");
         assert.equal(replay.realizedByFill.get("2"), 20);
-        assert.equal(replay.realizedByFill.get("4"), 150);
         assert.deepEqual(replay.lots.map(({ symbol, side, qty }) => [symbol, side, qty]), [["F", "short", 3]]);
     });
 
@@ -91,7 +90,7 @@ describe("FIFO replay", () => {
 const action = (fields: Partial<CorporateAction> & Pick<CorporateAction, "type" | "symbol" | "exDate">, prices = { symbol: null, newSymbol: null } as ShareAction["prices"]): ShareAction =>
     ({ action: { newSymbol: null, factor: null, cash: null, ...fields }, prices });
 
-describe("corporate actions and option events in the replay", () => {
+describe("corporate actions in the replay", () => {
     test("a stock merger moves the lots to the acquirer at its ratio, keeping their basis and acquisition date", () => {
         const replay = replayFills(fillsOf([
             fill("1", "AAA", "buy", 10, 100, "2026-09-01T15:00:00Z"),
@@ -141,39 +140,6 @@ describe("corporate actions and option events in the replay", () => {
         const report = taxReportOf({ replay, activities, year: 2026, prices: new Map([["NEW", 18]]), now: "2026-10-28T00:00:00Z" });
         assert.equal(report.form1099B.sales[0].washDisallowed, 50);
     });
-
-    test("an expired contract closes at nothing", () => {
-        const activities = [
-            fill("1", "F261120C00012000", "buy", 1, 2, "2026-09-03T15:00:00Z"),
-            cash("2", "OPEXP", 0, "2026-11-20", { symbol: "F261120C00012000", qty: "-1", created_at: "2026-11-20T21:45:00Z" })
-        ];
-        const replay = replayFills(fillsOf(activities), [], "2026-11-21", { optionEvents: optionEventsOf(activities) });
-        assert.equal(replay.realized, -200);
-        assert.equal(replay.lots.length, 0);
-        assert.deepEqual(replay.disposals.map(({ qty, lotPrice, price }) => [qty, lotPrice, price]), [[100, 2, 0]]);
-    });
-
-    test("an exercised call closes without P&L and puts its premium into the shares' basis", () => {
-        const activities = [
-            fill("1", "F261120C00012000", "buy", 2, 2, "2026-09-03T15:00:00Z"),
-            cash("2", "OPEXC", 0, "2026-10-01", { symbol: "F261120C00012000", qty: "-1", created_at: "2026-10-01T15:00:00Z" }),
-            fill("3", "F", "buy", 100, 12, "2026-10-01T15:00:00Z", "")
-        ];
-        const replay = replayFills(fillsOf(activities), [], "2026-10-28", { optionEvents: optionEventsOf(activities) });
-        assert.equal(replay.realized, 0);
-        assert.equal(replay.disposals.length, 0, "an exercise isn't a disposal");
-        assert.deepEqual(replay.lots.map(({ symbol, qty, price }) => [symbol, qty, price]), [["F261120C00012000", 1, 2], ["F", 100, 14]]);
-    });
-
-    test("an assigned short put buys the shares at the strike less the premium", () => {
-        const activities = [
-            fill("1", "F261120P00012000", "sell", 1, 1.5, "2026-09-03T15:00:00Z"),
-            cash("2", "OPASN", 0, "2026-10-01", { symbol: "F261120P00012000", qty: "1", created_at: "2026-10-01T20:45:00Z" }),
-            fill("3", "F", "buy", 100, 12, "2026-10-01T20:45:00Z", "")
-        ];
-        const replay = replayFills(fillsOf(activities), [], "2026-10-28", { optionEvents: optionEventsOf(activities) });
-        assert.deepEqual(replay.lots.map(({ symbol, qty, price }) => [symbol, qty, price]), [["F", 100, 10.5]]);
-    });
 });
 
 describe("rows", () => {
@@ -207,8 +173,8 @@ describe("rows", () => {
 describe("the account summary", () => {
     const trade = {
         cash: "-4000.00", pending_transfer_out: "100.00", accrued_fees: "0.03", equity: "6000", maintenance_margin: "3000", initial_margin: "5000", buying_power: "2000",
-        regt_buying_power: "1000", non_marginable_buying_power: "500", options_buying_power: "500", multiplier: "2", long_market_value: "10000", short_market_value: "0",
-        sma: "1000", cash_withdrawable: "0", shorting_enabled: true, options_approved_level: 2, options_trading_level: 2
+        regt_buying_power: "1000", non_marginable_buying_power: "500", multiplier: "2", long_market_value: "10000", short_market_value: "0",
+        sma: "1000", cash_withdrawable: "0", shorting_enabled: true
     } as unknown as TradeAccount;
     const positions = [{ symbol: "AAPL", qty: "50", side: "long", avg_entry_price: "190", unrealized_pl: "500" }] as Position[];
     const activities = [
@@ -236,11 +202,101 @@ describe("the account summary", () => {
         assert.equal(account.multiplier, 2);
         assert.equal(account.maxMultiplier, 4);
         assert.equal(account.unrealizedPnl, 500);
-        assert.equal(account.optionsLevel, 2);
         assert.equal(account.shortingBlockedReason, null);
         assert.equal(account.marginStatus, "ok");
         assert.deepEqual(account.positions, [{ ticker: "AAPL", quantity: 50 }]);
         assert.equal(accountSummary({ trade: { ...trade, shorting_enabled: false }, positions, configurations: {}, ledger, marginRate: 0.065 }).shortingEnabled, false);
+        assert.equal(account.belowMaintenance, null);
+        assert.equal(account.reservedCash, 0);
+    });
+
+    test("equity under Alpaca's maintenance margin is shown as the shortfall, and held buying power as given", () => {
+        const ledger = ledgerOf({ trade, positions, activities, splits: [], today: "2026-10-28" });
+        const account = accountSummary({ trade: { ...trade, equity: "2750.40" } as TradeAccount, positions, configurations: {}, ledger, marginRate: 0.065, reservedCash: 1234.567 });
+        assert.equal(account.belowMaintenance, 249.6);
+        // Shown only: Alpaca's buying power is already net of it
+        assert.equal(account.reservedCash, 1234.57);
+        assert.equal(account.buyingPower, 2000);
+        assert.equal(account.marginStatus, "ok");
+    });
+});
+
+describe("buying power held for open orders", () => {
+    const order = (fields: Record<string, unknown>) => ({ status: "new", filled_qty: "0", filled_avg_price: null, limit_price: null, stop_price: null, notional: null, qty: null, legs: null, ...fields }) as unknown as Order;
+
+    test("buys at their limit or stop, a partly filled one for what's left, a notional one for its dollars", () => {
+        const orders = [
+            order({ symbol: "AAPL", side: "buy", qty: "10", limit_price: "100" }),
+            order({ symbol: "MSFT", side: "buy", qty: "10", limit_price: "50", status: "partially_filled", filled_qty: "4", filled_avg_price: "49" }),
+            order({ symbol: "F", side: "buy", notional: "250", status: "partially_filled", filled_qty: "10", filled_avg_price: "12" }),
+            order({ symbol: "KO", side: "buy", qty: "5", stop_price: "60" })
+        ];
+        // 1,000 + 6 × 50 + (250 − 120) + 300
+        assert.equal(openOrderReservation(orders, {}, {}), 1730);
+        assert.deepEqual(unpricedSymbols(orders), []);
+    });
+
+    test("market orders and short sales at the quote; closing orders, held legs and finished orders hold nothing", () => {
+        const bracket = order({
+            symbol: "AAPL", side: "buy", qty: "10", type: "market",
+            legs: [order({ symbol: "AAPL", side: "sell", qty: "10", limit_price: "120", status: "held" }), order({ symbol: "AAPL", side: "sell", qty: "10", stop_price: "90", status: "held" })]
+        });
+        const orders = [
+            bracket,
+            order({ symbol: "TSLA", side: "sell", qty: "2" }),
+            order({ symbol: "MSFT", side: "sell", qty: "5", limit_price: "300" }),
+            order({ symbol: "KO", side: "buy", qty: "5", limit_price: "60", status: "filled", filled_qty: "5" })
+        ];
+        const quotes = { AAPL: { price: 100, ask: 100.1, bid: 99.9 }, TSLA: { price: 200, ask: 200, bid: 199.9 } };
+        // AAPL's market buy at the ask; TSLA's short at 3% over the ask; MSFT's sale closes the long and holds nothing
+        assert.equal(openOrderReservation(orders, { MSFT: 5 }, quotes), 1001 + 412);
+        assert.deepEqual(unpricedSymbols(orders).sort(), ["AAPL", "TSLA"]);
+        // A non-marginable stock on margin holds its value × the multiplier
+        assert.equal(openOrderReservation([order({ symbol: "XYZ", side: "buy", qty: "1", limit_price: "10" })], {}, {}, { marginable: { XYZ: false }, multiplier: 2 }), 20);
+    });
+});
+
+describe("activity descriptions", () => {
+    test("Alpaca's key-value transfer descriptions read as the transfer's kind; others stay", () => {
+        const deposit = cash("1", "CSD", 2500, "2026-11-10", { description: "type: ach, subtype: none, statement_id: e602c4f2, direction: INCOMING" });
+        assert.equal(cashRowsOf([deposit], "u")[0].method, "ACH deposit");
+        assert.equal(readableDescription("type: wire, subtype: none, direction: OUTGOING"), "Wire withdrawal");
+        assert.equal(readableDescription("Wire fee"), "Wire fee");
+    });
+});
+
+describe("the stored copy of activities", () => {
+    test("each activity's Eastern day: a cash activity's date, a fill's transaction time", () => {
+        assert.equal(activityDay(cash("1", "CSD", 1, "2026-11-02")), "2026-11-02");
+        // 1:30 a.m. UTC is the evening before in New York
+        assert.equal(activityDay(fill("2", "F", "buy", 1, 10, "2026-11-03T01:30:00Z")), "2026-11-02");
+    });
+
+    test("the cursor is the newest stored activity dated before the window, and the window is replaced", () => {
+        const stored = [
+            { id: "20261101150000000::a", day: "2026-11-01" }, { id: "20261103150000000::b", day: "2026-11-03" },
+            { id: "20261106150000000::c", day: "2026-11-06" }, { id: "20261109150000000::d", day: "2026-11-09" }
+        ];
+        // 3 days before Nov 10 is Nov 7: Nov 6 and before are kept, the rest read again
+        assert.equal(windowCursor(stored, "2026-11-10"), "20261106150000000::c");
+        assert.equal(windowCursor(stored.slice(3), "2026-11-10"), null);
+        assert.equal(windowCursor([], "2026-11-10"), null);
+        // A late fill dated inside the window, d gone (corrected away), and a new one
+        const fetched = [{ id: "20261108100000000::late", day: "2026-11-08" }, { id: "20261110150000000::e", day: "2026-11-10" }];
+        assert.deepEqual(mergeWindow(stored, fetched, "20261106150000000::c").map(({ id }) => id.split("::")[1]), ["a", "b", "c", "late", "e"]);
+        // Without a cursor, the broker's copy replaces everything
+        assert.deepEqual(mergeWindow(stored, fetched, null).map(({ id }) => id.split("::")[1]), ["late", "e"]);
+    });
+
+    test("paging starts after the cursor", async () => {
+        const all = Array.from({ length: 5 }, (_, index) => cash(`a${index}`, "CSD", 1, "2026-10-01"));
+        const broker = {
+            listActivities: async (_: string, query: { page_token?: string }) => {
+                const start = query.page_token ? all.findIndex(({ id }) => id === query.page_token) + 1 : 0;
+                return all.slice(start, start + 100);
+            }
+        };
+        assert.deepEqual((await listAllActivities(broker as never, "acct", ["CSD"], "a2")).map(({ id }) => id), ["a3", "a4"]);
     });
 });
 
@@ -292,5 +348,57 @@ describe("an order's fills", () => {
         };
         const rows = await orderFillRows(broker as never, "acct", "b", "user_1");
         assert.deepEqual(rows.map(({ id, order_id }) => `${id}:${order_id}`), ["f2:b", "f1:a"]);
+        // With the account's replay, each fill's realized P&L
+        const withPnl = await orderFillRows(broker as never, "acct", "b", "user_1", new Map([["f2", 12.5], ["f1", null]]));
+        assert.deepEqual(withPnl.map(({ realized_pnl }) => realized_pnl), [12.5, null]);
+    });
+});
+
+describe("listAllTransfers", () => {
+    test("pages past the first 100, so an IRA's older contributions still count", async () => {
+        const all = Array.from({ length: 230 }, (_, index) => ({ id: `t${index}` }));
+        const queries: { limit?: number; offset?: number }[] = [];
+        const broker = {
+            listTransfers: async (_: string, query: { limit?: number; offset?: number }) => {
+                queries.push(query);
+                return all.slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? 100));
+            }
+        };
+        const listed = await listAllTransfers(broker as never, "acct");
+        assert.equal(listed.length, 230);
+        assert.deepEqual(queries.map(({ offset }) => offset), [0, 100, 200]);
+    });
+});
+
+describe("the equity history's trades", () => {
+    const activities = [
+        cash("d", "CSD", 1000, "2026-09-01"),
+        fill("1", "OLDCO", "buy", 10, 100, "2026-09-02T15:00:00Z"),
+        // A cash merger at $120 a share: the shares leave, $1,200 arrives
+        cash("m", "MA", 1200, "2026-10-01", { activity_sub_type: "CMA", symbol: "OLDCO", qty: "-10" }),
+        fill("2", "SPINNER", "buy", 4, 50, "2026-09-03T15:00:00Z"),
+        cash("s", "SPIN", 0, "2026-10-05", { symbol: "SPUNCO", qty: "2" }),
+        cash("x", "DIV", 0, "2026-10-06", { activity_sub_type: "SDIV", symbol: "SPINNER", qty: "0.4" }),
+        cash("c", "DIV", 5, "2026-10-07", { activity_sub_type: "CDIV", symbol: "SPINNER", qty: "4.4" })
+    ];
+
+    test("share moves are no-cost trades, cash dividends aren't", () => {
+        assert.deepEqual(shareMovesOf(activities).map(({ ticker, type, quantity }) => `${type} ${quantity} ${ticker}`), ["SELL 10 OLDCO", "BUY 2 SPUNCO", "BUY 0.4 SPINNER"]);
+    });
+
+    test("a cash merger's shares leave the history, so its cash isn't counted twice", () => {
+        const dates = ["2026-09-02", "2026-10-01", "2026-10-02"];
+        const points = equityHistory({
+            trades: historyTradesOf(activities.slice(0, 3)),
+            cash: [{ date: "2026-09-01", amount: 1000, external: true }, { date: "2026-10-01", amount: 1200, external: false }],
+            closes: { OLDCO: { "2026-09-02": 100, "2026-09-30": 118 } },
+            dates
+        });
+        assert.deepEqual(points.map(({ equity }) => equity), [1000, 1200, 1200]);
+    });
+
+    test("trades before a symbol change are under the new symbol", () => {
+        const actions: ShareAction[] = [{ action: { type: "NAME_CHANGE", symbol: "SPINNER", newSymbol: "NEWNAME", factor: null, cash: null, exDate: "2026-10-06" }, prices: {} as never }];
+        assert.deepEqual(historyTradesOf(activities, actions).map(({ ticker }) => ticker), ["OLDCO", "NEWNAME", "OLDCO", "SPUNCO", "SPINNER"]);
     });
 });

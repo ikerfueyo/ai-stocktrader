@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import pool from "../../db";
-import { addDays, easternParts, easternTime, isTradingDay, marketStatus, nextTradingDay } from "../../../marketHours";
+import { addDays, easternParts, easternTime, lastCompletedTradingDay, nextTradingDay, sessionOn } from "../../../marketHours";
 import { getMarketStatus } from "../../market";
 import { roundCents } from "../../account";
 import { emitEvent } from "./accounts";
@@ -147,11 +147,15 @@ export const accountsOnMargin = async (): Promise<string[]> =>
 // nothing new.
 export const endOfDayMargin = async (now = new Date()) => {
     const result = { balances: 0, calls: 0, interest: 0, borrowFees: 0, intradayDeficits: 0, intradayRestrictions: 0 };
-    if (!isTradingDay(dayOf(now)) || marketStatus(now).open) return result;
+    // The last finished trading day: today after its close, else (a run late after a restart, before today's close) the one before,
+    // processed as of its after-hours end. Never today before its close.
+    const day = lastCompletedTradingDay(now);
+    const late = day !== dayOf(now);
+    const at = late ? sessionOn(day)!.extendedClose : now;
     const { rows: accounts } = await pool.query<{ id: string }>("SELECT id FROM sim_accounts WHERE status IN ('ACTIVE', 'ACCOUNT_UPDATED')");
     for (const { id } of accounts) {
         try {
-            const counts = await endOfDayAccount(id, now);
+            const counts = await endOfDayAccount(id, at, { late });
             for (const key of Object.keys(result) as (keyof typeof result)[]) result[key] += counts[key];
         } catch (error) {
             console.error(`${LABEL}: end of day for ${id}: ${error instanceof Error ? error.message : error}`);
@@ -160,8 +164,10 @@ export const endOfDayMargin = async (now = new Date()) => {
     return result;
 };
 
-// The margin end of day for one account, at now (after the close of a trading day)
-export const endOfDayAccount = async (id: string, now = new Date()) => {
+// The margin end of day for one account, at now (after the close of a trading day). Run late (the next morning, for a day missed while
+// the server was down), its closing balances only fill a gap: the current quotes aren't that day's close, so they never replace a row
+// the day's own run kept.
+export const endOfDayAccount = async (id: string, now = new Date(), { late = false }: { late?: boolean } = {}) => {
     const today = dayOf(now);
     const result = { balances: 0, calls: 0, interest: 0, borrowFees: 0, intradayDeficits: 0, intradayRestrictions: 0 };
     const days = carryDays(today);
@@ -173,9 +179,9 @@ export const endOfDayAccount = async (id: string, now = new Date()) => {
     await pool.query(
         `INSERT INTO sim_daily_balances (account_id, "date", equity, cash, long_market_value, short_market_value, maintenance_margin, initial_margin, buying_power, regt_buying_power)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (account_id, "date") DO UPDATE SET equity = EXCLUDED.equity, cash = EXCLUDED.cash, long_market_value = EXCLUDED.long_market_value,
+         ON CONFLICT (account_id, "date") DO ${late ? "NOTHING" : `UPDATE SET equity = EXCLUDED.equity, cash = EXCLUDED.cash, long_market_value = EXCLUDED.long_market_value,
              short_market_value = EXCLUDED.short_market_value, maintenance_margin = EXCLUDED.maintenance_margin, initial_margin = EXCLUDED.initial_margin,
-             buying_power = EXCLUDED.buying_power, regt_buying_power = EXCLUDED.regt_buying_power`,
+             buying_power = EXCLUDED.buying_power, regt_buying_power = EXCLUDED.regt_buying_power`}`,
         [id, today, state.equity, ledger.cash, state.longMarketValue, state.shortMarketValue, state.maintenanceMargin, state.initialMargin, state.buyingPower, state.regtBuyingPower]
     );
     result.balances++;

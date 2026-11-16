@@ -2,16 +2,68 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The app's palette: dark slate, aqua and teal accents, green and red for gains and losses */
+:root {
+    --slate-950: #2b3035;
+    --slate-900: #343a40;
+    --slate-800: #3d444b;
+    --slate-700: #495057;
+    --slate-500: #6c757d;
+    --slate-400: #868e96;
+    --slate-300: #adb5bd;
+    --slate-200: #dee2e6;
+    --slate-100: #f1f3f5;
+    --slate-50: #f8f9fa;
+    --border: #e3e7eb;
+    --page-bg: #f4f6f8;
+    --surface: #ffffff;
+
+    /* Aqua only on slate; teal 600 and 800 are the accents that read on white */
+    --aqua: #00ffff;
+    --teal-500: #00ced1;
+    --teal-600: #00a5a8;
+    --teal-700: #008285;
+    --teal-800: #00585a;
+    --teal-100: #d5f5f5;
+    --teal-50: #eefafa;
+
+    --gain: #1e9e4a;
+    --gain-strong: #178040;
+    --gain-bg: #e6f6ec;
+    --loss: #d63c4a;
+    --loss-strong: #b32d3a;
+    --loss-bg: #fdecee;
+    --warn: #d9822b;
+    --warn-bg: #fff4e5;
+    /* Lighter shades for the dark header */
+    --gain-on-dark: #4cd964;
+    --loss-on-dark: #ff6b6b;
+
+    --radius-sm: 6px;
+    --radius: 10px;
+    --radius-lg: 14px;
+    --shadow-sm: 0 1px 2px rgba(52, 58, 64, 0.06), 0 1px 3px rgba(52, 58, 64, 0.06);
+    --shadow-md: 0 4px 12px rgba(52, 58, 64, 0.08), 0 2px 4px rgba(52, 58, 64, 0.05);
+    --shadow-lg: 0 12px 32px rgba(52, 58, 64, 0.16), 0 4px 8px rgba(52, 58, 64, 0.06);
+    --focus-ring: 0 0 0 3px rgba(0, 165, 168, 0.3);
+    --ease: 0.18s ease;
+
+    --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+}
+
 body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-      sans-serif;
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--slate-900);
+    background-color: var(--page-bg);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
 }
-  
-  code {
+
+code {
     font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
       monospace;
 }

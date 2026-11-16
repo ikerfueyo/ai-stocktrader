@@ -55,18 +55,23 @@ export const reinvestDividend = async (userId: string, accountId: string, activi
         );
         return record(activity.id, accountId, symbol, net, "held", null, `Held until ${symbol}'s dividends reach $${MIN_NOTIONAL.toFixed(2)} ($${total.toFixed(2)} so far)`);
     }
+    // Only the broker's refusal holds the money for the next dividend. Once the order is placed, a failure to note it is thrown, so the
+    // event is retried, and the retry finds the order by its client_order_id instead of placing (or holding) the money again
+    let orderId: string | null;
     try {
-        const order = await broker.createOrder(accountId, { symbol, side: "buy", type: "market", time_in_force: "day", notional: total.toFixed(2), client_order_id: `drip-${activity.id}` } as never);
-        await pool.query("DELETE FROM drip_pending WHERE account_id = $1 AND symbol = $2", [accountId, symbol]);
-        await record(activity.id, accountId, symbol, net, "ordered", order.id, total > net ? `With $${(total - net).toFixed(2)} held from earlier dividends` : null);
+        orderId = (await broker.createOrder(accountId, { symbol, side: "buy", type: "market", time_in_force: "day", notional: total.toFixed(2), client_order_id: `drip-${activity.id}` } as never)).id;
     } catch (error) {
-        // Already placed (the event came again after a restart)
-        if (isHttpError(error) && /client_order_id must be unique/.test(error.message)) return record(activity.id, accountId, symbol, net, "ordered", null, null);
-        await pool.query(
-            `INSERT INTO drip_pending (account_id, symbol, amount) VALUES ($1, $2, $3) ON CONFLICT (account_id, symbol) DO UPDATE SET amount = EXCLUDED.amount`, [accountId, symbol, total.toFixed(2)]
-        );
-        await fail("failed", `The reinvestment order was refused (${error instanceof Error ? error.message : error}); $${total.toFixed(2)} is held for the next ${symbol} dividend.`);
+        if (!isHttpError(error) || !/client_order_id must be unique/.test(error.message)) {
+            await pool.query(
+                `INSERT INTO drip_pending (account_id, symbol, amount) VALUES ($1, $2, $3) ON CONFLICT (account_id, symbol) DO UPDATE SET amount = EXCLUDED.amount`, [accountId, symbol, total.toFixed(2)]
+            );
+            return fail("failed", `The reinvestment order was refused (${error instanceof Error ? error.message : error}); $${total.toFixed(2)} is held for the next ${symbol} dividend.`);
+        }
+        // Already placed (the event came again after a restart, or after a failure below)
+        orderId = null;
     }
+    await pool.query("DELETE FROM drip_pending WHERE account_id = $1 AND symbol = $2", [accountId, symbol]);
+    await record(activity.id, accountId, symbol, net, "ordered", orderId, total > net ? `With $${(total - net).toFixed(2)} held from earlier dividends` : null);
 };
 
 // GET /api/drip: the account's default, its positions' choices and what's held back

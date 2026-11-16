@@ -3,7 +3,8 @@ import pool from "@/lib/server/db";
 import { HttpError, withUser } from "@/lib/server/errors";
 import { brokerMode, getBroker } from "@/lib/server/broker";
 import { clientIp, FINAL_STATUSES, listAccountRows, listAccounts } from "@/lib/server/brokerAccounts";
-import { validateApplication } from "@/lib/kyc";
+import { AGREEMENTS, validateApplication } from "@/lib/kyc";
+import { agreementDocuments, brokerRevision, requireCurrentRevisions } from "@/lib/server/agreements";
 import { easternParts } from "@/lib/marketHours";
 import type { AccountCreationRequest } from "@/lib/server/broker/types";
 import type { BrokerAccount, BrokerAccountSummary, OpenAccountRequest } from "@/lib/types";
@@ -16,9 +17,8 @@ const optional = <T extends Record<string, unknown>>(object: T) => Object.fromEn
 
 // Apply for an individual account: body { application } (lib/kyc.ts's AccountApplication, checked with validateApplication; 400
 // listing the problems). The server signs each accepted agreement with the time and the client's IP, sends Alpaca's account request
-// to the broker (which reviews it: SUBMITTED, then usually ACTIVE within seconds), records the W-9 certification and the delivered
-// disclosures, and asks for options approval when the options agreement was accepted. 409 while the user has an account that isn't
-// rejected or closed.
+// to the broker (which reviews it: SUBMITTED, then usually ACTIVE within seconds), and records the W-9 certification and the
+// delivered disclosures. The account trades stocks only. 409 while the user has an account that isn't rejected or closed.
 export const POST = withUser(async (request, context, userId) => {
     const body = await request.json().catch(() => null) as Partial<OpenAccountRequest> | null;
     const application = body?.application;
@@ -34,12 +34,16 @@ export const POST = withUser(async (request, context, userId) => {
         throw new HttpError("You already have an individual account", 409);
     }
 
+    // Only the agreements the app offers (an options agreement from an older form isn't signed), each at the revision the form showed
+    const agreements = application.agreements.filter(agreement => AGREEMENTS.includes(agreement));
+    requireCurrentRevisions([...agreements, "form_crs", "privacy_notice"], body?.revisions);
+    const documents = agreementDocuments();
+
     const signedAt = new Date().toISOString();
     const ip = clientIp(request);
     const { contact, identity, disclosures, trusted_contact: trusted } = application;
     const phone = digits(contact.phone_number).slice(-10);
     const taxId = digits(identity.tax_id);
-    const options = application.agreements.includes("options_agreement");
     const accountRequest: AccountCreationRequest = {
         account_type: "trading",
         allow_instant_ach: false,
@@ -54,8 +58,8 @@ export const POST = withUser(async (request, context, userId) => {
         }),
         disclosures: optional({ ...disclosures, context: disclosures.context?.length ? disclosures.context : undefined }),
         ...(trusted?.given_name ? { trusted_contact: optional({ ...trusted }) } : {}),
-        agreements: application.agreements.map(agreement => ({ agreement, signed_at: signedAt, ip_address: ip })),
-        enabled_assets: options ? ["us_equity", "us_option"] : ["us_equity"]
+        agreements: agreements.map(agreement => ({ agreement, signed_at: signedAt, ip_address: ip, ...brokerRevision(agreement) })),
+        enabled_assets: ["us_equity"]
     };
     const account: BrokerAccount = await broker.createAccount(accountRequest);
     await pool.query(
@@ -63,9 +67,9 @@ export const POST = withUser(async (request, context, userId) => {
         [account.id, userId, brokerMode(), account.account_number]
     );
     await pool.query(
-        `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'w9', $2, $3), ($1, 'form_crs', '{}', $3), ($1, 'privacy_notice', '{}', $3)`,
-        [account.id, JSON.stringify({ backup_withholding: application.w9.backup_withholding }), ip]
+        `INSERT INTO account_attestations (account_id, kind, details, ip_address) VALUES ($1, 'w9', $2, $3), ($1, 'form_crs', $4, $3), ($1, 'privacy_notice', $5, $3)`,
+        [account.id, JSON.stringify({ backup_withholding: application.w9.backup_withholding, tax_id_last4: taxId.slice(-4) }), ip,
+            JSON.stringify({ revision: documents.form_crs.revision }), JSON.stringify({ revision: documents.privacy_notice.revision })]
     );
-    if (options && application.options_level) await broker.requestOptionsApproval(account.id, { level: application.options_level as 1 | 2 | 3 });
     return NextResponse.json<BrokerAccount>(account, { status: 201 });
 });

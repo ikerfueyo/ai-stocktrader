@@ -39,6 +39,15 @@ const MarginBanner = () => {
 
     return (
         <>
+            {account.belowMaintenance !== null && (
+                <div className="margin-banner danger" role="alert">
+                    <span>
+                        <strong>Your equity is {formatCurrency(account.belowMaintenance)} below the maintenance requirement.</strong>{" "}
+                        The broker can issue a margin call or sell positions to cover it. <Link href="/deposit">Deposit</Link> or close positions on
+                        the <Link href="/portfolio">Portfolio</Link>.
+                    </span>
+                </div>
+            )}
             {account.marginCalls.map(call => (
                 <div key={call.id} className="margin-banner danger" role="alert">
                     <span>

@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-    achTimeline, bankRequestError, fedHolidays, instantAmount, isBankingDay, maskAccountNumber, nextBankingDay, plannedReturn,
+    achTimeline, bankRequestError, depositReleaseAt, fedHolidays, instantAmount, isBankingDay, maskAccountNumber, nextBankingDay, plannedReturn,
     relationshipRequestError, transferRequestError, verifyRelationship, wireTimeline
 } from "./funding";
 import { easternTime } from "../../../marketHours";
@@ -52,6 +52,25 @@ describe("Transfer timelines", () => {
         assert.equal(returned.code, "R01");
         assert.equal(returned.at.toISOString(), at("2026-10-30", "09:00").toISOString());
         assert.equal(plannedReturn(250.10, at("2026-10-28", "09:00"))!.code, "R10");
+    });
+});
+
+describe("Deposit holds", () => {
+    test("a completed deposit can be withdrawn from its 7th banking day, as the sandbox's were", () => {
+        // Completed on 2026-10-28 and 2026-10-29: withdrawable on 2026-11-06 and 2026-11-09 in Alpaca's sandbox
+        assert.equal(depositReleaseAt(at("2026-10-28", "09:00")).toISOString(), at("2026-11-06", "09:00").toISOString());
+        assert.equal(depositReleaseAt(at("2026-10-29", "16:30")).toISOString(), at("2026-11-09", "09:00").toISOString());
+    });
+
+    test("bank holidays don't count, and a return comes within the hold", () => {
+        // Veterans Day (2026-11-11) is skipped
+        assert.equal(depositReleaseAt(at("2026-11-04", "09:00")).toISOString(), at("2026-11-16", "09:00").toISOString());
+        assert.ok(plannedReturn(100.01, at("2026-10-28", "09:00"))!.at < depositReleaseAt(at("2026-10-28", "09:00")));
+    });
+
+    test("no hold at 0 days", () => {
+        const completeAt = at("2026-10-28", "09:00");
+        assert.equal(depositReleaseAt(completeAt, 0), completeAt);
     });
 });
 

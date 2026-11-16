@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireRecentSignIn } from "@/lib/server/sensitive";
 import { withUser } from "@/lib/server/errors";
 import { getBroker } from "@/lib/server/broker";
 import { findUserAccount } from "@/lib/server/brokerAccounts";
@@ -11,6 +12,7 @@ interface RelationshipContext {
 export const DELETE = withUser(async (request, { params }: RelationshipContext, userId) => {
     const { id, relationshipId } = await params;
     const { account_id } = await findUserAccount(userId, id);
+    await requireRecentSignIn(userId);
     await getBroker().deleteAchRelationship(account_id, relationshipId);
     return new NextResponse(null, { status: 204 });
 });

@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { easternTime, isTradingDay, latestTradingDay, marketStatus, nextTradingDay, parseEasternTimestamp, registerCalendar, sessionOn, settlementDate } from "./marketHours";
+import { easternTime, isTradingDay, lastCompletedTradingDay, latestTradingDay, marketStatus, nextTradingDay, parseEasternTimestamp, registerCalendar, sessionOn, settlementDate } from "./marketHours";
 
 const at = (dateKey: string, time: string) => marketStatus(easternTime(dateKey, time));
 
@@ -130,5 +130,23 @@ describe("Alpaca's registered calendar", () => {
     test("trades settle the next trading day without it", () => {
         assert.equal(settlementDate("2026-10-23"), "2026-10-26", "Friday to Monday");
         assert.equal(settlementDate("2026-11-25"), "2026-11-27", "over Thanksgiving");
+    });
+});
+
+describe("lastCompletedTradingDay", () => {
+    test("is today only once today's regular session has closed", () => {
+        // Tuesday Nov 10, 2026: the morning (a restart before the open) still means Monday; after the close, Tuesday
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-10", "08:00")), "2026-11-09");
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-10", "15:59")), "2026-11-09");
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-10", "16:00")), "2026-11-10");
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-10", "20:15")), "2026-11-10");
+    });
+
+    test("skips weekends and holidays, and follows an early close", () => {
+        // Monday Nov 9's morning is Friday Nov 6; Thanksgiving (Nov 26) is the Wednesday before; Nov 27 closes at 1:00 p.m.
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-09", "07:00")), "2026-11-06");
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-08", "12:00")), "2026-11-06");
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-26", "21:00")), "2026-11-25");
+        assert.equal(lastCompletedTradingDay(easternTime("2026-11-27", "13:30")), "2026-11-27");
     });
 });

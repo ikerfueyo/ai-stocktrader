@@ -7,6 +7,7 @@ import axios from "axios";
 import { logError } from "@/lib/apiError";
 import { browserNotificationsToShow } from "@/lib/automation";
 import type { NotificationItem, NotificationsResponse } from "@/lib/types";
+import { leavePage } from "@/lib/pageRequests";
 
 const POLL_MS = 30000;
 
@@ -39,7 +40,7 @@ const NotificationBell = () => {
                 const shown = new Notification(item.title, { body: item.body, tag: `notification-${item.id}` });
                 shown.onclick = () => {
                     window.focus();
-                    if (item.link) router.push(item.link);
+                    if (item.link) { leavePage(item.link); router.push(item.link); }
                 };
             } catch (error) {
                 logError(error);
@@ -100,7 +101,7 @@ const NotificationBell = () => {
         if (item.link) {
             // Documents open as pages of their own
             if (item.link.startsWith("/api/")) window.open(item.link, "_blank", "noopener,noreferrer");
-            else router.push(item.link);
+            else { leavePage(item.link); router.push(item.link); }
         }
     };
 

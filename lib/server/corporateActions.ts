@@ -1,12 +1,11 @@
 import "server-only";
-import { isOptionSymbol } from "../options";
 import pool from "./db";
 import { cachePromise, singleton, type CacheEntry } from "./cache";
 import { fetchAlpacaCorporateActions, fetchCorporateActions, fetchDailySeries, isAlpacaConfigured, priceOverride } from "./marketData";
 import { addDays, easternParts } from "../marketHours";
 import type { CorporateAction, CorporateActionType } from "./broker/sim/corporateActions";
 import type { ShareAction } from "./brokerLedger";
-import type { Dividend, Split } from "./account";
+import { isFormerOptionContract, type Dividend, type Split } from "./account";
 
 // Corporate actions are stored in Postgres (corporate_actions, shared by all users), fetched once per ticker and refreshed daily while
 // the ticker is held: splits and cash dividends from Alpha Vantage, and with Alpaca keys the stock dividends, mergers, spinoffs,
@@ -69,9 +68,8 @@ const syncTicker = (ticker: string) => cachePromise(syncs, ticker, 60000, async 
 // positions) checked more than a day ago, so a split is in place before the account is valued or traded. A failure is logged and
 // the ticker listed in unsynced (replayed with what's stored, possibly nothing) until a later request succeeds.
 export const loadCorporateActions = async (allTickers: string[], allRefreshTickers: string[] = []): Promise<{ splits: Split[]; dividends: Dividend[]; unsynced: string[] }> => {
-    // Option contracts have no corporate actions of their own (an adjusted contract is a new, non-standard one, which isn't offered)
-    const tickers = allTickers.filter(ticker => !isOptionSymbol(ticker));
-    const refreshTickers = allRefreshTickers.filter(ticker => !isOptionSymbol(ticker));
+    const tickers = allTickers.filter(ticker => !isFormerOptionContract(ticker));
+    const refreshTickers = allRefreshTickers.filter(ticker => !isFormerOptionContract(ticker));
     if (tickers.length === 0) return { splits: [], dividends: [], unsynced: [] };
     const { rows: checked } = await pool.query<{ ticker: string; checked_at: Date }>(
         "SELECT ticker, checked_at FROM corporate_actions_checked WHERE ticker = ANY($1)", [tickers]
@@ -122,7 +120,7 @@ const closeOn = (symbol: string, day: string): Promise<number | null> => {
 // spun-off company, a new symbol), for replaying an account's lots without the simulator's (lib/server/brokerLedger.ts).
 // loadCorporateActions has fetched the tickers first.
 export const loadShareActions = async (allTickers: string[], today = easternParts(new Date()).dateKey): Promise<ShareAction[]> => {
-    const queue = [...new Set(allTickers.filter(ticker => !isOptionSymbol(ticker)).map(ticker => ticker.toUpperCase()))];
+    const queue = [...new Set(allTickers.filter(ticker => !isFormerOptionContract(ticker)).map(ticker => ticker.toUpperCase()))];
     const seen = new Set(queue);
     const actions: ShareAction[] = [];
     while (queue.length > 0) {
