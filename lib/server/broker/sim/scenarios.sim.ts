@@ -47,7 +47,7 @@ const prepareDatabase = async () => {
     try {
         const { rows: [{ ready }] } = await client.query<{ ready: boolean }>("SELECT to_regclass('sim_accounts') IS NOT NULL AS ready");
         if (!ready) {
-            const schema = readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8").replace(/^CREATE DATABASE[^;]*;/m, "");
+            const schema = readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8");
             await client.query(schema);
         }
     } finally {

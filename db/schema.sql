@@ -1,5 +1,3 @@
-CREATE DATABASE ai_stocktrader;
-
 -- Splits and dividends per ticker, shared by all users. ex_date is a split's effective date; factor is new shares per old share
 -- (below 1 for a reverse split); amount is a dividend's cash per share.
 CREATE TABLE corporate_actions (
