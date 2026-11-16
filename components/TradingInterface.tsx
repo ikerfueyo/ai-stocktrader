@@ -16,11 +16,11 @@ import WatchlistStar from "./WatchlistStar";
 import Link from "next/link";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import type { MarketStatus } from "@/lib/marketHours";
-import type { DailyBar, DailySeries, Quote } from "@/lib/types";
+import type { DailyBars, Quote } from "@/lib/types";
 
 const TradingInterface = ({ ticker }: { ticker: string }) => {
 
-    const [data, setData] = useState<Record<string, DailyBar> | null>(null);
+    const [data, setData] = useState<DailyBars | null>(null);
     // The latest close and the one before it, from the daily series, shown when the quote can't be loaded
     const [seriesPrice, setSeriesPrice] = useState<{ price: number; previousClose: number | null } | null>(null);
     // The quote trades fill against (bid/ask, time and delay); orders need it
@@ -54,16 +54,12 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
             setData(null);
             setError(null);
             try {
-                const response = await axios.get<DailySeries>(`/api/trading/${ticker}`);
-                const timeSeries = response.data["Time Series (Daily)"];
-                if (timeSeries) {
-                    const [latestDate, previousDate] = Object.keys(timeSeries);
-                    setSeriesPrice({
-                        price: parseFloat(timeSeries[latestDate]["4. close"]),
-                        previousClose: previousDate ? parseFloat(timeSeries[previousDate]["4. close"]) : null
-                    });
+                const { data: bars } = await axios.get<DailyBars>(`/api/trading/${ticker}`);
+                const { close } = bars;
+                if (close.length > 0) {
+                    setSeriesPrice({ price: close[close.length - 1], previousClose: close.length > 1 ? close[close.length - 2] : null });
                 }
-                setData(timeSeries);
+                setData(bars);
             } catch (error) {
                 logError(error);
                 setError(apiErrorMessage(error));
@@ -87,29 +83,31 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
             <MarketStatusBadge status={market} />
             <div className="trading-interface-container">
                 <div className="left-column">
-                    {error ? (
-                        <p className="text-danger">Couldn&apos;t load {ticker}: {error}</p>
-                    ) : shown === null ? (
-                        <p>Loading...</p>
-                    ) : (
-                        <Fragment>
-                            <section className="trade-card">
+                    {/* Only the price and the order ticket wait for a price (the quote, else the daily series' newest close); the
+                        sections below load on their own meanwhile */}
+                    <section className="trade-card">
+                        {shown !== null ? (
+                            <Fragment>
                                 <Price price={shown.price} previousClose={shown.previousClose} quote={quote} />
                                 {quote ? (
                                     <BuySellFunctionality ticker={ticker} quote={quote} market={market} onTraded={() => setQuoteVersion(version => version + 1)} />
                                 ) : quoteError ? (
                                     <p className="text-danger">Couldn&apos;t get a quote for {ticker}, so it can&apos;t be traded right now: {quoteError}</p>
                                 ) : null}
-                            </section>
-                            <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
-                            <QuoteDetails ticker={ticker.toUpperCase()} data={data} quote={quote} />
-                            <EarningsDetails ticker={ticker.toUpperCase()} />
-                            <CorporateActions ticker={ticker.toUpperCase()} />
-                            <section className="chart-card">
-                                <CandlestickChart ticker={ticker.toUpperCase()} data={data} />
-                            </section>
-                        </Fragment>
-                    )}
+                            </Fragment>
+                        ) : quoteError && error ? (
+                            <p className="text-danger">Couldn&apos;t load {ticker}: {error}</p>
+                        ) : (
+                            <p>Loading...</p>
+                        )}
+                    </section>
+                    <OpenOrders ticker={ticker} refreshKey={quoteVersion} />
+                    <QuoteDetails ticker={ticker.toUpperCase()} data={data} quote={quote} />
+                    <EarningsDetails ticker={ticker.toUpperCase()} />
+                    <CorporateActions ticker={ticker.toUpperCase()} />
+                    <section className="chart-card">
+                        {error ? <p className="text-danger">Couldn&apos;t load {ticker}&apos;s price history: {error}</p> : <CandlestickChart ticker={ticker.toUpperCase()} data={data} />}
+                    </section>
                 </div>
                 <div className="right-column">
                     <AIAnalysis ticker={ticker} />

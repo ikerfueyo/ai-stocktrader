@@ -4,6 +4,7 @@ import { HttpError, withUser } from "@/lib/server/errors";
 import { brokerMode, getBroker } from "@/lib/server/broker";
 import { findUserAccount, requireAccount } from "@/lib/server/brokerAccounts";
 import { forgetBrokerLedger, withAccountLock } from "@/lib/server/portfolio";
+import { forgetUpkeep } from "@/lib/server/upkeep";
 import { marginSnapshot, withdrawalError } from "@/lib/server/broker/sim/marginAccount";
 import pool from "@/lib/server/db";
 import { DEPOSIT_HOLD_DAYS } from "@/lib/server/broker/sim/funding";
@@ -65,6 +66,8 @@ export const POST = withUser(async (request, { params }: AccountContext, userId)
             return getBroker().createTransfer(account_id, transfer);
         });
         forgetBrokerLedger(account_id);
+        // Its instant credit may meet a margin call, which the header's next read should show
+        forgetUpkeep(account_id);
         return NextResponse.json<BrokerTransfer>(deposit, { status: 201 });
     }
     const fee = type === "wire" ? fundingTerms().wireFee : 0;

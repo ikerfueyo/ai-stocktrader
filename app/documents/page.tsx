@@ -1,5 +1,4 @@
 import { Fragment } from "react";
-import Header from "@/components/Header";
 import DocumentsPage, { type DocumentsTab } from "@/components/DocumentsPage";
 
 const TABS: DocumentsTab[] = ["documents", "gains"];
@@ -9,7 +8,6 @@ export default async function Documents({ searchParams }: { searchParams: Promis
 
     return (
         <Fragment>
-            <Header />
             <div>
                 <DocumentsPage tab={TABS.find(id => id === tab) ?? "documents"} />
             </div>

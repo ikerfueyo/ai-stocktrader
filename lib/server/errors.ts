@@ -1,7 +1,6 @@
 import "server-only";
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import OpenAI from "openai";
 import type { ApiError } from "../types";
 
 import { HttpError, UpstreamError, isHttpError } from "./httpError";
@@ -28,10 +27,8 @@ export const errorResponse = (request: NextRequest, error: unknown): NextRespons
     if (isHttpError(error)) {
         status = error.status;
         details = error.details ?? {};
-    } else if (code === "ECONNABORTED" || code === "ETIMEDOUT" || error instanceof OpenAI.APIConnectionTimeoutError) {
+    } else if (code === "ECONNABORTED" || code === "ETIMEDOUT") {
         status = 504;
-    } else if (error instanceof OpenAI.APIError) {
-        status = 502;
     }
     return NextResponse.json({ ...details, error: message }, { status });
 };

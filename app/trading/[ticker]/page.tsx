@@ -1,5 +1,4 @@
 import { Fragment } from "react";
-import Header from "@/components/Header";
 import TradingInterface from "@/components/TradingInterface";
 
 export default async function Trading({ params }: { params: Promise<{ ticker: string }> }) {
@@ -7,7 +6,6 @@ export default async function Trading({ params }: { params: Promise<{ ticker: st
 
     return (
         <Fragment>
-            <Header />
             <div className="mt-5">
                 <TradingInterface ticker={ticker} />
             </div>

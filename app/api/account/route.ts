@@ -48,9 +48,14 @@ export const GET = withUser(async (request, context, userId) => {
             return NextResponse.json<Account>(accountSummary({ trade, positions, configurations, ledger, marginRate: ALPACA_MARGIN_RATE, reservedCash }));
         }
     }
-    await withAccountLock(userId, db => updateAccount(userId, "GET /api/account", db));
+    await withAccountLock(userId, db => updateAccount(userId, "GET /api/account", db, { throttle: true }));
     const { accountId, positions, totalCash, realizedPnl, netDividends, pendingTransferOut, unsettledProceeds, accruedFees } = await getAccount(userId);
-    const liquidations = (await getFills(userId, { since: new Date(Date.now() - 7 * 86400000) })).filter(({ reason }) => reason === "LIQUIDATION").slice(0, 20);
+    // getAccount first, since it advances due transfers and applies corporate actions; the rest only read, so together
+    const [fills, margin] = await Promise.all([
+        getFills(userId, { since: new Date(Date.now() - 7 * 86400000) }),
+        accountId ? Promise.all([marginSnapshot(pool, accountId), accruedInterest(accountId)]) : null
+    ]);
+    const liquidations = fills.filter(({ reason }) => reason === "LIQUIDATION").slice(0, 20);
     const ledger = {
         realizedPnl, netDividends, pendingTransferOut, unsettledProceeds, liquidations,
         accruedFees: Math.round(Object.values(accruedFees).reduce((sum, amount) => sum + amount, 0) * 100) / 100,
@@ -64,7 +69,7 @@ export const GET = withUser(async (request, context, userId) => {
             missingPrices: [], withdrawableCash: 0
         });
     }
-    const [snapshot, interest] = await Promise.all([marginSnapshot(pool, accountId), accruedInterest(accountId)]);
+    const [snapshot, interest] = margin!;
     const { state } = snapshot;
     const prices = Object.fromEntries(snapshot.positions.map(({ symbol, price }) => [symbol, price]));
     const { unrealizedPnl, missingPrices } = valueAccount({ positions, totalCash, prices, staleTickers: snapshot.staleTickers });

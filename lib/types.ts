@@ -421,7 +421,17 @@ export interface DailyBar {
     "5. volume": string;
 }
 
-// GET /api/trading/[ticker]: Alpha Vantage's TIME_SERIES_DAILY reply, passed through as is
+// GET /api/trading/[ticker]: a stock's daily bars as parallel arrays, oldest first
+export interface DailyBars {
+    dates: string[];
+    open: number[];
+    high: number[];
+    low: number[];
+    close: number[];
+    volume: number[];
+}
+
+// Alpha Vantage's TIME_SERIES_DAILY reply
 export interface DailySeries {
     "Meta Data": Record<string, string>;
     "Time Series (Daily)": Record<string, DailyBar>;

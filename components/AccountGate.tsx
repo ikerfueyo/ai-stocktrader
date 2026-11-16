@@ -2,19 +2,44 @@
 
 import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import axios from "axios";
-import { UserButton } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import logo from "@/public/AIStockTraderLogo.png";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { BrokerAccountContext } from "@/context/BrokerAccountContext";
 import { AccountProvider } from "@/context/AccountContext";
-import OnboardingWizard from "./OnboardingWizard";
-import ApplicationStatus from "./ApplicationStatus";
+import Header from "./Header";
 import { OPEN_ACCOUNT_STATUSES } from "@/lib/accounts";
 import { useBrokerInfo } from "@/context/BrokerInfoContext";
 import AgreementLink from "./AgreementLink";
 import type { BrokerAccountSummary } from "@/lib/types";
+
+// Only shown before an account is open, so loaded then rather than with every page
+const OnboardingWizard = dynamic(() => import("./OnboardingWizard"), { loading: () => <p className="text-center mt-5">Loading...</p> });
+const ApplicationStatus = dynamic(() => import("./ApplicationStatus"), { loading: () => <p className="text-center mt-5">Loading...</p> });
+
+// The last /api/accounts answer with an open active account, kept for the tab's session per user, so a reload shows the app at once
+// while the accounts load again. Storage can be unavailable (private windows, blocked site data), which only loses the head start.
+const cacheKey = (userId: string | null | undefined) => `accounts:${userId ?? ""}`;
+const readCachedAccounts = (userId: string | null | undefined): BrokerAccountSummary[] | null => {
+    try {
+        const cached = JSON.parse(sessionStorage.getItem(cacheKey(userId)) ?? "null");
+        return Array.isArray(cached) ? cached : null;
+    } catch {
+        return null;
+    }
+};
+const cacheAccounts = (userId: string | null | undefined, accounts: BrokerAccountSummary[]) => {
+    try {
+        const active = accounts.find(account => account.active);
+        if (active && OPEN_ACCOUNT_STATUSES.includes(active.status)) sessionStorage.setItem(cacheKey(userId), JSON.stringify(accounts));
+        else sessionStorage.removeItem(cacheKey(userId));
+    } catch {
+        // Storage unavailable
+    }
+};
 
 // Statuses a review is still working through, polled until they change
 const PENDING_STATUSES = ["SUBMITTED", "APPROVAL_PENDING", "APPROVED", "ACTION_REQUIRED"];
@@ -39,6 +64,7 @@ export const OnboardingHeader = () => (
 // (ApplicationStatus); with one, the app opens with its figures (AccountProvider). The agreement pages are readable either way.
 const AccountGate = ({ children }: { children: ReactNode }) => {
     const pathname = usePathname();
+    const { userId } = useAuth();
     const { simulated } = useBrokerInfo();
     const [accounts, setAccounts] = useState<BrokerAccountSummary[] | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -47,13 +73,23 @@ const AccountGate = ({ children }: { children: ReactNode }) => {
 
     const refreshAccounts = useCallback(async () => {
         try {
-            setAccounts((await axios.get<BrokerAccountSummary[]>("/api/accounts")).data);
+            const { data } = await axios.get<BrokerAccountSummary[]>("/api/accounts");
+            cacheAccounts(userId, data);
+            setAccounts(data);
             setError(null);
         } catch (error) {
             logError(error);
             setError(apiErrorMessage(error));
         }
-    }, []);
+    }, [userId]);
+
+    // Before paint, and before the children's effects fetch: the cached accounts, if any (sessionStorage isn't there while rendering
+    // on the server, so not in the initial state)
+    useLayoutEffect(() => {
+        const cached = readCachedAccounts(userId);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        if (cached) setAccounts(current => current ?? cached);
+    }, [userId]);
 
     useEffect(() => {
         // refreshAccounts only sets state once its request finishes
@@ -86,7 +122,11 @@ const AccountGate = ({ children }: { children: ReactNode }) => {
     } else if (active && OPEN_ACCOUNT_STATUSES.includes(active.status)) {
         return (
             <BrokerAccountContext.Provider value={{ accounts, active, refreshAccounts }}>
-                <AccountProvider key={active.accountId}>{children}</AccountProvider>
+                <AccountProvider key={active.accountId}>
+                    {/* Here rather than in each page, so it stays mounted (and keeps its data) across navigation */}
+                    <Header />
+                    {children}
+                </AccountProvider>
             </BrokerAccountContext.Provider>
         );
     } else if (!active || reapplying) {

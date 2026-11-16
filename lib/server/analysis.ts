@@ -2,7 +2,8 @@ import "server-only";
 import { filterTradable } from "./assets";
 import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
-import { cachePromise, singleton, type CacheEntry } from "./cache";
+import { cachePromise, singleton, staleWhileRevalidate, type CacheEntry, type StaleEntry } from "./cache";
+import { inBackgroundLane } from "./rateLimit";
 import { UpstreamError } from "./httpError";
 import pool from "./db";
 import { fetchCompanyOverview, fetchDailyCloses, fetchEarnings, fetchEarningsEstimates, fetchNews, fetchNextReport, fetchTickerNews, mainTickers, parseNewsTime, type NewsItem } from "./marketData";
@@ -32,6 +33,14 @@ const formatNews = (news: NewsItem[]) => news.map(item => `Published: ${formatPu
 
 type AnalystOptions = Pick<ChatCompletionCreateParamsNonStreaming, "response_format" | "temperature">;
 
+// OpenAI's errors as the error contract's: a timeout 504, any other API error 502. Mapped here rather than in errors.ts, so the API
+// routes don't all bundle the OpenAI SDK.
+const toUpstreamError = (error: unknown) => {
+    if (error instanceof OpenAI.APIConnectionTimeoutError) return new UpstreamError(error.message, 504);
+    if (error instanceof OpenAI.APIError) return new UpstreamError(error.message);
+    return error;
+};
+
 const askAnalyst = async (content: string, options: AnalystOptions = {}) => {
     const response = await openai().chat.completions.create({
         model: MODEL,
@@ -43,7 +52,7 @@ const askAnalyst = async (content: string, options: AnalystOptions = {}) => {
             { role: "user", content }
         ],
         ...options
-    });
+    }).catch(error => { throw toUpstreamError(error); });
     return (response.choices[0].message.content ?? "").trim();
 };
 
@@ -289,7 +298,7 @@ const STOCKS_PER_SIDE = 30;
 // Average sentiment beyond which Alpha Vantage labels news somewhat bullish or bearish
 const MIN_STOCK_SENTIMENT = 0.15;
 const ARTICLES_PER_STOCK = 4;
-const rankingsCache = singleton("rankingsCache", () => new Map<string, CacheEntry<Rankings>>());
+const rankingsCache = singleton("rankings", (): StaleEntry<Rankings> => ({ loaded: false, expires: 0 }));
 
 interface StockNews {
     ticker: string;
@@ -379,5 +388,8 @@ const buildRankings = async (): Promise<Rankings> => {
     return { buy: confirmedBuys.picks, sell: confirmedSells.picks };
 };
 
-// Up to 5 buy and 5 sell stocks, cached for 30 minutes
-export const getRankings = () => cachePromise(rankingsCache, "rankings", RANKINGS_CACHE_MS, buildRankings);
+// Up to 5 buy and 5 sell stocks, rebuilt every 30 minutes. Once they exist, a rebuild runs behind the last rankings, which are served
+// meanwhile (a rebuild takes tens of seconds), and its Alpha Vantage calls go in the background lane, behind the quotes and pages
+// waiting on Alpha Vantage. While it runs, a listed stock's Trading page may already show its new analysis.
+export const getRankings = () => staleWhileRevalidate(rankingsCache, RANKINGS_CACHE_MS, () => inBackgroundLane(buildRankings),
+    error => console.error(`GET /api/rankings: rebuilding: ${error instanceof Error ? error.message : error}; serving the previous rankings`));

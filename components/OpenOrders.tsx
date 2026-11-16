@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import axios from "axios";
 import QuantityStepper from "./QuantityStepper";
@@ -48,8 +48,13 @@ const OpenOrders = ({ ticker, refreshKey = 0 }: OpenOrdersProps) => {
     const { account, refreshAccount } = useAccount();
     // Reloads when a fill, expiry or buy-in changes the account, such as one by the broker's order engine
     const activity = accountActivityKey(account);
+    const lastActivity = useRef(activity);
 
     useEffect(() => {
+        // The account loading after this mounted isn't a change: the mount's own request already has the orders
+        const accountLoaded = lastActivity.current === "" && activity !== "";
+        lastActivity.current = activity;
+        if (accountLoaded) return;
         const getOrders = async () => {
             try {
                 const response = await axios.get<AppOrder[]>(`/api/orders?status=open${ticker ? `&symbols=${encodeURIComponent(ticker.toUpperCase())}` : ""}`);

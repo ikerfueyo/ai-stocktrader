@@ -1,9 +1,12 @@
 "use client";
 
 import type { ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { Show, useAuth } from "@clerk/nextjs";
 import AccountGate from "./AccountGate";
-import SignInPage from "./SignInPage";
+
+// Only shown while signed out, so loaded then rather than with every page
+const SignInPage = dynamic(() => import("./SignInPage"));
 
 // Every page needs a signed-in user, since every API route does, and an open brokerage account (AccountGate)
 const AppShell = ({ children }: { children: ReactNode }) => {

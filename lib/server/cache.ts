@@ -27,3 +27,27 @@ export const cachePromise = <T>(cache: Map<string, CacheEntry<T>>, key: string, 
     });
     return promise;
 };
+
+export interface StaleEntry<T> {
+    value?: T;
+    loaded: boolean;
+    expires: number;
+    reloading?: Promise<T>;
+}
+
+// Serves a value that's slow to make without making callers wait once it exists: while fresh it's returned as is, and once ms have
+// passed it's still returned while one reload runs behind it, replacing it when it succeeds (a failure goes to onError and the old
+// value stays). Only the first callers, before there's any value, wait for the load (and get its failure).
+export const staleWhileRevalidate = <T>(entry: StaleEntry<T>, ms: number, load: () => Promise<T>, onError: (error: unknown) => void): Promise<T> => {
+    const reload = () => entry.reloading ??= load()
+        .then(value => {
+            Object.assign(entry, { value, loaded: true, expires: Date.now() + ms });
+            return value;
+        })
+        .finally(() => {
+            entry.reloading = undefined;
+        });
+    if (!entry.loaded) return reload();
+    if (entry.expires <= Date.now()) reload().catch(onError);
+    return Promise.resolve(entry.value as T);
+};

@@ -2,6 +2,7 @@ import "server-only";
 import type { PoolClient } from "pg";
 import pool from "./db";
 import { singleton } from "./cache";
+import { inBackgroundLane } from "./rateLimit";
 import { fetchQuotes } from "./marketData";
 import { getMarketStatus } from "./market";
 import { withAccountLock } from "./portfolio";
@@ -44,6 +45,8 @@ export interface Job {
     // The simulator's own work (its order engine, reviews, transfers, ledger and documents), which Alpaca does itself: skipped with
     // BROKER=alpaca
     simOnly?: boolean;
+    // Its provider calls (Alpha Vantage, Alpaca's data) wait behind the ones pages are waiting on (lib/server/rateLimit.ts)
+    background?: boolean;
     run: () => Promise<unknown>;
 }
 
@@ -131,7 +134,7 @@ export const JOBS: Job[] = [
     // margin calls, accrue margin interest (posted at month end) and charge hard-to-borrow fees
     { name: "eod", simOnly: true, slots: ["20:15"], leaderOnly: true, run: async () => ({ ...(await endOfDay()), ...(await endOfDayMargin()) }) },
     // Corporate actions apply before the pre-market opens (reading an account, and every order match, apply them too)
-    { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, run: runCorporateActions },
+    { name: "corporate-actions", slots: ["03:45"], leaderOnly: true, background: true, run: runCorporateActions },
     // Documents that are due: the previous trading day's confirmations, statements after a month's first weekend, 1099s from Feb 15
     { name: "documents", slots: ["06:30"], leaderOnly: true, run: async () => ({ made: brokerMode() === "sim" ? await generateAllDocuments() : 0, notified: await notifyNewDocuments() }) },
     // The app's consumer of the broker's events (notifications and dividend reinvestment), started once in the leader, and the retries
@@ -146,7 +149,7 @@ export const JOBS: Job[] = [
     // Development only (POST /api/dev/jobs): moves every in-progress transfer one step now, ignoring the banking calendar
     { name: "settle-transfers", simOnly: true, leaderOnly: true, manual: true, run: () => fastForwardTransfers() },
     // Alpaca refreshes its asset flags 3 times a day, the last at 8:20 a.m. ET
-    { name: "assets", slots: ["04:30", "08:30", "16:30"], leaderOnly: true, run: () => syncAssets(LABEL) },
+    { name: "assets", slots: ["04:30", "08:30", "16:30"], leaderOnly: true, background: true, run: () => syncAssets(LABEL) },
     { name: "calendar", slots: ["03:00"], leaderOnly: false, run: () => syncCalendar(LABEL) }
 ];
 
@@ -160,7 +163,7 @@ export const runJob = async (job: Job): Promise<boolean> => {
     if (state.jobsRunning.has(job.name)) return false;
     state.jobsRunning.add(job.name);
     try {
-        await job.run();
+        await (job.background ? inBackgroundLane(job.run) : job.run());
         state.lastRuns.set(job.name, new Date());
     } catch (error) {
         if ((error as { code?: string }).code !== "42P01") throw error;

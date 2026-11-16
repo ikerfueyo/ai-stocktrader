@@ -1,15 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
 import axios from "axios";
 import { apiErrorMessage, logError } from "@/lib/apiError";
 import { formatCurrency, formatSigned } from "@/lib/orders";
 import type { HistoryRange, PortfolioHistory } from "@/lib/types";
 import { CHART_COLORS, CHART_LAYOUT } from "@/lib/chartTheme";
+import Plot from "./Plot";
 
-// Plotly needs the browser's window, so the chart only renders on the client
-const Plot = dynamic(() => import("react-plotly.js"), { ssr: false, loading: () => <p>Loading chart...</p> });
 
 const RANGES: HistoryRange[] = ["1W", "1M", "3M", "YTD", "1Y", "ALL"];
 

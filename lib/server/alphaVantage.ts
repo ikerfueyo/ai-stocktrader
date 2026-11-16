@@ -6,7 +6,7 @@ import { rateLimiter } from "./rateLimit";
 import { roundPrice, type Dividend, type Split } from "./account";
 import { easternParts, easternTime, marketStatus, parseEasternTimestamp, sessionOn } from "../marketHours";
 import type { EpsEstimate, NextReport, QuarterResult } from "./earnings";
-import type { CompanyOverview, DailyBar, DailySeries, IntradayBar, MarketMovers, Mover, Quote, QuoteDelay, SymbolMatch } from "../types";
+import type { CompanyOverview, DailyBar, DailyBars, DailySeries, IntradayBar, MarketMovers, Mover, Quote, QuoteDelay, SymbolMatch } from "../types";
 
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
@@ -149,11 +149,25 @@ export const fetchTickerNews = (ticker: string): Promise<NewsItem[]> => cachePro
 const closesCache = singleton("dailyClosesCache", () => new Map<string, CacheEntry<Record<string, number>>>());
 export const fetchDailyCloses = (ticker: string, outputsize: "compact" | "full") =>
     cachePromise(closesCache, `${ticker}|${outputsize}`, 12 * 3600000, async () => {
-        const series = (await fetchDailySeries(ticker, outputsize))["Time Series (Daily)"];
+        const series = (await fetchRecentDailySeries(ticker, outputsize))["Time Series (Daily)"];
         return Object.fromEntries(Object.entries(series).map(([date, bar]) => [date, parseFloat(bar["4. close"])]));
     });
 
 export const fetchDailySeries = (ticker: string, outputsize: "compact" | "full") => fetchAlphaVantage<DailySeries>({ function: "TIME_SERIES_DAILY", symbol: ticker, outputsize, ...REALTIME }, "Time Series (Daily)");
+
+// The daily series kept for a minute (today's bar moves until the close), so the Trading page's chart and its analysis's closes,
+// requested together, share one call
+const seriesCache = singleton("dailySeriesCache", () => new Map<string, CacheEntry<DailySeries>>());
+export const fetchRecentDailySeries = (ticker: string, outputsize: "compact" | "full") =>
+    cachePromise(seriesCache, `${ticker}|${outputsize}`, 60000, () => fetchDailySeries(ticker, outputsize));
+
+// A daily series as parallel arrays, oldest first: a fraction of Alpha Vantage's keyed object, already parsed
+export const toDailyBars = (series: DailySeries): DailyBars => {
+    const bars = series["Time Series (Daily)"] ?? {};
+    const dates = Object.keys(bars).sort();
+    const column = (key: keyof DailyBar) => dates.map(date => parseFloat(bars[date][key]));
+    return { dates, open: column("1. open"), high: column("2. high"), low: column("3. low"), close: column("4. close"), volume: column("5. volume") };
+};
 
 // Quotes are cached for 15s, so the header's /api/account, the Portfolio page's /api/portfolio and a trade share one Alpha Vantage
 // call per ticker (one per 100 tickers with the bulk endpoints) while staying close to the realtime price

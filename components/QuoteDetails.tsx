@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { logError } from "@/lib/apiError";
 import { formatPrice } from "@/lib/orders";
-import type { CompanyOverview, DailyBar, Quote } from "@/lib/types";
+import type { CompanyOverview, DailyBars, Quote } from "@/lib/types";
 
 // 4954723975000 -> "$4.95T"
 const formatLarge = (value: number) => {
@@ -16,7 +16,7 @@ const titleCase = (text: string) => text.toLowerCase().replace(/\b\w/g, letter =
 
 // Day range and volume (the live quote's, else the newest daily bar's), the 52-week range (the last 252 bars), and, from the company
 // overview, the company's name, listing, sector, key figures and analysts' consensus
-const QuoteDetails = ({ ticker, data, quote = null }: { ticker: string; data: Record<string, DailyBar> | null; quote?: Quote | null }) => {
+const QuoteDetails = ({ ticker, data, quote = null }: { ticker: string; data: DailyBars | null; quote?: Quote | null }) => {
     const [overview, setOverview] = useState<CompanyOverview | null>(null);
 
     useEffect(() => {
@@ -33,17 +33,18 @@ const QuoteDetails = ({ ticker, data, quote = null }: { ticker: string; data: Re
         getOverview();
     }, [ticker]);
 
-    const dates = data ? Object.keys(data).sort().reverse() : [];
-    const latest = dates.length > 0 ? data![dates[0]] : null;
-    const year = dates.slice(0, 252).map(date => data![date]);
-    const yearHigh = year.length > 0 ? Math.max(...year.map(bar => parseFloat(bar["2. high"]))) : null;
-    const yearLow = year.length > 0 ? Math.min(...year.map(bar => parseFloat(bar["3. low"]))) : null;
+    // The newest bar, and the last 252 sessions' range
+    const last = data && data.dates.length > 0 ? data.dates.length - 1 : null;
+    const yearHighs = data?.high.slice(-252) ?? [];
+    const yearLows = data?.low.slice(-252) ?? [];
+    const yearHigh = yearHighs.length > 0 ? Math.max(...yearHighs) : null;
+    const yearLow = yearLows.length > 0 ? Math.min(...yearLows) : null;
 
     const ratings = overview?.analystRatings;
     const ratingCount = ratings ? ratings.strongBuy + ratings.buy + ratings.hold + ratings.sell + ratings.strongSell : 0;
-    const dayLow = quote?.low ?? (latest ? parseFloat(latest["3. low"]) : null);
-    const dayHigh = quote?.high ?? (latest ? parseFloat(latest["2. high"]) : null);
-    const volume = quote?.volume ?? (latest ? parseFloat(latest["5. volume"]) : null);
+    const dayLow = quote?.low ?? (last !== null ? data!.low[last] : null);
+    const dayHigh = quote?.high ?? (last !== null ? data!.high[last] : null);
+    const volume = quote?.volume ?? (last !== null ? data!.volume[last] : null);
     const stats: [string, string | null][] = [
         ["Open", quote?.open ? formatPrice(quote.open) : null],
         ["Day range", dayLow !== null && dayHigh !== null ? `${formatPrice(dayLow)} – ${formatPrice(dayHigh)}` : null],

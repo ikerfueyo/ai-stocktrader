@@ -243,6 +243,8 @@ CREATE TABLE sim_orders (
 CREATE INDEX sim_orders_account_idx ON sim_orders (account_id, created_at);
 CREATE INDEX sim_orders_open_idx ON sim_orders (status) WHERE status IN ('new', 'accepted', 'partially_filled', 'held', 'pending_new');
 CREATE INDEX sim_orders_group_idx ON sim_orders (group_id) WHERE group_id IS NOT NULL;
+CREATE INDEX sim_orders_parent_idx ON sim_orders (parent_id) WHERE parent_id IS NOT NULL;
+CREATE INDEX sim_orders_submitted_idx ON sim_orders (account_id, submitted_at);
 
 -- The account ledger's activities: FILL trade fills, CSD cash deposits, CSW cash withdrawals, FEE fees, DIV dividends and SPLIT
 -- splits, each with a signed net_amount. id is Alpaca's activity id format ("YYYYMMDDHHMMSSmmm::uuid").
