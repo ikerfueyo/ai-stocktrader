@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import axios from "axios";
 import { logError } from "@/lib/apiError";
 import type { SymbolMatch } from "@/lib/types";
+import { leavePage } from "@/lib/pageRequests";
 
 // Ticker search with suggestions (GET /api/search, from the first character, 250ms after typing stops). Arrow keys move through the
 // suggestions; Enter opens the highlighted one, or the typed ticker.
@@ -41,6 +42,7 @@ const TickerSearchBar = ({ className = "" }: { className?: string }) => {
         setOpen(false);
         setTicker("");
         setMatches([]);
+        leavePage(`/trading/${symbol}`);
         router.push(`/trading/${symbol}`);
     };
 

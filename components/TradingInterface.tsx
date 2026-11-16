@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useLayoutEffect, useState } from "react";
 import axios from "axios";
 import Price from "./Price";
 import BuySellFunctionality from "./BuySellFunctionality";
@@ -31,7 +31,10 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
     // Bumped after an order to reload the quote, the market status and the open orders
     const [quoteVersion, setQuoteVersion] = useState(0);
 
-    useEffect(() => {
+    // The price and the chart's series are requested in layout effects, which run before any section's effects (React runs a parent's
+    // effects after its children's): the browser opens only 6 connections and the server spaces Alpha Vantage calls 300ms apart, so
+    // whatever is requested first is served first, and the price and the order ticket matter most
+    useLayoutEffect(() => {
         const loadQuote = async () => {
             try {
                 const [quoteResponse, marketResponse] = await Promise.all([axios.get<Quote>(`/api/quote/${ticker}`), axios.get<MarketStatus>("/api/market")]);
@@ -46,7 +49,7 @@ const TradingInterface = ({ ticker }: { ticker: string }) => {
         loadQuote();
     }, [ticker, quoteVersion]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const fetchData = async () => {
             // Clear the previous ticker's price so it can't be traded while the new one loads
             setQuote(null);

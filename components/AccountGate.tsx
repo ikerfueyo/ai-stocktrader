@@ -14,6 +14,7 @@ import Header from "./Header";
 import { OPEN_ACCOUNT_STATUSES } from "@/lib/accounts";
 import { useBrokerInfo } from "@/context/BrokerInfoContext";
 import AgreementLink from "./AgreementLink";
+import { installPageRequests, notePath } from "@/lib/pageRequests";
 import type { BrokerAccountSummary } from "@/lib/types";
 
 // Only shown before an account is open, so loaded then rather than with every page
@@ -70,6 +71,10 @@ const AccountGate = ({ children }: { children: ReactNode }) => {
     const [error, setError] = useState<string | null>(null);
     // Set when the user chooses to apply again after a rejection or a closed account
     const [reapplying, setReapplying] = useState(false);
+
+    // Before the pages' effects fetch: their requests are cancelled when the app navigates to another page (lib/pageRequests.ts)
+    useLayoutEffect(installPageRequests, []);
+    useEffect(() => notePath(pathname), [pathname]);
 
     const refreshAccounts = useCallback(async () => {
         try {
