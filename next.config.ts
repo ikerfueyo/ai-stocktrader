@@ -6,6 +6,10 @@ const nextConfig: NextConfig = {
   reactStrictMode: false,
   // Loaded by Node at runtime rather than bundled into the routes that use it: the OpenAI SDK is hundreds of modules
   serverExternalPackages: ["openai"],
+  experimental: {
+    // `next upgrade` keeps Next.js on security fixes only (no canaries or new majors)
+    agentUpgrade: "security",
+  },
 };
 
 export default nextConfig;
