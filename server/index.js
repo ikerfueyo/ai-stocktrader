@@ -12,7 +12,7 @@ const openai = new OpenAI(OPENAI_API_KEY);
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" })); // /gpt receives up to 250 news items, well over the 100kb default
 
 // ROUTES
 // Get stocks news (Alpha Vantage API)
