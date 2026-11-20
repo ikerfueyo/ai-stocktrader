@@ -39,10 +39,7 @@ const TransactionsList = () => {
                         </tr>
                     </thead>
                     <tbody>
-                        {transactions
-                            .slice()
-                            .sort((a, b) => new Date(b.date) - new Date(a.date))
-                            .map(transaction => (
+                        {transactions.map(transaction => (
                             <tr key={transaction.id}>
                                 <td>{new Date(transaction.date).toLocaleDateString("en-US")}</td>
                                 <td>{transaction.ticker}</td>

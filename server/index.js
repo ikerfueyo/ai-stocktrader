@@ -64,7 +64,7 @@ app.post("/trading/:ticker", async(req, res) => {
 // Get all transactions
 app.get("/transactions", async(req, res) => {
     try {
-        const allTransactions = await pool.query("SELECT * FROM transactions");
+        const allTransactions = await pool.query("SELECT * FROM transactions ORDER BY \"date\" DESC, id DESC");
         res.json(allTransactions.rows);
     } catch (error) {
         console.error(error.message);
