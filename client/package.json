@@ -16,8 +16,7 @@
     "react-router-dom": "^7.3.0",
     "react-scripts": "^5.0.1",
     "resolve-url-loader": "^5.0.0",
-    "svgo": "^3.3.2",
-    "web-vitals": "^4.2.4"
+    "svgo": "^3.3.2"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -42,11 +41,5 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4.0.13",
-    "autoprefixer": "^10.4.21",
-    "postcss": "^8.5.3",
-    "tailwindcss": "^4.0.13"
   }
 }

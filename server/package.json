@@ -15,8 +15,6 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "openai": "^4.87.3",
-    "pg": "^8.14.0",
-    "postgres-array": "^3.0.4",
-    "postgres-date": "^2.1.0"
+    "pg": "^8.14.0"
   }
 }
