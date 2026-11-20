@@ -1,10 +1,12 @@
 import React, { Fragment, useEffect, useState } from "react";
 import PropTypes from "prop-types";
+import formatAmount from "../formatAmount";
 
 const BuySellFunctionality = (props) => {
     const [quantity, setQuantity] = useState(1);
     const [notice, setNotice] = useState(null);
     const total = (quantity * props.price).toFixed(2);
+    const displayTotal = formatAmount(total);
 
     // Hide the buy/sell notice after a few seconds
     useEffect(() => {
@@ -36,7 +38,7 @@ const BuySellFunctionality = (props) => {
                 const shares = `${quantity} ${quantity === 1 ? "share" : "shares"} of ${props.ticker}`;
                 setNotice({
                     type,
-                    message: type === "BUY" ? `Bought ${shares} for $${total}` : `Sold ${shares} for $${total}`
+                    message: type === "BUY" ? `Bought ${shares} for $${displayTotal}` : `Sold ${shares} for $${displayTotal}`
                 });
             }
             // window.location = "/";
@@ -56,8 +58,8 @@ const BuySellFunctionality = (props) => {
                     />
                     <button onClick={() => setQuantity((prev) => prev + 1)}>+</button>
                 </div>
-                <button className="buy-btn" id="buyButton" onClick={onSubmitForm}>Buy ${total}</button>
-                <button className="sell-btn" id="sellButton" onClick={onSubmitForm}>Sell ${total}</button>
+                <button className="buy-btn" id="buyButton" onClick={onSubmitForm}>Buy ${displayTotal}</button>
+                <button className="sell-btn" id="sellButton" onClick={onSubmitForm}>Sell ${displayTotal}</button>
             </div>
             {notice && (
                 <div className={`trade-notice ${notice.type === "BUY" ? "buy" : "sell"}`}>

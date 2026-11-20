@@ -1,5 +1,6 @@
 import React, { Fragment } from "react";
 import PropTypes from "prop-types";
+import formatAmount from "../formatAmount";
 
 const Price = (props) => {
     const isPositive = props.priceChange >= 0;
@@ -8,11 +9,11 @@ const Price = (props) => {
         <Fragment>
             <div className="price-container">
                 <span className="current-price">
-                    {props.price} <span className="currency">USD</span>
+                    {formatAmount(props.price)} <span className="currency">USD</span>
                     <span
                         className={`price-change ${isPositive ? "positive" : "negative"}`}
                     >
-                        {isPositive ? " +" : " "}{props.priceChange} ({isPositive ? "+" : ""}{props.percentChange}%)
+                        {isPositive ? " +" : " "}{formatAmount(props.priceChange)} ({isPositive ? "+" : ""}{formatAmount(props.percentChange)}%)
                     </span>
                 </span>
             </div>
