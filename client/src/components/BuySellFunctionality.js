@@ -1,14 +1,29 @@
-import React, { Fragment, useState } from "react";
+import React, { Fragment, useEffect, useState } from "react";
 import PropTypes from "prop-types";
 
 const BuySellFunctionality = (props) => {
     const [quantity, setQuantity] = useState(1);
+    const [notice, setNotice] = useState(null);
     const total = (quantity * props.price).toFixed(2);
+
+    // Hide the buy/sell notice after a few seconds
+    useEffect(() => {
+        if (!notice) return;
+        const timer = setTimeout(() => setNotice(null), 4000);
+        return () => clearTimeout(timer);
+    }, [notice]);
 
     const onSubmitForm = async e => {
         e.preventDefault();
         try {
-            const date = new Date().toISOString();
+            // Local calendar date (YYYY-MM-DD). toISOString() is UTC, which rolls over to
+            // the next day in the evening for users west of UTC (e.g. after 6pm in CST).
+            const now = new Date();
+            const date = [
+                now.getFullYear(),
+                String(now.getMonth() + 1).padStart(2, "0"),
+                String(now.getDate()).padStart(2, "0"),
+            ].join("-");
             const type = e.currentTarget.id === "buyButton" ? "BUY" : "SELL";
             const transaction = { date, type, ticker: props.ticker, price: props.price, quantity, total };
             const response = await fetch(`http://localhost:5001/trading/${props.ticker}`, {
@@ -17,6 +32,13 @@ const BuySellFunctionality = (props) => {
                 body: JSON.stringify({ transaction })
             });
             console.log(response);
+            if (response.ok) {
+                const shares = `${quantity} ${quantity === 1 ? "share" : "shares"} of ${props.ticker}`;
+                setNotice({
+                    type,
+                    message: type === "BUY" ? `Bought ${shares} for $${total}` : `Sold ${shares} for $${total}`
+                });
+            }
             // window.location = "/";
         } catch (error) {
             console.error(error.message);
@@ -37,6 +59,11 @@ const BuySellFunctionality = (props) => {
                 <button className="buy-btn" id="buyButton" onClick={onSubmitForm}>Buy ${total}</button>
                 <button className="sell-btn" id="sellButton" onClick={onSubmitForm}>Sell ${total}</button>
             </div>
+            {notice && (
+                <div className={`trade-notice ${notice.type === "BUY" ? "buy" : "sell"}`}>
+                    {notice.message}
+                </div>
+            )}
         </Fragment>
     )
 };

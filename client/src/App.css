@@ -86,6 +86,22 @@
     background-color: darkred;
 }
 
+.trade-notice {
+    align-self: center;
+    padding: 10px 20px;
+    font-size: 16px;
+    font-weight: bold;
+    text-align: center;
+}
+
+.trade-notice.buy {
+    color: green;
+}
+
+.trade-notice.sell {
+    color: red;
+}
+
 .table-container {
   max-width: 900px;
   margin: 0 auto;
